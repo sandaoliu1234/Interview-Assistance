@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>面试助手</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- 窗口缩放手柄：8 个边缘/角，鼠标按住可拖拽改变窗口大小 -->
+    <div class="resize-handle resize-n"  data-direction="n"></div>
+    <div class="resize-handle resize-s"  data-direction="s"></div>
+    <div class="resize-handle resize-w"  data-direction="w"></div>
+    <div class="resize-handle resize-e"  data-direction="e"></div>
+    <div class="resize-handle resize-nw" data-direction="nw"></div>
+    <div class="resize-handle resize-ne" data-direction="ne"></div>
+    <div class="resize-handle resize-sw" data-direction="sw"></div>
+    <div class="resize-handle resize-se" data-direction="se"></div>
+
+    <!-- 隐身模式专用拖动手柄（默认隐藏，仅隐身模式可见可拖动） -->
+    <div class="stealth-drag-handle" id="stealthDragHandle" title="按住拖动窗口 · 双击或按 X 退出隐身">
+      <span class="drag-grip">⋮⋮</span>
+      <button class="stealth-exit-btn" id="stealthExitBtn" title="退出隐身模式 (Esc)" type="button">✕</button>
+    </div>
+
+  <div class="app-container">
+    <!-- 顶部标题栏（透明窗口模式下充当拖动手柄） -->
+    <header class="app-header draggable-region">
+      <h1>🎯 面试助手</h1>
+      <div class="header-controls">
+        <button id="quickHideBtn" class="icon-btn" title="快速隐藏 (Ctrl+Shift+H)">👁️</button>
+        <button id="logBtn" class="icon-btn" title="查看运行日志">🐛</button>
+        <button id="settingsBtn" class="icon-btn" title="设置">⚙️</button>
+      </div>
+    </header>
+
+    <!-- 隐私控制栏 -->
+    <div class="privacy-bar">
+      <div class="privacy-item">
+        <button id="toggleStealthBtn" class="privacy-btn" title="隐身模式">
+          <span class="privacy-icon">🥷</span>
+          <span class="privacy-text">隐身模式</span>
+        </button>
+      </div>
+      <div class="privacy-item">
+        <div class="privacy-info">
+          <span class="info-label">隐藏/显示: </span>
+          <span class="info-value" id="hotkeyDisplay">Ctrl+Shift+H</span>
+        </div>
+      </div>
+      <div class="privacy-item">
+        <div class="privacy-info">
+          <span class="info-label">临时显示: </span>
+          <span class="info-value">Ctrl+Shift+Space</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主内容区域 -->
+    <main class="main-content">
+      <!-- 录音控制 -->
+      <div class="recording-section">
+        <div class="recording-status" id="recordingStatus">
+          <div class="status-indicator"></div>
+          <span class="status-text">准备就绪</span>
+        </div>
+        <div class="recording-controls">
+          <button id="listenBtn" class="listen-btn" title="选择会议窗口并实时识别面试官提问">
+            <span class="btn-icon">🎧</span>
+            <span class="btn-text">捕获系统声音</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 简历上传区域 -->
+      <div class="resume-section">
+        <div class="resume-header">
+          <h3>📄 简历上传（Markdown）</h3>
+          <span class="resume-hint">上传后可编辑，AI 会基于简历内容生成个性化答案</span>
+        </div>
+        <div class="resume-controls">
+          <button id="uploadResumeBtn" class="secondary-btn">
+            <span class="btn-icon">📁</span>
+            <span class="btn-text">选择简历文件</span>
+          </button>
+          <button id="saveResumeBtn" class="secondary-btn">
+            <span class="btn-icon">💾</span>
+            <span class="btn-text">保存简历</span>
+          </button>
+          <button id="clearResumeBtn" class="secondary-btn">
+            <span class="btn-icon">🗑️</span>
+            <span class="btn-text">清空</span>
+          </button>
+          <span id="resumeStatus" class="resume-status-text"></span>
+        </div>
+        <div class="resume-editor">
+          <textarea
+            id="resumeEditor"
+            class="resume-textarea"
+            placeholder="请上传 Markdown 格式的简历文件，或直接在此处粘贴简历内容...
+
+示例格式：
+# 个人信息
+- 姓名：张三
+- 工作年限：3年
+- 职位：Java开发工程师
+
+# 工作经历
+## 公司A | 2021-至今
+- 负责微服务架构设计与实现
+- 参与高并发系统优化
+
+# 技能
+- Java、Spring Boot、MySQL
+- Docker、Kubernetes、Redis"
+          ></textarea>
+        </div>
+      </div>
+
+      <!-- 监听状态显示 -->
+      <div class="listening-status" id="listeningStatus">
+        <div class="listening-info">
+          <span class="listening-icon">🎯</span>
+          <span class="listening-text" id="listeningText">点击"捕获系统声音" → 在弹窗选腾讯会议窗口 → 勾选"共享音频" → 自动识别提问</span>
+        </div>
+        <div class="listening-progress" id="listeningProgress"></div>
+        <!-- 实时识别中间结果（WebSocket 模式显示） -->
+        <div class="interim-text stealth-readable" id="interimText" aria-live="polite"></div>
+      </div>
+
+      <!-- 开始面试按钮 -->
+      <button id="startInterviewBtn" class="start-interview-btn">开始面试 🚀</button>
+    </main>
+
+    <!-- 历史记录侧边栏 -->
+    <aside class="history-sidebar" id="historySidebar">
+      <div class="sidebar-header">
+        <h3>📋 历史记录</h3>
+        <button id="closeHistoryBtn" class="close-btn">&times;</button>
+      </div>
+      <div id="historyList" class="history-list">
+        <!-- 历史记录项 -->
+      </div>
+    </aside>
+  </div>
+
+  <!-- 面试蒙版（半透明全屏覆盖） -->
+  <div id="interviewOverlay" class="interview-overlay">
+    <div id="overlayWindow" class="overlay-content">
+      <!-- 拖动手柄 -->
+      <div class="overlay-drag-handle" id="overlayDragHandle">
+        <span class="drag-grip">⋮⋮</span>
+      </div>
+      
+      <!-- 顶部栏 -->
+      <div class="overlay-header">
+        <span class="status-badge recording">🎤 正在识别系统声音</span>
+        <button id="closeOverlayBtn" class="close-btn">&times;</button>
+      </div>
+      
+      <!-- 实时识别文字 -->
+      <div class="interim-section">
+        <label>面试官：</label>
+        <div id="overlayInterimText" class="interim-display"></div>
+      </div>
+
+      <!-- AI 答案区 -->
+      <div class="answer-section">
+        <label>AI 助手：</label>
+        <div id="overlayAnswerText" class="answer-display"></div>
+      </div>
+      
+      <!-- 状态区 -->
+      <div class="answer-status">
+        <div id="answerLoading" class="loading-indicator">⏳ 正在生成答案...</div>
+        <div id="answerReady" class="success-indicator">✓ 答案已生成，已保存到历史记录</div>
+      </div>
+      
+      <!-- 缩放手柄 -->
+      <div class="overlay-resize-handle resize-n" data-direction="n"></div>
+      <div class="overlay-resize-handle resize-s" data-direction="s"></div>
+      <div class="overlay-resize-handle resize-w" data-direction="w"></div>
+      <div class="overlay-resize-handle resize-e" data-direction="e"></div>
+      <div class="overlay-resize-handle resize-nw" data-direction="nw"></div>
+      <div class="overlay-resize-handle resize-ne" data-direction="ne"></div>
+      <div class="overlay-resize-handle resize-sw" data-direction="sw"></div>
+      <div class="overlay-resize-handle resize-se" data-direction="se"></div>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div id="settingsModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>⚙️ 设置</h2>
+        <button id="closeSettingsBtn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <!-- 隐私保护设置 -->
+        <div class="setting-group">
+          <h4>🔒 隐私保护</h4>
+          <div class="setting-item">
+            <label>快捷键:</label>
+            <input type="text" id="hotkeyInput" placeholder="CommandOrControl+Shift+H">
+            <span class="setting-hint">例如: Ctrl+Shift+H</span>
+          </div>
+          <div class="setting-item">
+            <label>
+              <input type="checkbox" id="alwaysOnTop">
+              始终置顶
+            </label>
+          </div>
+          <div class="setting-item">
+            <label>透明度:</label>
+            <input type="range" id="opacitySlider" min="0.1" max="1" step="0.05" value="0.95">
+            <span id="opacityValue">95%</span>
+          </div>
+          <div class="setting-item">
+            <button id="testHideBtn" class="secondary-btn">测试隐藏窗口</button>
+            <span class="setting-hint">点击后窗口会隐藏3秒</span>
+          </div>
+        </div>
+
+        <!-- 百度语音识别 -->
+        <div class="setting-group">
+          <h4>🔊 百度语音识别</h4>
+          <div class="setting-item">
+            <label>API Key:</label>
+            <input type="text" id="baiduApiKey" placeholder="请输入百度API Key">
+          </div>
+          <div class="setting-item">
+            <label>Secret Key:</label>
+            <input type="password" id="baiduSecretKey" placeholder="请输入百度Secret Key">
+          </div>
+          <div class="setting-item">
+            <label>App ID:</label>
+            <input type="text" id="baiduAppId" placeholder="百度智能云控制台-语音技术项目里的 AppID">
+            <span class="setting-hint">实时 ASR（WebSocket 流式）必须填，REST 模式可为空</span>
+          </div>
+          <div class="setting-item">
+            <label>识别模式:</label>
+            <select id="realtimeMode">
+              <option value="websocket">WebSocket 流式（推荐，延迟 &lt; 1s）</option>
+              <option value="rest">REST 分块（兜底，延迟 1.5s）</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 文心一言 -->
+        <div class="setting-group">
+          <h4>🤖 文心一言</h4>
+          <div class="setting-item">
+            <label>API Key:</label>
+            <input type="text" id="wenxinApiKey" placeholder="请输入文心一言API Key">
+          </div>
+        </div>
+
+        <!-- 智谱AI -->
+        <div class="setting-group">
+          <h4>🧠 智谱AI</h4>
+          <div class="setting-item">
+            <label>API Key:</label>
+            <input type="text" id="zhipuApiKey" placeholder="请输入智谱AI API Key">
+          </div>
+        </div>
+
+        <!-- 通义千问 -->
+        <div class="setting-group">
+          <h4>🌟 通义千问</h4>
+          <div class="setting-item">
+            <label>API Key:</label>
+            <input type="text" id="tongyiApiKey" placeholder="请输入通义千问API Key">
+          </div>
+        </div>
+
+        <!-- AI服务选择 -->
+        <div class="setting-group">
+          <h4>🎯 AI服务选择</h4>
+          <div class="setting-item">
+            <select id="aiServiceSelect">
+              <option value="wenxin">文心一言</option>
+              <option value="zhipu">智谱AI</option>
+              <option value="tongyi">通义千问</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 隐私审计 -->
+        <div class="setting-group">
+          <h4>🔐 隐私审计</h4>
+          <div class="setting-item">
+            <div class="audit-summary">
+              <div class="audit-stat">
+                <span class="audit-label">网络请求:</span>
+                <span id="auditNetworkCount">0</span>
+              </div>
+              <div class="audit-stat">
+                <span class="audit-label">数据传输:</span>
+                <span id="auditDataSize">0 KB</span>
+              </div>
+              <div class="audit-stat">
+                <span class="audit-label">敏感信息:</span>
+                <span id="auditSensitiveCount" class="warning">0</span>
+              </div>
+            </div>
+            <div class="audit-actions">
+              <button id="viewAuditLogsBtn" class="secondary-btn">查看日志</button>
+              <button id="exportAuditReportBtn" class="secondary-btn">导出报告</button>
+              <button id="clearAuditBtn" class="secondary-btn danger">清空</button>
+            </div>
+          </div>
+          <div class="setting-item">
+            <label>
+              <input type="checkbox" id="enableAudit" checked>
+              启用隐私审计（记录所有网络请求和数据操作）
+            </label>
+          </div>
+        </div>
+
+        <!-- 持续监听设置 -->
+        <div class="setting-group">
+          <h4>🎧 持续监听设置</h4>
+          <div class="setting-item">
+            <label>问题检测灵敏度：</label>
+            <input type="range" id="detectionSensitivity" min="1" max="10" value="5">
+            <span id="sensitivityValue" class="range-value">5</span>
+            <span class="setting-hint">灵敏度越高越容易识别为问题</span>
+          </div>
+          <div class="setting-item">
+            <label>音频处理间隔：</label>
+            <select id="processingInterval">
+              <option value="2000">2秒（快速）</option>
+              <option value="3000" selected>3秒（推荐）</option>
+              <option value="5000">5秒（稳定）</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label>音频增益（Boost）：</label>
+            <input type="range" id="audioBoost" min="1" max="200" value="50">
+            <span id="audioBoostValue" class="range-value">50x</span>
+            <span class="setting-hint">native-audio-node 在 Realtek 上电平偏低，需要放大（1-200 倍）</span>
+          </div>
+          <div class="setting-item">
+            <label>
+              <input type="checkbox" id="autoSaveHistory" checked>
+              自动保存历史记录
+            </label>
+          </div>
+        </div>
+
+        <!-- 隐身模式说明 -->
+        <div class="setting-group">
+          <h4>🥷 隐身模式使用说明</h4>
+          <div class="help-text">
+            <p>🔹 <strong>如何使用隐身模式：</strong></p>
+            <p>• 隐身模式下窗口完全透明，屏幕共享里看不到，鼠标穿透不阻挡会议画面</p>
+            <p>• 只有答案卡片（面试官问题 + AI 答案）保持可见</p>
+            <p>• 按 <strong>Ctrl+Shift+Space</strong> 可以临时全显 3 秒（3秒内可操作）</p>
+            <p>• 按 <strong>Ctrl+Shift+H</strong> 可以完全隐藏/显示窗口</p>
+            <p>• 隐身模式下用 <strong>Alt+Shift+方向键</strong> 调整窗口位置（每次30像素）</p>
+            <p>• <strong>退出隐身</strong>：按 <strong>Esc</strong> / 双击拖动手柄 / 点拖动手柄上的 ✕ 按钮 / 右键托盘菜单</p>
+            <p>• 窗口始终保持置顶，不影响视频会议</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="saveSettingsBtn" class="primary-btn">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 隐私提示 -->
+  <div id="privacyNotice" class="privacy-notice">
+    <div class="notice-content">
+      <h3>🔒 隐私提示</h3>
+      <p>此应用用于面试辅助，请确保在适当的场合使用！</p>
+      <p>按 <strong>Ctrl+Shift+H</strong> 可快速隐藏/显示窗口</p>
+      <button id="gotItBtn" class="primary-btn">我知道了</button>
+    </div>
+  </div>
+
+  <!-- 运行日志弹窗（点 🐛 按钮打开） -->
+  <div id="logModal" class="modal">
+    <div class="log-modal-content">
+      <div class="log-modal-header">
+        <h3>🐛 运行日志（实时）</h3>
+        <div class="log-modal-actions">
+          <button id="logAutoScrollBtn" class="log-mini-btn active" title="自动滚动到底部">⬇ 自动</button>
+          <button id="logCopyBtn" class="log-mini-btn" title="复制全部日志到剪贴板">📋 复制</button>
+          <button id="logClearBtn" class="log-mini-btn" title="清空日志">🗑️ 清空</button>
+          <button id="logCloseBtn" class="log-mini-btn" title="关闭">✕</button>
+        </div>
+      </div>
+      <div class="log-level-filter">
+        <label><input type="checkbox" class="log-filter" data-level="info" checked> INFO</label>
+        <label><input type="checkbox" class="log-filter" data-level="warn" checked> WARN</label>
+        <label><input type="checkbox" class="log-filter" data-level="error" checked> ERROR</label>
+        <label><input type="checkbox" class="log-filter" data-level="realtime" checked> [realtime]</label>
+        <label><input type="checkbox" class="log-filter" data-level="display-media" checked> [display-media]</label>
+        <label><input type="checkbox" class="log-filter" data-level="recognize" checked> [recognize]</label>
+        <label><input type="checkbox" class="log-filter" data-level="llm" checked> [llm]</label>
+      </div>
+      <div id="logContainer" class="log-container"></div>
+    </div>
+  </div>
+
+  <!-- 隐私审计弹窗（点设置中的"查看日志"按钮打开） -->
+  <div id="auditModal" class="modal">
+    <div class="audit-modal-content">
+      <div class="log-modal-header">
+        <h3>🔐 隐私审计日志</h3>
+        <div class="log-modal-actions">
+          <button id="auditRefreshBtn" class="log-mini-btn" title="刷新">🔄 刷新</button>
+          <button id="auditExportBtn" class="log-mini-btn" title="导出报告">📋 导出</button>
+          <button id="auditClearBtn" class="log-mini-btn" title="清空日志">🗑️ 清空</button>
+          <button id="auditCloseBtn" class="log-mini-btn" title="关闭">✕</button>
+        </div>
+      </div>
+      <div id="auditContainer" class="audit-container"></div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

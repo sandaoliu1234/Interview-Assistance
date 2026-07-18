@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+api.md
+使用说明.md
+
+assets/README.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+.trae/
+
+# Logs
+*.log
+npm-debug.log*
+
+# User data
+*.user.json
+config.json
+history.json
+
+# Temporary files
+*.tmp
+*.temp
+
+# Electron
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Testing
+coverage/
