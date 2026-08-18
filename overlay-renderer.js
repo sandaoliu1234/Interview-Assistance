@@ -172,9 +172,21 @@
   function getApi() {
     if (typeof window !== 'undefined' && window.electronAPI) return window.electronAPI;
     // dev-server / 直接用浏览器打开 overlay.html 的兜底：返回空实现，不崩溃
+    //   ⭐ 注意：fetchOverlayState 仅在 Electron + 本地 HTTP 启动后有真实数据；浏览器 stub 返回空 history，UI 会显示 history-empty 占位
     return {
       closeOverlay: () => Promise.resolve({ success: true }),
       resizeOverlay: () => Promise.resolve({ success: true }),
+      overlayStatus: () => Promise.resolve({ exists: false, bounds: null }),
+      fetchOverlayState: () => Promise.resolve({
+        ok: true,
+        asrText: '',
+        answerText: '',
+        questionImage: '',
+        isRecording: false,
+        lastAnswerAt: 0,
+        history: [],
+        historyVersion: 0,
+      }),
       generateQR: () => Promise.resolve({ success: false, error: 'not electron' }),
       getServerStatus: () => Promise.resolve({ success: false, status: 'idle' }),
       disconnectMiniapp: () => Promise.resolve({ success: true }),
@@ -184,6 +196,7 @@
       onAnswerGenerated: () => {},
       onRecordingStatus: () => {},
       onWriteFromOutside: () => {},
+      onWriteQuestionFromOutside: () => {},
       onLocalStatusChanged: () => {},
     };
   }
@@ -622,6 +635,346 @@
   }
 
   // ============================================================
+  // 7.5 ⭐ 多轮对话历史渲染器（正序，最后一轮=最新，自动滚到底部）
+  //
+  // 目标：
+  //   - 以 /api/overlay/status 返回的 history[] 为唯一数据源，全量（或按版本号增量）重绘
+  //   - 正序渲染：history[0] 最旧 -> history[length-1] 最新（即"往下滚才能看到新内容"）
+  //   - 内存里最多保留 10 轮（由后端控制），超出部分已落盘 JSONL
+  //   - 监听 historyVersion 变化，版本不一致时触发重新渲染；并把新渲染追加到的位置滚到底
+  //
+  // 与旧 API 的兼容：
+  //   - 对 window.__overlayWriteAnswer / onWriteFromOutside / onAnswerGenerated 等现存
+  //     写入通道：在它们写老 DOM（shadow）后，立即触发一次 pullRefreshIfNeeded(true)
+  //     强制刷新 history，保证老 UI 行为不改的同时 history 展示最新
+  //   - startScreenshotSolve 触发后也会 forceRefresh；保证"截图→提问"后立刻看到
+  // ============================================================
+  function initHistoryRenderer() {
+    try {
+      // 历史容器必须存在，否则直接返回（页面结构变更时的保护）
+      const container = $('historyContainer');
+      if (!container) return;
+
+      // ---- 本地状态 ----
+      let lastVersion = -1;      // 上次渲染的 historyVersion
+      let httpPollTimer = null;  // HTTP 轮询定时器（作为 WS/主动 refresh 的兜底）
+      let lastRenderCount = 0;   // 上次渲染后列表长度，用于判断是否有新追加
+      let refreshPending = false; // 防抖：刷新请求进行中时避免重复 fetch
+
+      // ---- HTTP/IPC 取状态快照（含多轮历史 history + historyVersion）----
+      // ⚠️  注意：overlay.html 用 main.js 的 overlayWindow.loadFile(...) 加载，window.location 是 file://...
+      //     如果直接 fetch('/api/overlay/status')，相对路径会解析成 file:///api/overlay/status，
+      //     实际去找本地文件，永远 404！这也是上一轮"重启仍不显示 H5 历史"的真正根因。
+      // ✅ 正确通道优先级：
+      //     1. Electron preload 暴露的 IPC：api.fetchOverlayState() → 主进程直接从 localHttpServer.state 读，
+      //        不绕网络，连 HTTP 服务没 start（用户没点二维码）也能拿到面板/ASR/H5 入口写入的 history
+      //     2. 兜底 1：getServerStatus() 拿 port → 拼 http://127.0.0.1:<port>/api/overlay/status?token=xxx → fetch
+      //        （用于老版本 preload 没暴露 fetchOverlayState 的情况）
+      //     3. 兜底 2：浏览器独立打开 overlay.html（dev stub）→ stub 已返回空态快照，也不会走 file fetch
+      async function fetchStatus() {
+        // ---- 通道 1：Electron IPC（首选）----
+        try {
+          if (typeof api.fetchOverlayState === 'function') {
+            const r = await api.fetchOverlayState();
+            // IPC 返回结构与 HTTP 同构：{ ok:true, history, historyVersion, asrText, answerText, ... }
+            if (r && r.ok === true) return r;
+          }
+        } catch (_) { /* IPC 失败（例如 preload 版本没跟上）静默跳过，走兜底通道 */ }
+
+        // ---- 通道 2：HTTP 绝对 URL（兜底）----
+        try {
+          if (typeof api.getServerStatus === 'function') {
+            const srv = await api.getServerStatus();
+            const port = srv && (srv.port || (srv.status && srv.status.port));
+            const token = srv && (srv.token || (srv.status && srv.status.token));
+            if (port && Number(port) > 0) {
+              const url = `http://127.0.0.1:${Number(port)}/api/overlay/status${token ? `?token=${encodeURIComponent(String(token))}` : ''}`;
+              const res = await fetch(url, { cache: 'no-store' });
+              if (res.ok) {
+                const data = await res.json();
+                if (data && data.ok === true) return data;
+              }
+            }
+          }
+        } catch (_) { /* HTTP 通道不通（比如本地服务没启动）时静默忽略 */ }
+
+        // ---- 都失败：返回 null，调用方会跳过本次渲染（不刷白屏）----
+        return null;
+      }
+
+      // ---- 时间格式化：HH:mm:ss（本地化时区）----
+      function fmtTime(ts) {
+        if (!ts) return '--:--:--';
+        try {
+          const d = new Date(Number(ts));
+          const pad = (n) => String(n).padStart(2, '0');
+          return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        } catch (_) { return '--:--:--'; }
+      }
+
+      // ---- source 翻译成人类可读标签 ----
+      function sourceMeta(source) {
+        const s = String(source || 'unknown').toLowerCase();
+        // 返回 [显示名, CSS 后缀]，后缀与 overlay.css 中 .history-tag.src-* 对应
+        if (s === 'panel' || s === 'overlay' || s.startsWith('screenshot')) return ['面板截图', 'panel'];
+        if (s === 'h5' || s === 'web' || s.startsWith('http')) return ['H5 网页', 'h5'];
+        if (s === 'miniapp' || s === 'wx' || s.startsWith('mini')) return ['小程序', 'miniapp'];
+        if (s === 'asr' || s.startsWith('asr') || s === 'mic') return ['语音识别', 'asr'];
+        if (s === 'unknown' || s === '') return ['其他入口', 'panel'];
+        return [s, 'panel'];
+      }
+
+      // ---- status 翻译成徽章文字+样式 ----
+      function statusMeta(st) {
+        if (st === 'answered') return { cls: 'answered', text: '已回答' };
+        if (st === 'error')    return { cls: 'error',    text: '生成失败' };
+        return { cls: 'asked', text: '正在生成…' };
+      }
+
+      // ---- 平滑（或即时）滚到 panelScrollBody 底部 ----
+      function scrollToBottom(forceSmooth) {
+        try {
+          const sb = $('panelScrollBody');
+          if (!sb) return;
+          // 用 requestAnimationFrame 保证刚更新的 DOM 已参与布局
+          requestAnimationFrame(() => {
+            try {
+              if (forceSmooth && 'scrollTo' in sb) {
+                sb.scrollTo({ top: sb.scrollHeight, behavior: 'smooth' });
+              } else {
+                sb.scrollTop = sb.scrollHeight;
+              }
+            } catch (_) { /* ignore */ }
+          });
+        } catch (_) { /* ignore */ }
+      }
+
+      // ---- 全量重绘：基于 history 数组生成 N 个 .history-round 卡片 ----
+      function renderAll(history) {
+        if (!container) return;
+        // 空态
+        if (!history || !history.length) {
+          container.innerHTML = `
+            <div class="history-empty">
+              <span class="emoji">🎙️</span>
+              还没有答题历史<br/>
+              点击左上角 <strong>📸 截图解题</strong> 开始你的第一轮面试题辅助
+            </div>
+          `;
+          lastRenderCount = 0;
+          return;
+        }
+
+        // 构造 DOM 片段（用 DocumentFragment 减少重排）
+        const frag = document.createDocumentFragment();
+        const total = history.length;
+        history.forEach((round, idx) => {
+          const card = document.createElement('div');
+          card.className = `history-round status-${round.status || 'asked'}`;
+          card.setAttribute('data-id', `r-${round.id}`);
+
+          const [srcLabel, srcCls] = sourceMeta(round.source);
+          const sm = statusMeta(round.status);
+          const orderText = `第 ${idx + 1} 轮 / 共 ${total} 轮`;
+          const timeText = fmtTime(round.createdAt);
+
+          // ---- 面试官问题文本（有就渲染，没有就省略标签） ----
+          const qTextHtml = (round.questionText && round.questionText.trim().length)
+            ? `<div class="round-interim-text">${_escapeHtml(round.questionText)}</div>`
+            : '';
+
+          // ---- 面试官截图（有 dataURL 就显示，带关闭+放大） ----
+          const hasImg = !!(round.questionImage && /^data:image\//i.test(round.questionImage));
+          const shotHtml = hasImg
+            ? `<div class="round-shot has-img" data-shotwrap data-id="${round.id}">
+                 <div class="round-shot-bar">
+                   <span>📸 题目截图</span>
+                   <button type="button" class="round-shot-close" data-shotclose title="收起截图">×</button>
+                 </div>
+                 <img class="round-shot-img" data-shotimg src="${round.questionImage}" alt="题目截图" />
+               </div>`
+            : '';
+
+          // ---- AI 答案文本：有就 Markdown，否则正在生成时显示 loading 提示 ----
+          const hasAns = !!(round.answerText && round.answerText.trim().length);
+          const loadingHtml = (round.status === 'asked' && !hasAns)
+            ? `<div class="round-loading">⏳ AI 正在解题，请稍候…</div>`
+            : '';
+          const answerHtml = hasAns
+            ? `<div class="round-answer-text">${renderMarkdown(round.answerText)}</div>`
+            : '';
+
+          // ---- 错误提示：status=error + errorMsg 存在 ----
+          const errorHtml = (round.status === 'error' && round.errorMsg)
+            ? `<div class="round-error">⚠️ ${_escapeHtml(String(round.errorMsg))}</div>`
+            : '';
+
+          // ---- 组装卡片 HTML ----
+          card.innerHTML = `
+            <div class="history-round-header">
+              <div class="history-round-index">${orderText}</div>
+              <div class="history-round-meta">
+                <span class="history-tag src-${srcCls}">${_escapeHtml(srcLabel)}</span>
+                <span class="history-status ${sm.cls}">${sm.text}</span>
+                <span class="history-round-time" title="提问时间">${timeText}</span>
+              </div>
+            </div>
+            <div class="round-interim">
+              <label class="round-label interviewer">面试官：</label>
+              ${shotHtml}
+              ${qTextHtml}
+            </div>
+            <div class="round-answer">
+              <label class="round-label ai">AI 助手：</label>
+              ${answerHtml}
+              ${loadingHtml}
+              ${errorHtml}
+            </div>
+          `;
+          frag.appendChild(card);
+        });
+
+        // 一次替换（避免 appendChild 过程中页面闪烁多次）
+        container.innerHTML = '';
+        container.appendChild(frag);
+
+        // ---- 事件绑定：截图关闭按钮、放大打开新窗口 ----
+        container.querySelectorAll('.round-shot').forEach((shotEl) => {
+          // 关闭按钮（每轮独立）
+          const closeBtn = shotEl.querySelector('[data-shotclose]');
+          if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+              shotEl.classList.remove('has-img');
+            });
+          }
+          // 图片点击 → 新窗口打开原图
+          const img = shotEl.querySelector('[data-shotimg]');
+          if (img && !img._boundZoom) {
+            img._boundZoom = true;
+            img.addEventListener('click', () => {
+              const src = img.getAttribute('src');
+              if (src && /^data:image\//i.test(src)) {
+                try {
+                  const w = window.open('', '_blank', 'noopener');
+                  if (w) {
+                    w.document.write(`<!DOCTYPE html><html><head><title>面试题原图</title><style>body{margin:0;background:#1a1d25;display:flex;justify-content:center;align-items:center;min-height:100vh;}img{max-width:100%;max-height:100vh;box-shadow:0 8px 30px rgba(0,0,0,.6);border-radius:6px;}</style></head><body><img src="${src}" alt="面试题原图"></body></html>`);
+                    w.document.close();
+                  }
+                } catch (e) { console.warn('[history] 打开截图放大失败:', e.message); }
+              }
+            });
+          }
+        });
+
+        lastRenderCount = history.length;
+      }
+
+      // ---- 核心：按版本号决定是否刷新；force=true 时哪怕版本没变也重绘（保证外部写入后同步） ----
+      async function refreshIfNeeded(force) {
+        if (refreshPending) return;          // 防重复请求
+        refreshPending = true;
+        try {
+          const data = await fetchStatus();
+          if (!data) return;
+          const newVersion = Number(data.historyVersion) || 0;
+          const history = Array.isArray(data.history) ? data.history : [];
+          if (force || newVersion !== lastVersion) {
+            const prevCount = lastRenderCount;
+            renderAll(history);
+            lastVersion = newVersion;
+            // 新增了轮次 / 被强制刷新 → 滚到底部（最新一轮可见）
+            if (force || history.length > prevCount || history.length === 0) {
+              scrollToBottom(!!force);
+            }
+          } else {
+            // 版本一致但后端 asrText/answerText 可能仍在流式更新：
+            // 针对最后一轮，若其 status=asked 且 answerText 非空，做一次轻量 patch
+            const lastEl = container.querySelector('.history-round:last-child');
+            if (!lastEl || !history.length) return;
+            const last = history[history.length - 1];
+            if (last.status === 'asked') {
+              const ansBox = lastEl.querySelector('.round-answer-text');
+              if (ansBox && last.answerText) {
+                ansBox.innerHTML = renderMarkdown(last.answerText);
+                const loadingEl = lastEl.querySelector('.round-loading');
+                if (loadingEl) loadingEl.remove();
+              }
+              // 流式更新也尽量滚到底，保持最新一行可见
+              scrollToBottom(false);
+            }
+          }
+        } catch (e) {
+          console.warn('[history] refreshIfNeeded 异常:', e.message);
+        } finally {
+          refreshPending = false;
+        }
+      }
+
+      // ---- 暴露到 window：给其他初始化项（startScreenshotSolve 等）主动触发刷新用 ----
+      window.__historyRefresh = (force) => refreshIfNeeded(!!force);
+
+      // ---- 兼容已有写入通道：在它们的回调末尾追加 history 强制刷新 ----
+      // 1) onWriteFromOutside（小程序/H5 回写答案）：挂在 api.onWriteFromOutside 外层
+      //    注：这里通过 MonkeyPatch 方式，因为 preload 已经绑好原始 IPC 事件
+      patchCallback(api, 'onWriteFromOutside', () => {
+        // 回调触发后异步刷新（保证答案先写入 state 再 /status 拉）
+        setTimeout(() => refreshIfNeeded(true), 50);
+      });
+      // 2) onWriteQuestionFromOutside（外部写"面试官提问+截图"）
+      patchCallback(api, 'onWriteQuestionFromOutside', () => {
+        setTimeout(() => refreshIfNeeded(true), 50);
+      });
+      // 3) onAnswerGenerated（答题流水线完成后回写最终答案）
+      patchCallback(api, 'onAnswerGenerated', () => {
+        setTimeout(() => refreshIfNeeded(true), 50);
+      });
+      // 4) window.__overlayWriteAnswer（主进程可能直接调该全局函数写答案）
+      //    包装它：调用后再刷新 history
+      const origWriteAnswer = window.__overlayWriteAnswer;
+      window.__overlayWriteAnswer = function wrappedOverlayWriteAnswer(text) {
+        try { if (typeof origWriteAnswer === 'function') origWriteAnswer.call(this, text); } catch (_) { /* ignore */ }
+        setTimeout(() => refreshIfNeeded(true), 80);
+      };
+      // 5) onAsrFinal（ASR 最终结果，常见"面试官说完"，马上刷新历史显示最后一轮文本）
+      patchCallback(api, 'onAsrFinal', () => {
+        setTimeout(() => refreshIfNeeded(false), 50);
+      });
+
+      // ---- 兜底：HTTP 每 1.5 秒轮询一次（即便主动回调漏了，也能追上） ----
+      if (!httpPollTimer) {
+        // 立即首帧：拉一次初始化
+        refreshIfNeeded(true);
+        httpPollTimer = setInterval(() => refreshIfNeeded(false), 1500);
+      }
+    } catch (e) {
+      console.error('[overlay] initHistoryRenderer 失败:', e.message);
+    }
+  }
+
+  /**
+   * 工具：给 electron API 上的 `onXXX(cb)` 做"注册后额外再附加一个 callback"的补丁。
+   * 目标：我们不能重写 preload 已经绑定的 listener，但可以把用户传的 cb 在真正调用时
+   *       再额外调用一次 ourCb；做法是把 api.XXX 包一层，调用原始后再执行 ourCb。
+   *       - 若原方法尚未被实现（dev stub），则不做事，避免崩溃。
+   */
+  function patchCallback(apiObj, methodName, ourCb) {
+    try {
+      if (!apiObj || typeof apiObj[methodName] !== 'function') return;
+      const orig = apiObj[methodName];
+      apiObj[methodName] = function patched(cb) {
+        // 把我们的附加回调包在真正回调执行之后触发
+        const wrapped = function () {
+          let r = undefined;
+          try { if (typeof cb === 'function') r = cb.apply(this, arguments); } catch (_) { /* ignore */ }
+          try { if (typeof ourCb === 'function') ourCb.apply(this, arguments); } catch (_) { /* ignore */ }
+          return r;
+        };
+        return orig.call(apiObj, wrapped);
+      };
+    } catch (_) { /* patch 失败不影响主流程 */ }
+  }
+
+  // ============================================================
   // 8. 📱 二维码按钮：切换二维码弹窗显示；显示时异步拿 dataURL 渲染
   // ============================================================
   function initQrToggleBtn() {
@@ -1010,6 +1363,8 @@
           if (sb) sb.scrollTop = sb.scrollHeight;
         } catch (_) { /* ignore */ }
       } catch (_) { /* UI 兜底失败不影响 AI 解题主流程 */ }
+      // ⭐ 刚截完图：立即刷新历史，让用户立刻看到"第 N 轮 · 面板截图 · 正在生成…"卡片
+      try { if (typeof window.__historyRefresh === 'function') window.__historyRefresh(true); } catch (_) { /* ignore */ }
       // 3. 调视觉模型解题：先拿当前配置（含 resume/知识库）
       if (btn) { btn.disabled = true; btn.title = '解题中…'; }
       // 显示 ⏳ 正在生成答案（和 ASR/AI 答题通道共用同一套 UI）
@@ -1047,11 +1402,15 @@
         readyEl.style.display = 'block';
         setTimeout(() => { readyEl.style.display = 'none'; }, 2000);
       }
+      // ⭐ 解题完成：强制刷新历史（保证 status=answered，最新一轮答案可见）
+      try { if (typeof window.__historyRefresh === 'function') window.__historyRefresh(true); } catch (_) { /* ignore */ }
     } catch (e) {
       console.error('[overlay] 截图解题异常:', e);
       if (btn) { btn.disabled = false; btn.title = '全屏截图并解答'; }
       if (loadingEl) loadingEl.style.display = 'none';
       alert('截图解题异常：' + e.message);
+      // ⭐ 异常结束也刷新一下，显示"生成失败"徽章 + 错误信息，避免停留在 loading
+      try { if (typeof window.__historyRefresh === 'function') window.__historyRefresh(true); } catch (_) { /* ignore */ }
     }
   }
 
@@ -1200,6 +1559,7 @@
       ['ASR/答案渲染', initAsrAnswerRenderer],
       ['状态徽章', initStatusBadge],
       ['外部回写答案', initAnswerFromOutside],
+      ['【新】多轮历史渲染器', initHistoryRenderer],   // ⭐ 必须在 initAnswerFromOutside 之后，才能正确 patch
       ['二维码按钮', initQrToggleBtn],
       ['连接状态监听', initQrStatusListeners],
       ['复制连接按钮', initQrCopyBtn],

@@ -79,9 +79,13 @@ const _apiImpl = {
   // ===== 独立答题面板（overlayWindow）=====
   openOverlay: () => invoke('open-overlay'),                  // 创建/显示答题面板
   closeOverlay: () => invoke('close-overlay'),                // 关闭答题面板
-  overlayStatus: () => invoke('overlay-status'),              // 查询面板状态（exists/bounds）
+  overlayStatus: () => invoke('overlay-status'),              // 查询面板窗口状态（exists/bounds）
   resizeOverlay: (dir, dx, dy) => invoke('resize-overlay', dir, dx, dy), // 8 向缩放面板
   moveOverlay: (direction) => invoke('move-overlay', direction),          // 快捷键平移面板
+  // ⭐ 面板端(H5/小程序/ASR 等外部入口)产生的最新状态快照(含多轮历史 history[]+historyVersion)
+  //    结构对齐 /api/overlay/status 的 flat JSON：{ ok:true, asrText, answerText, questionImage, isRecording, lastAnswerAt, history:[], historyVersion }
+  //    为什么需要单独 IPC？overlay.html 用 loadFile(file://) 加载，fetch('/api/overlay/status') 相对路径会解析到 file:///api/...，永远拿不到 HTTP 响应
+  fetchOverlayState: () => invoke('overlay-full-status'),
 
   // ===== 独立答题面板 → ASR / 答案事件订阅 =====
   onAsrInterim: (cb) => on('asr:interim', cb),                // 临时识别文本

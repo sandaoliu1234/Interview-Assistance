@@ -58,6 +58,12 @@ const HEARTBEAT_INTERVAL_MS = 10 * 1000;   // 心跳检查间隔 10s
 const HEARTBEAT_IDLE_MAX_MS = 60 * 1000;   // 60s 无 ping → 视为掉线（4408）
 const IP_MONITOR_INTERVAL_MS = 5 * 1000;   // IP 变化监控 5s
 const ASR_INTERIM_THROTTLE_MS = 200;       // ASR 临时文本 WS 推送节流 200ms
+// ===== 对话历史常量 =====
+const HISTORY_MAX_IN_MEM = 10;             // 内存保留最近 10 轮，超出最旧那条追加写入 JSONL 归档文件
+const HISTORY_FILE_PREFIX = 'ia-history-'; // 归档文件名前缀：ia-history-YYYYMMDD.jsonl（按天分割）
+const HISTORY_STATUS_ASKED = 'asked';      // 已提问、正在等 AI 答案
+const HISTORY_STATUS_ANSWERED = 'answered';// AI 已返回答案
+const HISTORY_STATUS_ERROR = 'error';      // AI 解题失败（answer 为空/抛异常）
 const SCREENSHOT_TIMEOUT_MS = 15 * 1000;   // 截图超时 15s
 const HTTP_BODY_LIMIT_BYTES = 1024 * 1024; // HTTP POST body 1MB
 
@@ -144,9 +150,18 @@ class LocalHttpServer {
     this.state = {
       asrText: '',               // ASR 最新文本（interim 覆盖 / final 也是覆盖，外部显示逻辑可以自行 append）
       answerText: '',            // AI 最新答案文本
+      questionImage: '',         // 面试官截图题的图片 dataURL（与面板 interviewScreenshot 同步，H5 轮询后可显示）
       isRecording: false,        // ASR 管线是否在录制
       lastAnswerAt: 0,           // 最近一次 AI 答案生成的时间戳 ms（Date.now()）
+      // ===== 多轮对话历史（正序：索引 0 最旧，数组末尾最新）=====
+      //   单条结构：{ id, createdAt, status, source, questionText, questionImage, answerText, answeredAt, errorMsg? }
+      history: [],
+      historyVersion: 0,         // history 变更自增版本号，前端对比即可判断是否需要重绘
     };
+    // ===== 对话历史归档目录：项目根目录下 logs/ 下 JSONL，按天切分 =====
+    this._historyDir = path.join(__dirname, '..', 'logs');
+    // 最近一轮的 id（用来把"写入答案"关联到刚刚"写入问题"的那一轮；如果没有匹配的"活跃轮"则新建一轮）
+    this._activeHistoryId = null;
 
     // ===== 定时器句柄 =====
     this._heartbeatTimer = null;
@@ -377,17 +392,169 @@ class LocalHttpServer {
   }
 
   // ============================================================
+  // 5.1 对话历史辅助：生成单调递增的轮次 ID（时间戳 36 进制 + 随机 4 位，避免同一 ms 冲突）
+  // ============================================================
+  _nextHistoryId() {
+    return 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  }
+
+  // ============================================================
+  // 5.2 对话历史辅助：把 history 数组超出上限的最旧条目，追加写入 JSONL 归档文件（按天分割）
+  //   - history 数组始终保持 <= HISTORY_MAX_IN_MEM
+  //   - 溢出的 item 按行 JSON 追加到 logs/ia-history-YYYYMMDD.jsonl
+  //   - 任何错误打 warn 日志，不阻塞主流程（内存丢失风险可接受，因为失败会留在数组里下次再试）
+  // ============================================================
+  _evictHistoryIfOverflow() {
+    try {
+      while (this.state.history.length > HISTORY_MAX_IN_MEM) {
+        const oldest = this.state.history.shift();
+        if (!oldest) continue;
+        // 确保归档目录存在
+        try {
+          if (!fs.existsSync(this._historyDir)) fs.mkdirSync(this._historyDir, { recursive: true });
+        } catch (mkdirErr) {
+          console.warn('[history] 创建 logs/ 目录失败，跳过归档：', mkdirErr && mkdirErr.message);
+          continue;
+        }
+        // 日期标签：YYYYMMDD（取当前本地时区，确保归档按自然日切分）
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const tag = String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate());
+        const filePath = path.join(this._historyDir, HISTORY_FILE_PREFIX + tag + '.jsonl');
+        // 写 JSONL 一行：归档版本中把超大截图缩略/保留原字段，避免 JSONL 文件无限膨胀
+        const archiveItem = {
+          id: oldest.id,
+          createdAt: oldest.createdAt,
+          answeredAt: oldest.answeredAt || 0,
+          status: oldest.status,
+          source: oldest.source || '',
+          questionText: oldest.questionText || '',
+          questionImageLen: (oldest.questionImage && typeof oldest.questionImage === 'string') ? oldest.questionImage.length : 0,
+          answerText: oldest.answerText || '',
+          errorMsg: oldest.errorMsg || '',
+          // 归档版本保留截图（用户后续回看时可追溯），但不单独拆文件（单条 JSONL 方便检索）
+          questionImage: oldest.questionImage || '',
+        };
+        try {
+          fs.appendFileSync(filePath, JSON.stringify(archiveItem) + '\n', 'utf-8');
+          console.log(`[history] 归档轮次 ${oldest.id} → ${path.basename(filePath)} (答案长度=${(oldest.answerText||'').length})`);
+        } catch (writeErr) {
+          console.warn('[history] 写入归档 JSONL 失败（已兜底忽略）：', writeErr && writeErr.message);
+        }
+      }
+    } catch (e) {
+      console.warn('[history] 溢出归档异常（已兜底忽略）：', e && e.message);
+    }
+  }
+
+  // ============================================================
+  // 5.3 对话历史：新增"一轮提问"（还没答案，status=asked）
+  //   返回：新创建的轮次 id
+  //   调用场景：_autoSolveScreenshotAndSync 里写入面试官问题时、/api/answer/ask 开始处理时、
+  //             以及 recordState 里如果检测到外部 bus 直接写入 questionImage 且没有活跃轮时兜底创建一轮
+  // ============================================================
+  addHistoryRound({ questionText, questionImage, source }) {
+    const round = {
+      id: this._nextHistoryId(),
+      createdAt: Date.now(),
+      status: HISTORY_STATUS_ASKED,
+      source: String(source || 'unknown'),
+      questionText: String(questionText || ''),
+      questionImage: String(questionImage || ''),
+      answerText: '',
+      answeredAt: 0,
+      errorMsg: '',
+    };
+    this.state.history.push(round);
+    this.state.historyVersion = (this.state.historyVersion || 0) + 1;
+    // 记录活跃轮 id：后续 recordState({ answerText }) 会优先把答案填到这一轮
+    this._activeHistoryId = round.id;
+    // 超过上限 → 把最旧的归档落盘
+    this._evictHistoryIfOverflow();
+    return round.id;
+  }
+
+  // ============================================================
+  // 5.4 对话历史：给"某一轮"填充 AI 答案（或错误信息）
+  //   - roundId 不传时：优先填"最近一次活跃轮"，若活跃轮已 answered 则填 history 最后一条 asked
+  //   - 如果 history 为空或找不到匹配的 asked 轮：兜底新建一轮（避免 answer 丢失）
+  // ============================================================
+  finishHistoryRound({ answerText, errorMsg, roundId } = {}) {
+    let target = null;
+    // 1) 显式传了 roundId → 按 id 精确查找
+    if (roundId) {
+      target = this.state.history.find((r) => r.id === roundId);
+    }
+    // 2) 没传 roundId → 优先用 _activeHistoryId 找"最近的待回答轮"
+    if (!target && this._activeHistoryId) {
+      const active = this.state.history.find((r) => r.id === this._activeHistoryId);
+      if (active && active.status === HISTORY_STATUS_ASKED) target = active;
+    }
+    // 3) 仍没找到 → 取 history 末尾第一条 status=asked 的
+    if (!target) {
+      for (let i = this.state.history.length - 1; i >= 0; i--) {
+        if (this.state.history[i].status === HISTORY_STATUS_ASKED) {
+          target = this.state.history[i];
+          break;
+        }
+      }
+    }
+    // 4) 兜底：找不到任何 asked 轮且确实有新 answer 内容 → 新建一轮填进去（至少保证 answer 不丢失）
+    const hasAnswer = !!(answerText && String(answerText).trim());
+    if (!target && hasAnswer) {
+      this.addHistoryRound({ questionText: '', questionImage: this.state.questionImage || '', source: 'fallback' });
+      target = this.state.history[this.state.history.length - 1];
+    }
+    if (target) {
+      target.answerText = String(answerText || '');
+      target.answeredAt = Date.now();
+      if (errorMsg) target.errorMsg = String(errorMsg);
+      // 有答案 → answered；没答案且有错误 → error；否则保持 asked（极端情况）
+      if (hasAnswer) target.status = HISTORY_STATUS_ANSWERED;
+      else if (errorMsg) target.status = HISTORY_STATUS_ERROR;
+      this.state.historyVersion = (this.state.historyVersion || 0) + 1;
+      // 此轮已完结，清理 active 标记
+      if (this._activeHistoryId === target.id) this._activeHistoryId = null;
+      // 防御性：溢出再归档一次（正常不会触发，除非 addHistoryRound 没被走到但新增了）
+      this._evictHistoryIfOverflow();
+    }
+  }
+
+  // ============================================================
   // 5. 外部（main.js 的 ASR 回调）调用：合并最新态快照
-  // partial = { asrText, answerText, isRecording } 任意字段
+  // partial = { asrText, answerText, questionImage, isRecording, interimText,
+  //             _historyAction?: 'question'|'answer'|null, _historyMeta?: {source} } 任意字段
+  //   _historyAction：当调用方（_autoSolveScreenshotAndSync / _routeApiAnswerAsk）明确想触发
+  //     "一轮对话历史变更"时传入；否则 recordState 仅处理单值快照，不改动 history。
   // ============================================================
   recordState(partial) {
     if (!partial) return;
     if ('asrText' in partial) this.state.asrText = String(partial.asrText || '');
+    if ('questionImage' in partial) this.state.questionImage = String(partial.questionImage || '');
     if ('answerText' in partial) {
       this.state.answerText = String(partial.answerText || '');
       if (partial.answerText) this.state.lastAnswerAt = Date.now();
+      // 显式传了 _historyAction='answer' → 把这段 answer 结算到历史
+      if (partial._historyAction === 'answer') {
+        this.finishHistoryRound({
+          answerText: partial.answerText,
+          errorMsg: partial._historyError || '',
+          roundId: partial._historyRoundId || null,
+        });
+      }
     }
     if ('isRecording' in partial) this.state.isRecording = !!partial.isRecording;
+    // 显式传了 _historyAction='question' → 新增一轮对话历史（通常由 _autoSolveScreenshotAndSync 触发）
+    if (partial._historyAction === 'question') {
+      const qText = ('interimText' in partial) ? String(partial.interimText || '') : (this.state.asrText || '');
+      const qImg = ('questionImage' in partial) ? String(partial.questionImage || '') : (this.state.questionImage || '');
+      const meta = (partial._historyMeta && typeof partial._historyMeta === 'object') ? partial._historyMeta : {};
+      this.addHistoryRound({
+        questionText: qText,
+        questionImage: qImg,
+        source: meta.source || 'local',
+      });
+    }
   }
 
   // ============================================================
@@ -702,7 +869,28 @@ class LocalHttpServer {
     h['asr:answer-generated'] = (data) => {
       const text = typeof data === 'string' ? data : (data && data.text ? data.text : '');
       const question = data && data.question ? data.question : '';
-      this.recordState({ answerText: text });
+      // ★ 如果带了 question 字段（面板端 ASR→AI 链路会传），可以判断是否要补一轮 history
+      //   常见情况：面板端 ASR 识别到 final 问题，外部 AI Service 直接生成答案并通过 bus 推回来
+      //   这里：如果确实有 question 且 history 里最新一条不是 asked（即还未创建本轮提问）→ 兜底创建
+      if (question && Array.isArray(this.state.history)) {
+        const last = this.state.history[this.state.history.length - 1];
+        const needsRound = !last || last.status !== HISTORY_STATUS_ASKED;
+        if (needsRound) {
+          try {
+            this.addHistoryRound({
+              questionText: String(question || ''),
+              questionImage: this.state.questionImage || '',
+              source: 'panel-asr',
+            });
+          } catch (_) { /* 忽略 */ }
+        }
+      }
+      // 写 state + 触发 history 结算（把刚刚的提问轮和这段答案关联起来）
+      this.recordState({
+        answerText: text,
+        _historyAction: 'answer',
+        _historyError: text ? '' : 'AI 返回空答案',
+      });
       this._broadcast('answer:generated', { text, question });
     };
     // ---- asr:recording-status（录制态 true/false）----
@@ -925,12 +1113,18 @@ class LocalHttpServer {
 
   // ---- GET /api/overlay/status：兜底轮询最新态快照 ----
   _routeApiOverlayStatus(req, res, parsed, reqDebug) {
+    // 把 history 里的截图缩略标记（不需要时前端可只渲染答案文本）
+    // 注意：history 正序，前端按顺序从上到下渲染（旧→新，正序追加在底部）
     this._json(res, 200, {
       ok: true,
       asrText: this.state.asrText,
       answerText: this.state.answerText,
+      questionImage: this.state.questionImage,   // 面试官截图：H5 轮询后可显示与面板一致的截图画面
       isRecording: this.state.isRecording,
       lastAnswerAt: this.state.lastAnswerAt,
+      // ===== 多轮对话历史（正序数组，最近 10 轮）=====
+      history: Array.isArray(this.state.history) ? this.state.history : [],
+      historyVersion: Number(this.state.historyVersion) || 0,
     }, reqDebug);
   }
 
@@ -954,6 +1148,22 @@ class LocalHttpServer {
         height: cap.height,
         mime: cap.mime,
       }, reqDebug);
+      // 【新增】H5 手动截图成功后，异步触发"截图自动解题闭环"：把截图→AI识图→面板显示问答（与小程序 screenshot:req 同一链路）
+      //   异步执行不阻塞 screenshot:res 回传给 H5（避免手机端 HTTP 超时）；自动解题失败仅打日志不影响返回
+      try {
+        const fire = async () => {
+          const r = await this._autoSolveScreenshotAndSync({
+            imageDataUrlOrBase64: cap.data,
+            mime: cap.mime || 'image/jpeg',
+            source: 'h5',
+          });
+          // H5 可通过轮询 /api/overlay/status 读取最新答案与截图同步（不额外推 WS，H5 本身无 WS 连接）
+          void r; // 静默占位，防 ESLint unused
+        };
+        fire().catch((e) => console.warn('[h5-screenshot] 自动解题异步失败（已兜底忽略）:', e && e.message));
+      } catch (outerE) {
+        console.warn('[h5-screenshot] 启动自动解题异常:', outerE && outerE.message);
+      }
     } catch (e) {
       const code = (e && e.code) || 'internal';
       const msg = (e && e.userMsg) || e.message || '截图失败';
@@ -978,7 +1188,12 @@ class LocalHttpServer {
         try { this.bus.emit('local:write-answer-from-outside', text); } catch (_) { /* 忽略 */ }
       }
       // 同步更新内部 state（下次 /api/overlay/status 会立刻返回最新答案）
-      this.recordState({ answerText: text });
+      // ★ 答案回写时如果没有对应的"待回答轮"，兜底创建一轮（questionText 为空，把答案挂到 fallback 轮）
+      this.recordState({
+        answerText: text,
+        _historyAction: 'answer',
+        _historyError: '',
+      });
       const id = Date.now().toString(36);
       this._json(res, 200, { ok: true, id }, reqDebug);
     } catch (e) {
@@ -1073,6 +1288,14 @@ class LocalHttpServer {
         this._json(res, 400, { ok: false, error: 'empty', msg: '问题文本(text)和截图(imageDataUrl)至少填写一个' }, reqDebug);
         return;
       }
+      // ★ H5 手动提问题：先往 history 写入"一轮提问"，status=asked，后续答案结算到同一轮
+      this.recordState({
+        questionImage: imageDataUrl,
+        _historyAction: 'question',
+        _historyMeta: { source: 'h5' },
+      });
+      // 提问文本写入 state.asrText：既作为"面试官区临时文本"（兜底显示），也作为当前轮 questionText 回溯来源
+      if (text) this.recordState({ asrText: text });
       // 拿外部（main.js）attach 的配置（同 _routeApiConnect 逻辑）
       const cfg = (typeof this.loadConfigFn === 'function') ? this.loadConfigFn() : {};
       const service = (cfg && cfg.selectedService) ? cfg.selectedService : 'tongyi';
@@ -1104,7 +1327,12 @@ class LocalHttpServer {
         try { this.bus.emit('local:write-answer-from-outside', answer); } catch (_) { /* 忽略 */ }
       }
       // ② 同步 state（轮询接口 /api/overlay/status 会立刻返回最新答案）
-      this.recordState({ answerText: answer });
+      // ★ 同时触发 history 结算：把答案写入"最近一条 asked 轮"（兜底新建一轮），确保每次问/答都形成完整的历史条目
+      this.recordState({
+        answerText: answer,
+        _historyAction: 'answer',
+        _historyError: answer ? '' : 'AI 返回空答案（模型未返回有效内容）',
+      });
       // 返回给 H5 调用方（H5 可以选择直接显示或继续走轮询）
       this._json(res, 200, {
         ok: true,
@@ -1130,6 +1358,15 @@ class LocalHttpServer {
         } else {
           friendly = rawMsg;
         }
+      }
+      // ★ 失败也要结算到 history（status=error + 错误描述），避免 UI 卡在 loading
+      try {
+        this.finishHistoryRound({
+          answerText: '',
+          errorMsg: friendly,
+        });
+      } catch (hErr) {
+        console.warn('[history] _routeApiAnswerAsk 失败结算异常（兜底忽略）：', hErr && hErr.message);
       }
       this._json(res, 500, { ok: false, error: code, msg: friendly }, reqDebug);
     }
@@ -1205,7 +1442,14 @@ class LocalHttpServer {
         try { this.bus.emit('local:write-question-from-outside', qPayload); }
         catch (_) { /* bus 订阅侧清理异常，忽略 */ }
       }
-      this.recordState({ interimText: questionText });
+      // state 双写：interimText 存提示词（面板端会跳过内部模板，只显示截图），questionImage 存截图 dataURL，H5 轮询可见
+      // ★ 同时触发一轮对话历史：status=asked，后续 recordState({_historyAction:'answer'}) 会把 AI 答案匹配到这一轮
+      this.recordState({
+        interimText: questionText,
+        questionImage: imageDataUrl,
+        _historyAction: 'question',
+        _historyMeta: { source: source || 'screenshot' },
+      });
 
       // ---- 15.5.4 通知面板：AI 开始答题（UI 展示 loading 指示器）----
       const startTs = Date.now();
@@ -1265,7 +1509,11 @@ class LocalHttpServer {
         try { this.bus.emit('local:write-answer-from-outside', finalAnswer); }
         catch (_) { /* 忽略 */ }
       }
-      this.recordState({ answerText: finalAnswer });
+      this.recordState({
+        answerText: finalAnswer,
+        _historyAction: 'answer',
+        _historyError: finalAnswer ? '' : 'AI 返回空答案（模型未返回有效内容）',
+      });
 
       const cost = Date.now() - startTs;
       console.log(`[autoSolveScreenshot] ✅ 解题完成 source=${sourceLabel} costMs=${cost} answerLen=${finalAnswer.length}`);
@@ -1275,11 +1523,21 @@ class LocalHttpServer {
       const sourceLabelFallback = (source === 'miniapp') ? '微信小程序'
         : (source === 'panel') ? '面板截图'
         : (source === 'h5') ? 'H5/手机端' : (source || 'unknown');
-      console.error(`[autoSolveScreenshot] ❌ 失败 source=${sourceLabelFallback}: ${(e && e.message) || e}\n${(e && e.stack) ? e.stack : new Error().stack}`);
+      const errMsg = (e && e.userMsg) || e.message || '截图解题失败';
+      console.error(`[autoSolveScreenshot] ❌ 失败 source=${sourceLabelFallback}: ${errMsg}\n${(e && e.stack) ? e.stack : new Error().stack}`);
+      // ★ 失败也要结算到 history：把最近一条 status=asked 的轮标记为 error，避免 UI 永远卡在"正在生成"
+      try {
+        this.finishHistoryRound({
+          answerText: '',
+          errorMsg: errMsg,
+        });
+      } catch (hErr) {
+        console.warn('[history] 失败结算异常（兜底忽略）：', hErr && hErr.message);
+      }
       return {
         success: false,
         error: (e && e.code) || 'ai_error',
-        message: (e && e.userMsg) || e.message || '截图解题失败，请查看终端日志',
+        message: errMsg || '截图解题失败，请查看终端日志',
       };
     }
   }
@@ -1479,19 +1737,27 @@ class LocalHttpServer {
     if (this.bus) {
       try { this.bus.emit('local:write-answer-from-outside', text); } catch (_) { /* 忽略 */ }
     }
-    // 更新 state（供后续 pull / 轮询读取）
-    this.recordState({ answerText: text });
+    // 更新 state（供后续 pull / 轮询读取）+ 挂 history（没有对应提问则兜底新建 fallback 轮）
+    this.recordState({
+      answerText: text,
+      _historyAction: 'answer',
+      _historyError: '',
+    });
     const id = Date.now().toString(36);
     this._reply(ws, msg, 'overlay:write-answer-ack', { ok: true, id });
   }
 
-  // ---- overlay:pull（兜底拉取最新 ASR / 答案 / 状态）----
+  // ---- overlay:pull（兜底拉取最新 ASR / 答案 / 状态 + 多轮历史）----
   _handleOverlayPull(ws, msg) {
     this._reply(ws, msg, 'overlay:pull-ack', {
       asrText: this.state.asrText,
       answerText: this.state.answerText,
       isRecording: this.state.isRecording,
       lastAnswerAt: this.state.lastAnswerAt,
+      questionImage: this.state.questionImage,
+      // 多轮对话历史：小程序/面板端可选择解析渲染（正序数组）
+      history: Array.isArray(this.state.history) ? this.state.history : [],
+      historyVersion: Number(this.state.historyVersion) || 0,
     });
   }
 

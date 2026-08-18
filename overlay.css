@@ -65,13 +65,19 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   user-select: none;            /* 面板主体不允许选中文本，防误选 */
-  /* ★ 反向拖动策略：全局默认 no-drag，仅 overlay-drag-handle 设 drag，
-     彻底解决 Windows 10 + frame:false + transparent:true 下按钮/徽章点击被吞的问题 */
-  -webkit-app-region: no-drag;
+  /* ★ 拖动策略升级（2026-08-19）：
+       之前仅 overlay-drag-handle(顶部外的小把手 40x24) 为 drag，用户反馈"顶部区域太小"。
+       改为：整块 body 默认 drag（全屏大区域都能按住拖动），
+             再对所有"需要鼠标交互的节点"（按钮/滚动/缩放/二维码弹窗/输入/文字选中等）显式 no-drag。
+       好处：用户无论按在面板的毛玻璃背景、header 的空白、badge 两侧、题目与答案区两侧的 padding，
+             甚至答题区外的空白都能直接拖动，体验接近系统原生窗口标题栏。
+  */
+  -webkit-app-region: drag;
 }
-/* 只有答题区允许选中：方便复制 */
+/* 允许选中：这些区域必须 no-drag，否则 text selection 会被 drag 事件吞掉 */
 .interim-display, .answer-display, .qr-info-row span {
   user-select: text;
+  -webkit-app-region: no-drag;
 }
 
 /* ==================== 浮动面板本体（取代原 index.html .overlay-content） ==================== */
@@ -83,25 +89,27 @@ body {
   background: rgba(80, 80, 80, 0.35);
   backdrop-filter: blur(8px);
   border-radius: 16px;
-  /* ★ 统一外层 padding（原 24px 上下 + 左右）。
-       注：滚动区( panel-scroll-body )需要独立盒模型——所以改成 flex 竖排：
-         [drag-handle(绝对定位外)] + [header] + [panel-scroll-body(可伸缩滚动区)] */
-  padding: 0;
+  /* 四周 12px padding，形成一圈"毛玻璃边框空白带"：
+     用户按住左/右/下边缘、顶部 padding 区都能直接拖动窗口，
+     视觉上表现为毛玻璃的内边距，不突兀、不遮挡内容。 */
+  padding: 12px 12px 12px 12px;
   display: flex;
   flex-direction: column;
   /* CSS 投影 + 细边框，增加可读性 */
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
   cursor: default;
   border: 1px solid rgba(255, 255, 255, 0.15);
-  /* 绝对定位居中由 BrowserWindow 自身位置决定，不需要 position/top/transform */
   position: relative;
-  /* ★ 与 body 保持一致：全局 no-drag，仅 overlay-drag-handle 允许拖动窗口 */
-  -webkit-app-region: no-drag;
+  /* ★ 整块面板（包括四周 12px 的 padding 空白带）都是 drag 区，
+       再对所有"需要鼠标交互的子元素"显式 no-drag。 */
+  -webkit-app-region: drag;
 }
 
 /* ==================== 拖动手柄 ==================== */
 .overlay-drag-handle {
   position: absolute;
+  /* 由于 overlay-content 有 12px 四周 padding，把手（top:-12px）正好坐在顶部 padding 的上方，
+     让用户仍然能看到一个"露在面板外面"的可视化拖动把手，同时它本身也是 drag 区。 */
   top: -12px;
   left: 50%;
   transform: translateX(-50%);
@@ -131,14 +139,28 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  /* ★ 改为和滚动区一致的 padding：外层 flex 后不再有统一 padding */
-  padding: 14px 20px 10px 20px;
+  /* ★ 外层 overlay-content 已有 12px padding，这里的左右 padding 从 20px 改为 8px，
+       让内容与外层 padding 加起来仍然是 20px 的左右边距，保持视觉与之前一致；
+       上下 padding 稍微增加 2px，扩大顶部空白的拖动热区。 */
+  padding: 16px 8px 10px 8px;
+  /* ★ 整段 header 都能拖动：无论用户按在状态栏左右两侧的毛玻璃空白、还是 header 的背景上，都能拖 */
+  -webkit-app-region: drag;
+}
+/* header 里所有需要鼠标交互/点击/选文字的子元素：一律显式 no-drag，防止 drag 吞 click */
+.overlay-header > *,
+.overlay-header .status-badge,
+.overlay-header button,
+.overlay-header .font-zoom,
+.overlay-header .font-zoom .fz-btn,
+.overlay-header .font-zoom .fz-val,
+.overlay-header .header-right,
+.overlay-header .header-right > * {
+  -webkit-app-region: no-drag;
 }
 .header-right {
   display: flex;
   align-items: center;
   gap: 6px;
-  /* 防止被拖动手柄 drag 一起拖走 */
   -webkit-app-region: no-drag;
 }
 
@@ -198,8 +220,33 @@ body {
   min-height: 0;            /* flex 子元素 overflow 生效必备 */
   overflow-y: auto;         /* ★ 唯一纵向滚动条 */
   overflow-x: hidden;
-  padding: 4px 20px 18px 20px;
-  /* 滚动时内容贴边不裁剪，内部 section 带 margin */
+  /* ★ 外层 overlay-content 已有 12px 左右 padding，这里左右 padding 从 20px 改为 8px，
+       12 + 8 = 20，保持内容左右边距视觉上与原来一致。
+       顶部 padding 调大 6px (4→10)，底部 padding 调大 6px (18→24)，
+       让滚动容器的上下边界与内容区边缘之间形成 6px 毛玻璃空白带（用户按住也能拖动窗口）。 */
+  padding: 10px 8px 12px 8px;
+  margin: 0 0 0 0;
+  /* ★ 交互区：必须 no-drag，否则滚轮滚动与鼠标点击选中会被窗口拖动吞掉 */
+  -webkit-app-region: no-drag;
+}
+/* 滚动容器内部的所有可交互节点：再加一层 no-drag 保险，防止父级 drag 覆盖 */
+.panel-scroll-body,
+.panel-scroll-body > *,
+.panel-scroll-body .interim-section,
+.panel-scroll-body .answer-section,
+.panel-scroll-body .answer-status,
+.panel-scroll-body label,
+.panel-scroll-body .interview-screenshot-wrap,
+.panel-scroll-body .interview-screenshot-bar,
+.panel-scroll-body .interview-screenshot-close,
+.panel-scroll-body .interview-screenshot-img,
+.panel-scroll-body .interim-display,
+.panel-scroll-body .answer-display,
+.panel-scroll-body .interim-display *,
+.panel-scroll-body .answer-display *,
+.panel-scroll-body .loading-indicator,
+.panel-scroll-body .success-indicator {
+  -webkit-app-region: no-drag;
 }
 
 /* ---------- 自定义滚动条：与面板暗色 HireMe 主题匹配 ---------- */
@@ -536,6 +583,289 @@ body {
   display: none;              /* 默认隐藏，JS 生成完成后显示 2s 再隐藏 */
 }
 
+/* ================================================================
+   ⭐ 多轮对话历史容器（history-container + history-round）
+   正序布局：每一轮是一张卡片，从上到下 旧→新；最后一轮就是最新一轮（正在生成或已完成）
+   样式复用 interim-display / answer-display 里的 Markdown 与截图样式
+================================================================ */
+.history-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 2px 2px 4px 2px;
+}
+/* 每一轮：面试官 + AI 助手 的组合（之间有小 gap 分隔） */
+.history-round {
+  position: relative;
+  padding: 8px 8px 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  background: linear-gradient(180deg, rgba(255,255,255,0.015) 0%, rgba(255,255,255,0) 100%);
+  -webkit-app-region: no-drag;   /* 轮次卡片内部有按钮/图片点击，禁止作为拖动区 */
+}
+/* 轮次头部：序号 + 来源 + 时间 */
+.history-round-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.6875rem;   /* 11px */
+  color: var(--text-tertiary);
+}
+.history-round-index {
+  font-weight: 700;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+.history-round-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 来源标签：面板/H5/小程序/ASR 等 */
+.history-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(59,130,246,0.12);
+  color: var(--accent-ink);
+  font-size: 0.625rem;     /* 10px */
+  font-weight: 600;
+  border: 1px solid var(--border-active);
+  white-space: nowrap;
+}
+.history-tag.src-panel   { background: rgba(99,102,241,0.14); border-color: rgba(99,102,241,0.35); color: #c7d2fe; }
+.history-tag.src-h5      { background: rgba(16,185,129,0.12); border-color: rgba(16,185,129,0.35); color: #6ee7b7; }
+.history-tag.src-miniapp { background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.38); color: #fcd34d; }
+.history-tag.src-asr     { background: rgba(236,72,153,0.12); border-color: rgba(236,72,153,0.38); color: #f9a8d4; }
+/* 状态徽章：asked=正在生成 / answered=已答 / error=失败 */
+.history-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.625rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+.history-status.asked    { background: rgba(234,179,8,0.12); color: #fde68a; border: 1px solid rgba(234,179,8,0.35); }
+.history-status.answered { background: rgba(16,185,129,0.12); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.35); }
+.history-status.error    { background: rgba(239,68,68,0.12);  color: #fca5a5; border: 1px solid rgba(239,68,68,0.4); }
+/* 轮次内部：面试官区 + AI 助手区（沿用已有 label / interim-display / answer-display 样式） */
+.history-round .round-interim,
+.history-round .round-answer {
+  margin-bottom: 10px;
+}
+.history-round .round-answer { margin-bottom: 0; }
+.history-round .round-label {
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.history-round .round-label.interviewer { color: var(--text-tertiary); }
+.history-round .round-label.ai          { color: var(--accent-ink); }
+/* 轮次内文本/答案样式：直接复用 interim-display 与 answer-display */
+.history-round .round-interim-text {
+  font-size: 0.9375rem;
+  color: var(--text-primary);
+  padding: 12px 14px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+  border: 1px dashed var(--border-strong);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 0;
+}
+.history-round .round-answer-text {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  padding: 12px 14px;
+  background: linear-gradient(135deg, rgba(59,130,246,0.12) 0%, rgba(59,130,246,0.04) 100%);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-active);
+  line-height: 1.6;
+  white-space: normal;
+  word-break: break-word;
+}
+/* 轮次内截图容器：复用 interview-screenshot-* 的观感，加上 round- 前缀独立样式 */
+.history-round .round-shot {
+  display: none;
+  margin: 2px 0 8px 0;
+}
+.history-round .round-shot.has-img { display: block; }
+.history-round .round-shot-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: rgba(15,23,42,0.65);
+  border: 1px solid var(--border-strong);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+.history-round .round-shot-close {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 4px;
+  -webkit-app-region: no-drag;
+}
+.history-round .round-shot-close:hover { background: rgba(255,255,255,0.06); color: #fff; }
+.history-round .round-shot-img {
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  background: #0a0d12;
+  border: 1px solid var(--border-strong);
+  border-radius: 0 0 var(--radius) var(--radius);
+  display: block;
+  cursor: zoom-in;
+  -webkit-app-region: no-drag;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+}
+/* 轮次错误提示（status=error） */
+.history-round .round-error {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: rgba(127,29,29,0.22);
+  border: 1px solid rgba(239,68,68,0.35);
+  color: #fca5a5;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+/* 轮次正在生成：底部 loading 提示（与 answer-status 同时使用） */
+.history-round .round-loading {
+  margin-top: 8px;
+  padding: 10px 12px;
+  text-align: center;
+  color: var(--warning);
+  font-size: 0.8125rem;
+  background: rgba(234,179,8,0.06);
+  border: 1px dashed rgba(234,179,8,0.35);
+  border-radius: var(--radius);
+}
+/* 轮次之间的分隔条：超过 2 轮时视觉上更清晰 */
+.history-round + .history-round::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 20%;
+  right: 20%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--border) 50%, transparent 100%);
+}
+/* 历史为空时的占位提示 */
+.history-empty {
+  padding: 24px 10px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.8;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+.history-empty .emoji { font-size: 1.6rem; display: block; margin-bottom: 8px; }
+/* Markdown 样式在历史卡片中的继承：复用 .answer-display/.interim-display 已有的 markdown 样式 */
+.history-round .round-interim-text *,
+.history-round .round-answer-text * {
+  box-sizing: border-box;
+}
+/* ========== 复用 answer-display/interim-display 的 Markdown 规则到轮次卡片 ========== */
+.history-round .round-answer-text h1, .history-round .round-answer-text h2,
+.history-round .round-answer-text h3,  .history-round .round-answer-text h4,
+.history-round .round-answer-text h5,  .history-round .round-answer-text h6,
+.history-round .round-interim-text h1, .history-round .round-interim-text h2,
+.history-round .round-interim-text h3, .history-round .round-interim-text h4,
+.history-round .round-interim-text h5, .history-round .round-interim-text h6 {
+  color: var(--text-primary);
+  line-height: 1.3;
+  margin: 12px 0 8px;
+  font-weight: 700;
+}
+.history-round .round-answer-text h1, .history-round .round-interim-text h1 { font-size: 1.20rem; border-bottom: 1px solid var(--border-strong); padding-bottom: 6px; }
+.history-round .round-answer-text h2, .history-round .round-interim-text h2 { font-size: 1.08rem; border-bottom: 1px dashed var(--border); padding-bottom: 4px; }
+.history-round .round-answer-text h3, .history-round .round-interim-text h3 { font-size: 0.98rem; color: var(--accent); }
+.history-round .round-answer-text h4, .history-round .round-interim-text h4 { font-size: 0.92rem; }
+.history-round .round-answer-text h5, .history-round .round-interim-text h5 { font-size: 0.86rem; }
+.history-round .round-answer-text h6, .history-round .round-interim-text h6 { font-size: 0.80rem; color: var(--text-secondary); }
+.history-round .round-answer-text p, .history-round .round-interim-text p { margin: 8px 0; }
+.history-round .round-answer-text ul, .history-round .round-answer-text ol,
+.history-round .round-interim-text ul, .history-round .round-interim-text ol {
+  padding-left: 22px;
+  margin: 6px 0;
+}
+.history-round .round-answer-text li, .history-round .round-interim-text li { margin: 3px 0; line-height: 1.6; }
+.history-round .round-answer-text ul > li, .history-round .round-interim-text ul > li { list-style: disc; }
+.history-round .round-answer-text ol > li, .history-round .round-interim-text ol > li { list-style: decimal; }
+.history-round .round-answer-text hr, .history-round .round-interim-text hr {
+  border: none;
+  height: 1px;
+  background: var(--border-strong);
+  margin: 16px 0;
+}
+.history-round .round-answer-text strong, .history-round .round-interim-text strong { color: #e5e7eb; font-weight: 700; }
+.history-round .round-answer-text em, .history-round .round-interim-text em { color: #cbd5e1; }
+.history-round .round-answer-text del, .history-round .round-interim-text del { color: var(--text-tertiary); text-decoration: line-through; }
+.history-round .round-answer-text blockquote, .history-round .round-interim-text blockquote {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: rgba(59,130,246,0.06);
+  color: var(--text-secondary);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  line-height: 1.6;
+}
+.history-round .round-answer-text code.inline-code,
+.history-round .round-interim-text code.inline-code,
+.history-round .round-answer-text :not(pre) > code,
+.history-round .round-interim-text :not(pre) > code {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  background: rgba(15,23,42,0.7);
+  border: 1px solid var(--border-strong);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #fcd34d;
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+.history-round .round-answer-text pre, .history-round .round-interim-text pre {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  background: #0b0f17;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 10px 0;
+  overflow-x: auto;
+  line-height: 1.5;
+  font-size: 0.78rem;
+}
+.history-round .round-answer-text pre > code, .history-round .round-interim-text pre > code {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  color: #e5e7eb;
+}
+.history-round .round-answer-text a, .history-round .round-interim-text a {
+  color: #93c5fd;
+  text-decoration: underline;
+  text-decoration-color: rgba(147,197,253,0.35);
+  text-underline-offset: 2px;
+}
+.history-round .round-answer-text a:hover, .history-round .round-interim-text a:hover { color: #dbeafe; }
+
 /* ==================== 8 向缩放手柄 ==================== */
 .overlay-resize-handle {
   position: absolute;
@@ -547,14 +877,18 @@ body {
   -webkit-app-region: no-drag;
 }
 .overlay-resize-handle:hover { opacity: 0.85; }
-.overlay-resize-handle.resize-n  { top: 0;    left: 10%; right: 10%; height: 6px;  cursor: ns-resize; }
-.overlay-resize-handle.resize-s  { bottom: 0; left: 10%; right: 10%; height: 6px;  cursor: ns-resize; }
-.overlay-resize-handle.resize-w  { left: 0;   top: 10%;  bottom: 10%; width: 6px;  cursor: ew-resize; }
-.overlay-resize-handle.resize-e  { right: 0;  top: 10%;  bottom: 10%; width: 6px;  cursor: ew-resize; }
-.overlay-resize-handle.resize-nw { top: 0;    left: 0;    width: 12px; height: 12px; cursor: nwse-resize; }
-.overlay-resize-handle.resize-ne { top: 0;    right: 0;   width: 12px; height: 12px; cursor: nesw-resize; }
-.overlay-resize-handle.resize-sw { bottom: 0; left: 0;    width: 12px; height: 12px; cursor: nesw-resize; }
-.overlay-resize-handle.resize-se { bottom: 0; right: 0;   width: 12px; height: 12px; cursor: nwse-resize; }
+/* ★ 由于 overlay-content 有四周 12px padding：
+     四个正方向（N/S/E/W）的手柄放在 padding 区域内，紧贴内容区边缘，
+     既保证足够的可视命中区域，又不与外层 border 冲突；
+     四个角（NW/NE/SW/SE）放在外层 border 角落，尺寸保持 12px。 */
+.overlay-resize-handle.resize-n  { top: 0;        left: 12px; right: 12px; height: 12px; cursor: ns-resize; }
+.overlay-resize-handle.resize-s  { bottom: 0;     left: 12px; right: 12px; height: 12px; cursor: ns-resize; }
+.overlay-resize-handle.resize-w  { left: 0;       top: 12px;  bottom: 12px; width: 12px;  cursor: ew-resize; }
+.overlay-resize-handle.resize-e  { right: 0;      top: 12px;  bottom: 12px; width: 12px;  cursor: ew-resize; }
+.overlay-resize-handle.resize-nw { top: 0;        left: 0;    width: 14px; height: 14px; cursor: nwse-resize; }
+.overlay-resize-handle.resize-ne { top: 0;        right: 0;   width: 14px; height: 14px; cursor: nesw-resize; }
+.overlay-resize-handle.resize-sw { bottom: 0;     left: 0;    width: 14px; height: 14px; cursor: nesw-resize; }
+.overlay-resize-handle.resize-se { bottom: 0;     right: 0;   width: 14px; height: 14px; cursor: nwse-resize; }
 
 /* ==================== 二维码弹窗 ==================== */
 .qr-modal {
@@ -571,11 +905,30 @@ body {
   /* 默认隐藏；点击 📱 按钮 toggle show 类 */
   display: none;
   box-shadow: var(--shadow-md);
+  /* ★ 二维码弹窗本身是独立 UI，需要交互（复制、断开、关闭、点 header 内部拖动二维码弹窗在面板内移动），必须 no-drag */
+  -webkit-app-region: no-drag;
+}
+/* 二维码弹窗内所有子节点：no-drag 保护（包括 qr-modal-header / 按钮 / 信息 / 图片） */
+.qr-modal,
+.qr-modal > *,
+.qr-modal .qr-modal-header,
+.qr-modal .qr-modal-header > *,
+.qr-modal h3,
+.qr-modal img,
+.qr-modal .qr-status,
+.qr-modal .qr-info,
+.qr-modal .qr-info-row,
+.qr-modal .qr-info-row span,
+.qr-modal .qr-actions,
+.qr-modal .qr-btn,
+.qr-modal .qr-close-btn {
   -webkit-app-region: no-drag;
 }
 .qr-modal.show { display: block; }
 
 /* 二维码弹窗拖拽触发区：整行作为把手（扩大拖动命中面积），光标提示 move，防止 Electron 接管整个窗口移动 */
+/* ★ 注意：这里的"拖动"是 overlay-renderer.js 中实现的「二维码弹窗在 overlay 面板内移动」，不是移动 Electron BrowserWindow，
+     所以必须保持 no-drag，否则点击 header 会触发 BrowserWindow 移动，覆盖我们自定义的 mousedown/move/up 逻辑。 */
 .qr-modal-header {
   display: flex;
   align-items: center;

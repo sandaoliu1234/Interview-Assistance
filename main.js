@@ -1664,6 +1664,54 @@ ipcMain.handle('open-overlay', () => {
 ipcMain.handle('overlay-status', () => getOverlayStatus());
 
 /**
+ * ⭐ 答题面板 IPC：overlay-full-status
+ * -----------------------------
+ * 背景：答题面板窗口(overlayWindow)是通过 loadFile(file://) 加载的 overlay.html；
+ *       因此渲染层里的 fetch('/api/overlay/status') 相对路径会被解析成
+ *       file:///api/overlay/status → 读本地磁盘不存在的文件 → 永远拿不到数据，
+ *       导致"面板显示不出 H5/小程序/ASR 写入的多轮历史"。
+ *
+ * 功能：本 IPC 不走网络，直接从内存里的 localHttpServer.state 拿最新快照，
+ *       结构与 /api/overlay/status 完全对齐（渲染层可按同一结构使用）。
+ *       即便用户还没点二维码（HTTP 服务未 start）也能返回 state（面板/ASR 场景
+ *       还没启动伴生设备也需要显示历史）。
+ *
+ * 返回：{
+ *   ok: true,
+ *   asrText, answerText, questionImage, isRecording, lastAnswerAt,
+ *   history: [...],          // 正序数组，最近 10 轮
+ *   historyVersion: number   // 历史变更版本号
+ * }
+ */
+ipcMain.handle('overlay-full-status', () => {
+  try {
+    // 即便 localHttpServer 单例还没初始化 state 属性（极端场景），也做兜底：空结构 + ok:true
+    const s = (localHttpServer && localHttpServer.state) ? localHttpServer.state : {};
+    return {
+      ok: true,
+      asrText: String(s.asrText || ''),
+      answerText: String(s.answerText || ''),
+      questionImage: String(s.questionImage || ''),
+      isRecording: !!s.isRecording,
+      lastAnswerAt: Number(s.lastAnswerAt) || 0,
+      // 多轮对话历史（正序数组，最近 10 轮）：与 _routeApiOverlayStatus 完全一致
+      history: Array.isArray(s.history) ? s.history : [],
+      historyVersion: Number(s.historyVersion) || 0,
+    };
+  } catch (e) {
+    // IPC 抛错时返回 ok:false + 错误信息，让渲染层能打出日志定位，避免静默白屏
+    console.error('[main] overlay-full-status 异常:', e && e.message);
+    return {
+      ok: false,
+      error: 'internal',
+      msg: e && e.message ? e.message : 'unknown',
+      history: [],
+      historyVersion: 0,
+    };
+  }
+});
+
+/**
  * 答题面板 IPC：resize-overlay（8 向缩放）
  * 方向 n/s/e/w/nw/ne/sw/se，dx/dy 是相对位移；通过 setBounds 完成。
  */

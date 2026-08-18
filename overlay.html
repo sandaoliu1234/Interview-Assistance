@@ -34,36 +34,43 @@
     </div>
 
     <!-- ASR 临时/最终识别文本区 -->
-    <!-- ★ 统一滚动容器：面试官 + AI助手 + 底部状态三块一起滚动，不再各自带独立滚动条 -->
+    <!-- ★ 统一滚动容器：面试官 + AI助手 多轮历史 + 底部状态 → 一起纵向滚动，不再各自带独立滚动条 -->
     <div id="panelScrollBody" class="panel-scroll-body">
 
-      <div class="interim-section">
-        <label>面试官：</label>
-        <!-- 【截图显示·改】不再是"缩略图"：宽屏自适应的大尺寸显示，便于直接看清题目
-             - 点击仍可新窗口打开原图（保留细节查看能力）
-             - 右上角仍有关闭按钮（不需要截图画面时可收起）
-        -->
-        <div id="interviewScreenshotWrap" class="interview-screenshot-wrap">
-          <div class="interview-screenshot-bar">
-            <span class="interview-screenshot-title">📸 当前提问画面</span>
-            <button type="button" id="closeInterviewScreenshotBtn"
-              class="interview-screenshot-close" title="收起截图">×</button>
-          </div>
-          <img id="interviewScreenshot" class="interview-screenshot-img" alt="当前题目截图" />
-        </div>
-        <div id="overlayInterimText" class="interim-display"></div>
-      </div>
+      <!-- ⭐ 多轮对话历史容器（正序：旧→新，由 overlay-renderer.js 的 initHistoryRenderer 用 history 数据驱动渲染）
+           - 每一轮：<div class="history-round" data-id="r-xxx"> → 面试官(截图+文本) → AI助手(答案)
+           - 当前正在生成的那一轮也会在列表最后（状态=asked 显示 ⏳）-->
+      <div id="historyContainer" class="history-container"></div>
 
-      <!-- AI 答案文本区 -->
-      <div class="answer-section">
-        <label>AI 助手：</label>
-        <div id="overlayAnswerText" class="answer-display"></div>
-      </div>
-
-      <!-- 生成中/成功状态提示（默认隐藏，由 JS 切换 display） -->
+      <!-- 生成中/成功状态提示（默认隐藏，由 JS 切换 display；放在历史底部，保证提示跟着最新一轮一起可见）-->
       <div class="answer-status">
         <div id="answerLoading" class="loading-indicator">⏳ 正在生成答案...</div>
         <div id="answerReady" class="success-indicator">✓ 答案已生成，已保存到历史记录</div>
+      </div>
+
+      <!--
+        兼容性"影子容器"（默认隐藏，用于兼容老的单值写入 DOM 引用、保持 renderMarkdown/interim-display 等 CSS 仍可被 history 复用）：
+        - 以下 interim-section / answer-section 在 DOM 中保留，但 display:none；overlay-renderer.js 里仍通过
+          $('overlayInterimText') 等拿到元素但不写入，转而驱动 history 渲染；保持老 api 写入（如
+          window.__overlayWriteAnswer、onWriteQuestionFromOutside 等）的代码路径不 crash。
+      -->
+      <div id="legacyCompatWrap" style="display:none">
+        <div class="interim-section">
+          <label>面试官：</label>
+          <div id="interviewScreenshotWrap" class="interview-screenshot-wrap">
+            <div class="interview-screenshot-bar">
+              <span class="interview-screenshot-title">📸 当前提问画面</span>
+              <button type="button" id="closeInterviewScreenshotBtn"
+                class="interview-screenshot-close" title="收起截图">×</button>
+            </div>
+            <img id="interviewScreenshot" class="interview-screenshot-img" alt="当前题目截图" />
+          </div>
+          <div id="overlayInterimText" class="interim-display"></div>
+        </div>
+        <div class="answer-section">
+          <label>AI 助手：</label>
+          <div id="overlayAnswerText" class="answer-display"></div>
+        </div>
       </div>
 
     </div>
