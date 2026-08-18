@@ -126,7 +126,8 @@ class StateManager {
       this.state.lastSaved = Date.now();
       const data = JSON.stringify(this.state, null, 2);
       fs.writeFileSync(this.statePath, data, 'utf-8');
-      console.log(`[StateManager] 状态已保存: ${this.getStateSummary()}`);
+      // 注意：此处不再使用模板字符串拼接对象，getStateSummary() 已返回 JSON 字符串
+      console.log('[StateManager] 状态已保存:', this.getStateSummary());
       return { success: true };
     } catch (error) {
       console.error('[StateManager] 保存失败:', error);
@@ -185,15 +186,17 @@ class StateManager {
 
   /**
    * 获取状态摘要（用于日志）
+   * @returns {string} 摘要 JSON 字符串，避免模板字符串中出现 [object Object]
    */
   getStateSummary() {
-    return {
+    const summary = {
       会话活跃: this.state.session.isActive,
       问题数: this.state.session.questionCount,
       对话轮数: this.state.conversation.currentTurns,
       简历长度: this.state.resume.content?.length || 0,
       监听中: this.state.audio.isListening
     };
+    return JSON.stringify(summary);
   }
 
   /**

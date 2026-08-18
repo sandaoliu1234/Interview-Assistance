@@ -92,8 +92,11 @@ class RealtimeSpeechService {
     const url = `${REALTIME_URL}?sn=${encodeURIComponent(this.sessionId)}&access_token=${encodeURIComponent(accessToken)}`;
     console.log('[realtime-speech] WS URL 构建完成，长度 =', url.length);
 
-    // 优先用浏览器原生 WebSocket；Node 环境没有此对象
-    const WS = typeof WebSocket !== 'undefined' ? WebSocket : null;
+    // 优先用浏览器原生 WebSocket；Node/Electron 主进程无全局 WebSocket，回退到 ws 包
+    let WS = typeof WebSocket !== 'undefined' ? WebSocket : null;
+    if (!WS) {
+      try { WS = require('ws'); } catch (e) { WS = null; }
+    }
     if (!WS) {
       throw new Error('当前环境不支持 WebSocket（Node 端请安装 ws 包）');
     }

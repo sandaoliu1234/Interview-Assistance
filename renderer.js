@@ -1,283 +1,71 @@
-const { ipcRenderer } = require('electron');
-const RealtimeSpeechService = require('./services/realtimeSpeechService');
+// 环境探测：区分 Electron / 浏览器双入口
+const isElectronRenderer = typeof process !== 'undefined'
+  && process.versions
+  && !!process.versions.electron;
+const hasNodeRequire = typeof require !== 'undefined';
 
-// ============================================================
-// 运行日志（应用内日志面板）
-// 作用：把 console.log / warn / error 同时显示到 🐛 弹窗里，方便运行时排查问题
-// 标签：识别每条日志的"标签"，用于过滤（realtime / display-media / recognize / llm 等）
-// ============================================================
-const _origLog = console.log.bind(console);
-const _origWarn = console.warn.bind(console);
-const _origError = console.error.bind(console);
-const logState = {
-  lines: [],
-  maxLines: 500,
-  container: null,
-  autoScroll: true,
-  filter: { info: true, warn: true, error: true, realtime: true, 'display-media': true, recognize: true, llm: true }
-};
-
-// 格式化参数
-function _formatLogArgs(args) {
-  return args.map(a => {
-    if (typeof a === 'string') return a;
-    if (a instanceof Error) return a.stack || (a.name + ': ' + a.message);
-    try { return JSON.stringify(a); } catch (_) { return String(a); }
-  }).join(' ');
-}
-
-// 识别日志的"标签"：根据内容是否含特定前缀决定归到哪个过滤维度
-function _detectLogTag(msg) {
-  if (/\[realtime\]/.test(msg)) return 'realtime';
-  if (/\[display-media\]|\[handler\]|\[picker\]/.test(msg)) return 'display-media';
-  if (/\[recognize\]|识别/.test(msg)) return 'recognize';
-  if (/\[llm\]|大模型|答案/.test(msg)) return 'llm';
-  return 'info';
-}
-
-// 把一条日志追加到面板
-function _appendLogToPanel(level, tag, msg) {
-  if (!logState.container) {
-    logState.container = document.getElementById('logContainer');
-    if (!logState.container) return;  // 弹窗还没渲染
-  }
-  const now = new Date();
-  const ts = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}.${String(now.getMilliseconds()).padStart(3,'0')}`;
-
-  const line = document.createElement('div');
-  line.className = `log-line log-${level} log-${tag}`;
-  line.dataset.level = level;
-  line.dataset.tag = tag;
-  line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-level">${tag.toUpperCase()}</span><span class="log-msg"></span>`;
-  line.querySelector('.log-msg').textContent = msg;
-
-  // 应用过滤
-  if (!logState.filter[level] || !logState.filter[tag]) {
-    line.style.display = 'none';
-  }
-  logState.container.appendChild(line);
-  logState.lines.push(line);
-
-  // 限制最大行数
-  while (logState.lines.length > logState.maxLines) {
-    const old = logState.lines.shift();
-    if (old.parentNode) old.parentNode.removeChild(old);
-  }
-  if (logState.autoScroll) {
-    logState.container.scrollTop = logState.container.scrollHeight;
-  }
-}
-
-// 统一的日志入口（同时输出到 console 和 UI）
-function uiLog(level, ...args) {
-  const fn = level === 'error' ? _origError : level === 'warn' ? _origWarn : _origLog;
-  fn(...args);
-  const msg = _formatLogArgs(args);
-  const tag = _detectLogTag(msg);
-  _appendLogToPanel(level, tag, msg);
-}
-
-// 重写 console 方法（不影响第三方库的原始行为，只是多一份 UI 副本）
-console.log   = (...args) => uiLog('info',  ...args);
-console.warn  = (...args) => uiLog('warn',  ...args);
-console.error = (...args) => uiLog('error', ...args);
-
-// 标签化的便捷函数（让关键模块的日志自动归到对应过滤维度）
-const log = {
-  realtime:       (...a) => uiLog('info', `[realtime] ${a.join(' ')}`),
-  realtimeWarn:   (...a) => uiLog('warn', `[realtime] ${a.join(' ')}`),
-  realtimeError:  (...a) => uiLog('error', `[realtime] ${a.join(' ')}`),
-  displayMedia:   (...a) => uiLog('info', `[display-media] ${a.join(' ')}`),
-  displayMediaErr:(...a) => uiLog('error', `[display-media] ${a.join(' ')}`),
-  recognize:      (...a) => uiLog('info', `[recognize] ${a.join(' ')}`),
-  recognizeErr:   (...a) => uiLog('error', `[recognize] ${a.join(' ')}`),
-  llm:            (...a) => uiLog('info', `[llm] ${a.join(' ')}`),
-  llmErr:         (...a) => uiLog('error', `[llm] ${a.join(' ')}`),
-  info:           (...a) => uiLog('info', a.join(' ')),
-  warn:           (...a) => uiLog('warn', a.join(' ')),
-  err:            (...a) => uiLog('error', a.join(' '))
-};
-
-// 接收主进程日志
-ipcRenderer.on('main-log', (event, level, ...args) => {
-  uiLog(level || 'info', ...args);
-});
-
-// 日志弹窗控制（可拖动悬浮窗）
-function initLogPanel() {
-  const btn = document.getElementById('logBtn');
-  const modal = document.getElementById('logModal');
-  const closeBtn = document.getElementById('logCloseBtn');
-  const copyBtn = document.getElementById('logCopyBtn');
-  const clearBtn = document.getElementById('logClearBtn');
-  const autoBtn = document.getElementById('logAutoScrollBtn');
-  const filterInputs = document.querySelectorAll('.log-filter');
-  const header = modal.querySelector('.log-modal-header');
-  const panel = modal.querySelector('.log-modal-content');
-
-  logState.container = document.getElementById('logContainer');
-
-  // ==================== 位置记忆 ====================
-  const POS_KEY = 'ia:logPanel:pos';
-  const SIZE_KEY = 'ia:logPanel:size';
+/**
+ * 浏览器模式下统一调用 dev-server 的 `/ipc/:channel` REST 通道。
+ * 语义与 Electron 的 ipcRenderer.invoke 完全一致：返回 Promise<any>，
+ * 失败时 reject 一个带错误消息的 Error。
+ * （该函数实现与 copilot.js 的 invokeDevServer 完全一致，保持两端行为统一）
+ */
+const rendererInvokeDevServer = async (channel, ...args) => {
   try {
-    const savedPos = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
-    const savedSize = JSON.parse(localStorage.getItem(SIZE_KEY) || 'null');
-    if (savedPos && Number.isFinite(savedPos.x) && Number.isFinite(savedPos.y)) {
-      panel.style.position = 'fixed';
-      panel.style.left = savedPos.x + 'px';
-      panel.style.top = savedPos.y + 'px';
-      panel.style.right = 'auto';
-      panel.style.bottom = 'auto';
-      panel.style.margin = '0';
-    }
-    if (savedSize && Number.isFinite(savedSize.w) && Number.isFinite(savedSize.h)) {
-      panel.style.width = savedSize.w + 'px';
-      panel.style.height = savedSize.h + 'px';
-    }
-  } catch (_) {}
-
-  // 限制位置不超出视口
-  const clampPos = () => {
-    const rect = panel.getBoundingClientRect();
-    const maxX = window.innerWidth - 100;
-    const maxY = window.innerHeight - 50;
-    if (rect.left > maxX) panel.style.left = Math.max(0, maxX) + 'px';
-    if (rect.top > maxY) panel.style.top = Math.max(0, maxY) + 'px';
-    if (rect.left < 0) panel.style.left = '0px';
-    if (rect.top < 0) panel.style.top = '0px';
-  };
-
-  // ==================== 拖动逻辑 ====================
-  let dragging = false;
-  let dragStartX = 0, dragStartY = 0;
-  let panelStartX = 0, panelStartY = 0;
-
-  header.addEventListener('mousedown', (e) => {
-    // 按钮上的点击不触发拖动
-    if (e.target.closest('.log-mini-btn')) return;
-    dragging = true;
-    const rect = panel.getBoundingClientRect();
-    // 切到 fixed 定位（如果之前是默认布局）
-    panel.style.position = 'fixed';
-    panel.style.left = rect.left + 'px';
-    panel.style.top = rect.top + 'px';
-    panel.style.right = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.margin = '0';
-    panelStartX = rect.left;
-    panelStartY = rect.top;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
-    e.preventDefault();
-  });
-
-  // 用 window 监听 mousemove/mouseup，避免鼠标移出 header 后丢失事件
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    const dx = e.clientX - dragStartX;
-    const dy = e.clientY - dragStartY;
-    panel.style.left = (panelStartX + dx) + 'px';
-    panel.style.top = (panelStartY + dy) + 'px';
-  });
-
-  window.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging = false;
-    clampPos();
-    // 记忆位置
-    const rect = panel.getBoundingClientRect();
-    try {
-      localStorage.setItem(POS_KEY, JSON.stringify({ x: rect.left, y: rect.top }));
-      localStorage.setItem(SIZE_KEY, JSON.stringify({ w: rect.width, h: rect.height }));
-    } catch (_) {}
-  });
-
-  // ==================== ResizeObserver 监听大小变化 ====================
-  if (window.ResizeObserver) {
-    const ro = new ResizeObserver(() => {
-      const rect = panel.getBoundingClientRect();
-      try {
-        localStorage.setItem(SIZE_KEY, JSON.stringify({ w: rect.width, h: rect.height }));
-      } catch (_) {}
+    const resp = await fetch(`/ipc/${encodeURIComponent(channel)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ args })
     });
-    ro.observe(panel);
+    const text = await resp.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = text; }
+    if (!resp.ok) {
+      const msg = (payload && payload.error) ? payload.error : `HTTP ${resp.status}`;
+      throw new Error(msg);
+    }
+    return payload;
+  } catch (e) {
+    if (/Failed to fetch|NetworkError/.test(String(e.message))) {
+      throw new Error(`无法连接 dev-server。请先执行 \`node dev-server.js\`，或切换到 Electron 模式 \`npm start\`（原错误：${e.message}）`);
+    }
+    throw e;
   }
+};
 
-  // ==================== 打开/关闭 ====================
-  const open = () => {
-    modal.classList.add('open');
-    if (logState.autoScroll && logState.container) {
-      requestAnimationFrame(() => { logState.container.scrollTop = logState.container.scrollHeight; });
+// Electron 模式：真实加载依赖；浏览器模式：ipcRenderer.invoke 走 fetch('/ipc/*') 调 dev-server
+let ipcRenderer = null;
+let RealtimeSpeechService = null;
+
+if (isElectronRenderer && hasNodeRequire) {
+  // ---- Electron 模式（原始行为，完全保持不变）----
+  ipcRenderer = require('electron').ipcRenderer;
+  RealtimeSpeechService = require('./services/realtimeSpeechService');
+} else {
+  // ---- 浏览器模式：invoke 走 REST；on/send 降级为 no-op，保证 UI 不崩 ----
+  ipcRenderer = {
+    // 关键：把 invoke 映射到 dev-server 的 REST 通道，
+    //       这样 get-config/get-history/load-resume/... 都能拿到真实数据
+    invoke: (channel, ...args) => rendererInvokeDevServer(channel, ...args),
+    // 事件订阅：浏览器模式下没有主进程推事件，所以只做登记 + 返回 unsubscribe 函数
+    on: (channel, listener) => {
+      console.log(`[renderer-stub-on] channel=${channel}（浏览器模式下不订阅，返回空 unsubscribe）`);
+      return function unsubscribe() { /* no-op */ };
+    },
+    // 移除监听器：浏览器模式下本来就没订阅，忽略即可
+    removeListener: (channel, listener) => { /* no-op */ },
+    // 主进程推送消息：浏览器模式下没有主进程，直接忽略
+    send: (channel, ...args) => {
+      console.log(`[renderer-stub-send] channel=${channel} args=`, args, '（浏览器模式下忽略）');
     }
   };
-  const close = () => modal.classList.remove('open');
-
-  btn.addEventListener('click', open);
-  closeBtn.addEventListener('click', close);
-  // 不再让"点空白处关闭"，因为是悬浮窗不是 modal
-
-  copyBtn.addEventListener('click', () => {
-    const text = logState.lines
-      .filter(l => l.style.display !== 'none')
-      .map(l => l.textContent.trim())
-      .join('\n');
-    navigator.clipboard.writeText(text).then(() => {
-      copyBtn.textContent = '✅ 已复制';
-      setTimeout(() => (copyBtn.textContent = '📋 复制'), 1200);
-    }).catch(() => {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      copyBtn.textContent = '✅ 已复制';
-      setTimeout(() => (copyBtn.textContent = '📋 复制'), 1200);
-    });
-  });
-
-  clearBtn.addEventListener('click', () => {
-    if (logState.container) logState.container.innerHTML = '';
-    logState.lines = [];
-  });
-
-  autoBtn.addEventListener('click', () => {
-    logState.autoScroll = !logState.autoScroll;
-    autoBtn.classList.toggle('active', logState.autoScroll);
-    autoBtn.textContent = logState.autoScroll ? '⬇ 自动' : '⬇ 已暂停';
-  });
-
-  filterInputs.forEach(input => {
-    input.addEventListener('change', () => {
-      const lvl = input.dataset.level;
-      logState.filter[lvl] = input.checked;
-      logState.lines.forEach(l => {
-        const showLevel = logState.filter[l.dataset.level];
-        const showTag   = logState.filter[l.dataset.tag] !== false;
-        l.style.display = (showLevel && showTag) ? '' : 'none';
-      });
-    });
-  });
-
-  // 双击标题栏 = 还原默认位置
-  header.addEventListener('dblclick', (e) => {
-    if (e.target.closest('.log-mini-btn')) return;
-    panel.style.left = '';
-    panel.style.top = '';
-    panel.style.right = '12px';
-    panel.style.bottom = '12px';
-    panel.style.width = '720px';
-    panel.style.height = '480px';
-    panel.style.position = 'fixed';
-    panel.style.margin = '0';
-    try {
-      localStorage.removeItem(POS_KEY);
-      localStorage.removeItem(SIZE_KEY);
-    } catch (_) {}
-  });
-
-  console.log('日志面板已就绪。点 🐛 查看实时日志（悬浮窗可拖动 + 调整大小）。');
+  // RealtimeSpeechService：浏览器模式不支持 WASAPI 系统音频采集，降级为返回友好错误
+  RealtimeSpeechService = class {
+    start() { return { success: false, error: '浏览器模式不支持系统音频实时识别，请切到 Electron (npm start)' }; }
+    stop() { return true; }
+    addAudio() {}
+    flush() { return Promise.resolve([]); }
+  };
 }
 
 // 状态管理
@@ -314,6 +102,9 @@ let appState = {
   // 简历相关
   resumeContent: ''                // 简历内容
 };
+
+// 暴露到 window，供 Copilot 控制器（src/renderer/copilot.js）同步配置与简历内容
+window.appState = appState;
 
 // ============================================================
 // WAV 编码 + 原始 PCM 录音器
@@ -364,6 +155,7 @@ function encodeWav(samples, sampleRate = WAV_SAMPLE_RATE) {
 function createPcmRecorder({ stream: providedStream = null } = {}) {
   let ctx = null, source = null, processor = null, stream = null;
   let chunks = [];
+  let archiveChunks = [];  // 系统音频存档缓冲：独立累积，不被 ASR 的 takeLastSeconds 清空，供会话结束时导出 WAV
   let active = false;
 
   return {
@@ -384,7 +176,12 @@ function createPcmRecorder({ stream: providedStream = null } = {}) {
       chunks = [];
       active = true;
       processor.onaudioprocess = (e) => {
-        if (active) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        if (active) {
+          const data = new Float32Array(e.inputBuffer.getChannelData(0));
+          chunks.push(data);
+          // 同步累积到存档缓冲（拷贝一份，避免 takeAll/takeLastSeconds 取走后丢失）
+          archiveChunks.push(new Float32Array(data));
+        }
       };
     },
     // 取走全部累积样本并清空缓冲
@@ -395,6 +192,18 @@ function createPcmRecorder({ stream: providedStream = null } = {}) {
       for (const c of chunks) { merged.set(c, off); off += c.length; }
       chunks = [];
       return merged;
+    },
+    // 取存档缓冲的全部样本（用于会话结束导出 WAV）；不清空，可重复取
+    takeArchive() {
+      const total = archiveChunks.reduce((s, c) => s + c.length, 0);
+      const merged = new Float32Array(total);
+      let off = 0;
+      for (const c of archiveChunks) { merged.set(c, off); off += c.length; }
+      return merged;
+    },
+    // 清空存档缓冲（释放内存）
+    clearArchive() {
+      archiveChunks = [];
     },
     // 取走最后 N 秒的样本并清空缓冲（不够 N 秒就全取）
     takeLastSeconds(seconds) {
@@ -427,9 +236,83 @@ function createPcmRecorder({ stream: providedStream = null } = {}) {
       const c = ctx;
       ctx = null; source = null; processor = null; stream = null;
       chunks = [];
+      archiveChunks = [];
       if (c && c.state !== 'closed') c.close().catch(() => {});
     }
   };
+}
+
+// 字体缩放（A⁻/A⁺）：独立于 Copilot 控制器，避免其初始化链路中断导致字体缩放失效
+const FONT_ZOOM_MIN = 0.8;   // 最小 80%
+const FONT_ZOOM_MAX = 1.5;   // 最大 150%
+const FONT_ZOOM_STEP = 0.1;  // 步长 10%
+const FONT_ZOOM_KEY = 'hireme:fontZoom';
+const FONT_ZOOM_BASE = 16;   // 根元素基准字号（px），与 styles.css 中 html{font-size:16px} 对齐
+
+/**
+ * 初始化字体大小调整（纯字体缩放，不影响布局/间距/图标）：
+ * 1. 从 localStorage 读取上次设置（非法值回退到 100%）
+ * 2. 通过修改 <html> 根元素的 font-size 实现 rem 整体放大
+ *    例：currentZoom=1.2 → html{font-size:19.2px} → 所有 1rem 单位字号从 16px 变 19.2px
+ * 3. 绑定 A⁻（缩小）和 A⁺（放大）按钮的 click 事件
+ * 4. 更新中间百分比显示，边界自动禁用按钮
+ */
+function initFontZoom() {
+  const zoomOutBtn = document.getElementById('fontZoomOut');  // A⁻
+  const zoomInBtn = document.getElementById('fontZoomIn');    // A⁺
+  const zoomValLabel = document.getElementById('fontZoomVal'); // 中间显示 100%
+  // 三个元素缺失则不初始化（例如未来删除 UI 时不会报错）
+  if (!zoomOutBtn || !zoomInBtn || !zoomValLabel) return;
+
+  // 读取持久化值，超出范围则用默认值 1
+  let currentZoom = parseFloat(localStorage.getItem(FONT_ZOOM_KEY));
+  if (!(currentZoom >= FONT_ZOOM_MIN && currentZoom <= FONT_ZOOM_MAX)) {
+    currentZoom = 1;
+  }
+
+  /**
+   * 统一应用缩放：修改根字号、百分比文字、按钮可用态
+   * 只改 documentElement 的 font-size，所有 rem 字号按比例联动
+   * padding/margin/width 仍用 px，布局保持稳定
+   */
+  const applyZoom = () => {
+    document.documentElement.style.fontSize = (FONT_ZOOM_BASE * currentZoom) + 'px';
+    zoomValLabel.textContent = Math.round(currentZoom * 100) + '%';
+    zoomOutBtn.disabled = currentZoom <= FONT_ZOOM_MIN + 1e-9;  // 到下边界禁用减号
+    zoomInBtn.disabled = currentZoom >= FONT_ZOOM_MAX - 1e-9;   // 到上边界禁用加号
+  };
+  applyZoom();
+
+  // 缩小按钮（A⁻）：减去一个步长，裁剪到最小值，持久化并应用
+  zoomOutBtn.addEventListener('click', () => {
+    currentZoom = Math.max(FONT_ZOOM_MIN, +(currentZoom - FONT_ZOOM_STEP).toFixed(2));
+    localStorage.setItem(FONT_ZOOM_KEY, String(currentZoom));
+    applyZoom();
+  });
+
+  // 放大按钮（A⁺）：加上一个步长，裁剪到最大值，持久化并应用
+  zoomInBtn.addEventListener('click', () => {
+    currentZoom = Math.min(FONT_ZOOM_MAX, +(currentZoom + FONT_ZOOM_STEP).toFixed(2));
+    localStorage.setItem(FONT_ZOOM_KEY, String(currentZoom));
+    applyZoom();
+  });
+
+  // 与 overlay 面板保持一致：百分比标签也监听 storage 事件同步 + 双击复位 100%
+  window.addEventListener('storage', (e) => {
+    if (e.key !== FONT_ZOOM_KEY) return;
+    const z = parseFloat(e.newValue);
+    if (z >= FONT_ZOOM_MIN && z <= FONT_ZOOM_MAX && Math.abs(z - currentZoom) > 1e-6) {
+      currentZoom = z;
+      applyZoom();
+    }
+  });
+  zoomValLabel.style.cursor = 'pointer';
+  zoomValLabel.title = '双击恢复 100%';
+  zoomValLabel.addEventListener('dblclick', () => {
+    currentZoom = 1;
+    localStorage.setItem(FONT_ZOOM_KEY, String(currentZoom));
+    applyZoom();
+  });
 }
 
 // DOM元素
@@ -452,8 +335,6 @@ const elements = {
   hotkeyDisplay: document.getElementById('hotkeyDisplay'),
   hotkeyInput: document.getElementById('hotkeyInput'),
   testHideBtn: document.getElementById('testHideBtn'),
-  privacyNotice: document.getElementById('privacyNotice'),
-  gotItBtn: document.getElementById('gotItBtn'),
   listenBtn: document.getElementById('listenBtn'),
   listeningStatus: document.getElementById('listeningStatus'),
   listeningText: document.getElementById('listeningText'),
@@ -470,7 +351,12 @@ const elements = {
   saveResumeBtn: document.getElementById('saveResumeBtn'),
   clearResumeBtn: document.getElementById('clearResumeBtn'),
   resumeEditor: document.getElementById('resumeEditor'),
-  resumeStatus: document.getElementById('resumeStatus')
+  resumeStatus: document.getElementById('resumeStatus'),
+  // 三 Tab 切换（Copilot / 模拟面试 / 简历优化）
+  modeTabs: document.getElementById('modeTabs'),
+  copilotPanel: document.getElementById('copilotPanel'),
+  classicPanel: document.getElementById('classicPanel'),
+  resumePanel: document.getElementById('resumePanel')
 };
 
 // 初始化（唯一入口）
@@ -486,11 +372,8 @@ async function init() {
   updateSettingsUI();
   renderHistory();
 
-  // 显示隐私提示（首次使用）
-  const hasSeenNotice = localStorage.getItem('hasSeenPrivacyNotice');
-  if (!hasSeenNotice) {
-    elements.privacyNotice.classList.add('show');
-  }
+  // 初始化字体大小缩放（A⁻ / 100% / A⁺）：必须在 bindEvents 前，保证与其他控件互不干扰
+  initFontZoom();
 
   // 绑定事件
   bindEvents();
@@ -507,9 +390,6 @@ async function init() {
 
   // 初始化窗口边缘缩放手柄
   initResizeHandles();
-
-  // 初始化日志面板（点 🐛 按钮查看实时日志）
-  initLogPanel();
 
   // 监听主进程发来的隐身模式切换事件（来自托盘菜单/快捷键）
   ipcRenderer.on('stealth-mode-changed', (event, active) => {
@@ -578,47 +458,96 @@ function initResizeHandles() {
 
 // 绑定事件
 function bindEvents() {
+  // ===== 三 Tab 切换逻辑：点击顶部 Tab，切换按钮高亮 + 切换对应面板显示 =====
+  if (elements.modeTabs) {
+    // 为每个 data-mode 按钮绑定点击事件
+    elements.modeTabs.querySelectorAll('.mode-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mode;  // copilot / classic / resume
+
+        // 1. 切换按钮高亮：所有按钮移除 active，当前按钮添加 active
+        elements.modeTabs.querySelectorAll('.mode-tab').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        // 2. 切换面板显示：根据 mode 决定哪个面板移除 .hidden，其余两个加上 .hidden
+        if (elements.copilotPanel) {
+          elements.copilotPanel.classList.toggle('hidden', mode !== 'copilot');
+        }
+        if (elements.classicPanel) {
+          elements.classicPanel.classList.toggle('hidden', mode !== 'classic');
+        }
+        if (elements.resumePanel) {
+          elements.resumePanel.classList.toggle('hidden', mode !== 'resume');
+        }
+      });
+    });
+  }
+
   // 设置
-  elements.settingsBtn.addEventListener('click', () => {
-    elements.settingsModal.classList.add('open');
-  });
+  if (elements.settingsBtn) {
+    elements.settingsBtn.addEventListener('click', async () => {
+      // 打开设置前先从磁盘重载配置：确保能看到 Copilot 已保存的统一配置字段
+      // （面试类型/模型档位/字数/截断/JD 等），且保存设置时不会覆盖丢失这些字段
+      try {
+        appState.config = await ipcRenderer.invoke('get-config');
+      } catch (_) { /* 重载失败则沿用内存中的配置 */ }
+      updateSettingsUI();
+      if (elements.settingsModal) elements.settingsModal.classList.add('open');
+    });
+  }
   
-  elements.closeSettingsBtn.addEventListener('click', () => {
-    elements.settingsModal.classList.remove('open');
-  });
+  if (elements.closeSettingsBtn) {
+    elements.closeSettingsBtn.addEventListener('click', () => {
+      if (elements.settingsModal) elements.settingsModal.classList.remove('open');
+    });
+  }
   
-  elements.saveSettingsBtn.addEventListener('click', saveSettings);
+  if (elements.saveSettingsBtn) {
+    elements.saveSettingsBtn.addEventListener('click', saveSettings);
+  }
   
   // 透明度滑块
-  elements.opacitySlider.addEventListener('input', () => {
-    const opacity = parseFloat(elements.opacitySlider.value);
-    elements.opacityValue.textContent = Math.round(opacity * 100) + '%';
-    ipcRenderer.invoke('set-opacity', opacity);
-  });
+  if (elements.opacitySlider && elements.opacityValue) {
+    elements.opacitySlider.addEventListener('input', () => {
+      const opacity = parseFloat(elements.opacitySlider.value);
+      elements.opacityValue.textContent = Math.round(opacity * 100) + '%';
+      ipcRenderer.invoke('set-opacity', opacity);
+    });
+  }
   
   // 始终置顶
-  elements.alwaysOnTop.addEventListener('change', () => {
-    ipcRenderer.invoke('set-always-on-top', elements.alwaysOnTop.checked);
-  });
+  if (elements.alwaysOnTop) {
+    elements.alwaysOnTop.addEventListener('change', () => {
+      ipcRenderer.invoke('set-always-on-top', elements.alwaysOnTop.checked);
+    });
+  }
   
   // 点击弹窗外部关闭
-  elements.settingsModal.addEventListener('click', (e) => {
-    if (e.target === elements.settingsModal) {
-      elements.settingsModal.classList.remove('open');
-    }
-  });
+  if (elements.settingsModal) {
+    elements.settingsModal.addEventListener('click', (e) => {
+      if (e.target === elements.settingsModal) {
+        elements.settingsModal.classList.remove('open');
+      }
+    });
+  }
   
   // 历史记录侧边栏
-  elements.closeHistoryBtn.addEventListener('click', () => {
-    elements.historySidebar.classList.remove('open');
-  });
+  if (elements.closeHistoryBtn && elements.historySidebar) {
+    elements.closeHistoryBtn.addEventListener('click', () => {
+      elements.historySidebar.classList.remove('open');
+    });
+  }
   
   // 隐私保护功能
-  elements.quickHideBtn.addEventListener('click', () => {
-    ipcRenderer.invoke('toggle-window');
-  });
+  if (elements.quickHideBtn) {
+    elements.quickHideBtn.addEventListener('click', () => {
+      ipcRenderer.invoke('toggle-window');
+    });
+  }
   
-  elements.toggleStealthBtn.addEventListener('click', toggleStealthMode);
+  if (elements.toggleStealthBtn) {
+    elements.toggleStealthBtn.addEventListener('click', toggleStealthMode);
+  }
 
   // 隐身模式拖动手柄上的"退出"按钮
   const stealthExitBtn = document.getElementById('stealthExitBtn');
@@ -641,26 +570,26 @@ function bindEvents() {
     });
   }
   
-  elements.testHideBtn.addEventListener('click', () => {
-    ipcRenderer.invoke('hide-window');
-    setTimeout(() => {
-      ipcRenderer.invoke('show-window');
-    }, 3000);
-  });
-  
-  // 隐私提示
-  elements.gotItBtn.addEventListener('click', () => {
-    localStorage.setItem('hasSeenPrivacyNotice', 'true');
-    elements.privacyNotice.classList.remove('show');
-  });
+  if (elements.testHideBtn) {
+    elements.testHideBtn.addEventListener('click', () => {
+      ipcRenderer.invoke('hide-window');
+      setTimeout(() => {
+        ipcRenderer.invoke('show-window');
+      }, 3000);
+    });
+  }
   
   // 持续监听
-  elements.listenBtn.addEventListener('click', toggleListening);
+  if (elements.listenBtn) {
+    elements.listenBtn.addEventListener('click', toggleListening);
+  }
 
   // 灵敏度设置
-  elements.detectionSensitivity.addEventListener('input', () => {
-    elements.sensitivityValue.textContent = elements.detectionSensitivity.value;
-  });
+  if (elements.detectionSensitivity && elements.sensitivityValue) {
+    elements.detectionSensitivity.addEventListener('input', () => {
+      elements.sensitivityValue.textContent = elements.detectionSensitivity.value;
+    });
+  }
 
   // 音频增益设置
   if (elements.audioBoost) {
@@ -702,10 +631,10 @@ function bindEvents() {
 
       // 关闭弹窗时，只有监听来源是"面试"时才停止
       if (appState.isListening && appState.listeningSource === 'interview') {
-        log.realtime('🛑 关闭面试弹窗，停止音频捕获');
+        console.log('[realtime]', '🛑 关闭面试弹窗，停止音频捕获');
         await stopListening();
       } else if (appState.isListening && appState.listeningSource === 'test') {
-        log.realtime('ℹ️ 关闭面试弹窗，测试模式继续运行（手动停止捕获按钮）');
+        console.log('[realtime]', 'ℹ️ 关闭面试弹窗，测试模式继续运行（手动停止捕获按钮）');
       }
 
       // 清空内容
@@ -729,12 +658,18 @@ async function initOverlayDragResize() {
   if (!overlayWindow || !dragHandle) return;
   
   // 获取整个屏幕的物理边界（多显示器合并）
+  // 默认值：浏览器模式下 dev-server 不会返回屏幕信息，此时用当前窗口可视区域作为边界
   let screenBounds = { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
   try {
+    let fetched = null;
     if (window.electronAPI && window.electronAPI.getScreenBounds) {
-      screenBounds = await window.electronAPI.getScreenBounds();
+      fetched = await window.electronAPI.getScreenBounds();
     } else if (typeof ipcRenderer !== 'undefined' && ipcRenderer.invoke) {
-      screenBounds = await ipcRenderer.invoke('get-screen-bounds');
+      fetched = await ipcRenderer.invoke('get-screen-bounds');
+    }
+    // 只有拿到了合法值才覆盖默认值（浏览器模式下 dev-server 返回 null，这里保持默认）
+    if (fetched && typeof fetched.width === 'number' && typeof fetched.height === 'number') {
+      screenBounds = fetched;
     }
   } catch (e) {
     console.warn('获取屏幕尺寸失败，使用默认窗口尺寸:', e);
@@ -889,7 +824,9 @@ function updateSettingsUI() {
 
   // 格式化显示快捷键
   const displayHotkey = formatHotkeyForDisplay(appState.config.hotkey || 'CommandOrControl+Shift+H');
-  elements.hotkeyDisplay.textContent = displayHotkey;
+  if (elements.hotkeyDisplay) {
+    elements.hotkeyDisplay.textContent = displayHotkey;
+  }
 }
 
 // 格式化快捷键显示
@@ -925,7 +862,9 @@ function saveSettings() {
 
   // 更新显示的快捷键
   const displayHotkey = formatHotkeyForDisplay(appState.config.hotkey);
-  elements.hotkeyDisplay.textContent = displayHotkey;
+  if (elements.hotkeyDisplay) {
+    elements.hotkeyDisplay.textContent = displayHotkey;
+  }
 }
 
 // 保存配置
@@ -939,12 +878,16 @@ async function toggleStealthMode() {
     await ipcRenderer.invoke('exit-stealth-mode');
     appState.isStealthMode = false;
     document.body.classList.remove('stealth-active', 'stealth-temp-reveal');
-    elements.toggleStealthBtn.classList.remove('active');
+    if (elements.toggleStealthBtn) {
+      elements.toggleStealthBtn.classList.remove('active');
+    }
   } else {
     await ipcRenderer.invoke('enter-stealth-mode');
     appState.isStealthMode = true;
     document.body.classList.add('stealth-active');
-    elements.toggleStealthBtn.classList.add('active');
+    if (elements.toggleStealthBtn) {
+      elements.toggleStealthBtn.classList.add('active');
+    }
   }
 }
 
@@ -993,29 +936,29 @@ async function toggleListening(source = 'test') {
   // 标记监听来源
   appState.listeningSource = source;
   const modeText = source === 'interview' ? '面试模式' : '测试模式（捕获系统声音）';
-  log.realtime(`🎧 启动${modeText}...`);
+  console.log('[realtime]',`🎧 启动${modeText}...`);
 
   try {
-    log.realtime('步骤 1: 尝试 WASAPI 直连模式（native-audio-node）...');
+    console.log('[realtime]','步骤 1: 尝试 WASAPI 直连模式（native-audio-node）...');
     await startNativeListening();
     if (appState.nativeListening) {
-      log.realtime('✓ WASAPI 模式启动成功');
+      console.log('[realtime]','✓ WASAPI 模式启动成功');
       updateListeningUI(true);
       return;
     }
-    log.realtimeWarn('WASAPI 模式未成功启动，降级到 getDisplayMedia');
+    console.warn('[realtime]','WASAPI 模式未成功启动，降级到 getDisplayMedia');
   } catch (e) {
-    log.realtimeWarn('WASAPI 模式失败: ' + e.message + '，降级到 getDisplayMedia');
+    console.warn('[realtime]','WASAPI 模式失败: ' + e.message + '，降级到 getDisplayMedia');
   }
 
   try {
-    log.realtime('步骤 2: 尝试 getDisplayMedia 模式...');
+    console.log('[realtime]','步骤 2: 尝试 getDisplayMedia 模式...');
     await startListening();
     if (appState.isListening) {
-      log.realtime('✓ getDisplayMedia 模式启动成功');
+      console.log('[realtime]','✓ getDisplayMedia 模式启动成功');
     }
   } catch (e) {
-    log.realtimeError('两种模式均失败，请检查配置');
+    console.error('[realtime]','两种模式均失败，请检查配置');
     alert('音频捕获启动失败: ' + e.message);
   }
 }
@@ -1032,25 +975,25 @@ async function playTestTone() {
   // 如果监听未启动，先开启
   let wasAutoStarted = false;
   if (!appState.isListening || !appState.systemAudioRecorder) {
-    log.realtime('🔊 录音器未启动，正在自动开启监听（会弹选择器）...');
+    console.log('[realtime]','🔊 录音器未启动，正在自动开启监听（会弹选择器）...');
     try {
       await startListening();
       // 给录音器 1.5s 稳定时间
       await new Promise(r => setTimeout(r, 1500));
       // 用户可能取消了选择器
       if (!appState.systemAudioRecorder) {
-        log.realtimeError('❌ 监听未启动（可能取消了音频源选择），无法继续测试');
+        console.error('[realtime]','❌ 监听未启动（可能取消了音频源选择），无法继续测试');
         return;
       }
       wasAutoStarted = true;
     } catch (e) {
-      log.realtimeError('自动开启监听失败: ' + e.message);
+      console.error('[realtime]','自动开启监听失败: ' + e.message);
       return;
     }
   }
 
   try {
-    log.realtime('🔊 播放 1 秒 880Hz 测试音（你应该听到"哔"声）...');
+    console.log('[realtime]','🔊 播放 1 秒 880Hz 测试音（你应该听到"哔"声）...');
 
     // 用 OfflineAudioContext 生成 1 秒的 880Hz 正弦波（带渐入渐出避免爆音）
     const sampleRate = 16000;
@@ -1080,11 +1023,11 @@ async function playTestTone() {
       if (appState.systemAudioRecorder) {
         const samples = appState.systemAudioRecorder.takeLastSeconds(1.5);
         if (samples.length === 0) {
-          log.realtimeError('❌ 录音器未捕获到任何样本！');
-          log.realtimeError('   可能原因：');
-          log.realtimeError('   1) 腾讯会议用了独立音频设备（耳机），系统扬声器没声音');
-          log.realtimeError('   2) 会议里没人在说话');
-          log.realtimeError('   3) Windows "Stereo Mix" 被禁用（见下方说明）');
+          console.error('[realtime]','❌ 录音器未捕获到任何样本！');
+          console.error('[realtime]','   可能原因：');
+          console.error('[realtime]','   1) 腾讯会议用了独立音频设备（耳机），系统扬声器没声音');
+          console.error('[realtime]','   2) 会议里没人在说话');
+          console.error('[realtime]','   3) Windows "Stereo Mix" 被禁用（见下方说明）');
         } else {
           let sumSq = 0, peak = 0;
           for (let i = 0; i < samples.length; i++) {
@@ -1093,33 +1036,33 @@ async function playTestTone() {
             sumSq += a * a;
           }
           const rms = Math.sqrt(sumSq / samples.length);
-          log.realtime(`📊 录音器捕获统计: 样本数=${samples.length}, RMS=${rms.toFixed(4)}, 峰值=${peak.toFixed(4)}`);
+          console.log('[realtime]',`📊 录音器捕获统计: 样本数=${samples.length}, RMS=${rms.toFixed(4)}, 峰值=${peak.toFixed(4)}`);
           if (rms < 0.005) {
-            log.realtimeError('⚠️ 音量极低（接近静音）！系统音频捕获是工作的，但选中的源没有声音');
-            log.realtimeError('   排查：');
-            log.realtimeError('   • 让面试官开口说话，然后观察 RMS 是否上升');
-            log.realtimeError('   • 打开腾讯会议 → 设置 → 音频 → 把扬声器改为"系统默认"');
-            log.realtimeError('   • 拔掉耳机（很多笔记本插耳机后会议声音自动切到耳机）');
-            log.realtimeError('   • 检查 Windows 任务栏扬声器图标，确认腾讯会议声音在响');
+            console.error('[realtime]','⚠️ 音量极低（接近静音）！系统音频捕获是工作的，但选中的源没有声音');
+            console.error('[realtime]','   排查：');
+            console.error('[realtime]','   • 让面试官开口说话，然后观察 RMS 是否上升');
+            console.error('[realtime]','   • 打开腾讯会议 → 设置 → 音频 → 把扬声器改为"系统默认"');
+            console.error('[realtime]','   • 拔掉耳机（很多笔记本插耳机后会议声音自动切到耳机）');
+            console.error('[realtime]','   • 检查 Windows 任务栏扬声器图标，确认腾讯会议声音在响');
           } else if (rms < 0.05) {
-            log.realtimeWarn('⚠️ 音量偏小，可能不是最佳音频源（但系统捕获是工作的）');
+            console.warn('[realtime]','⚠️ 音量偏小，可能不是最佳音频源（但系统捕获是工作的）');
           } else {
-            log.realtime('✓ 音量正常！系统音频捕获工作正常');
-            log.realtime('✓ 这下可以正常识别会议内容了');
+            console.log('[realtime]','✓ 音量正常！系统音频捕获工作正常');
+            console.log('[realtime]','✓ 这下可以正常识别会议内容了');
           }
         }
       } else {
-        log.realtimeError('录音器未启动，无法检测');
+        console.error('[realtime]','录音器未启动，无法检测');
       }
       audioCtx.close();
       // 测试完成
       if (wasAutoStarted) {
-        log.realtime('💡 监听已为你开启，可继续使用（要停止请点"停止捕获"按钮）');
+        console.log('[realtime]','💡 监听已为你开启，可继续使用（要停止请点"停止捕获"按钮）');
       }
     }, 1500);
 
   } catch (e) {
-    log.realtimeError('测试音播放失败: ' + e.message);
+    console.error('[realtime]','测试音播放失败: ' + e.message);
   }
 }
 
@@ -1128,30 +1071,30 @@ async function playTestTone() {
 // 用于解决 Electron 28 getDisplayMedia loopback 静默 bug
 // ============================================================
 async function diagnoseAudioDevices() {
-  log.realtime('🔍 枚举系统音频设备...');
+  console.log('[realtime]','🔍 枚举系统音频设备...');
   try {
     // 必须先调用一次 getUserMedia，否则设备 label 是空的（隐私保护）
     try {
       const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
       tmp.getTracks().forEach(t => t.stop());
     } catch (e) {
-      log.realtimeWarn('提示：未授权麦克风，设备 label 可能为空');
+      console.warn('[realtime]','提示：未授权麦克风，设备 label 可能为空');
     }
 
     const devices = await navigator.mediaDevices.enumerateDevices();
     const audioInputs  = devices.filter(d => d.kind === 'audioinput');
     const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
 
-    log.realtime(`发现 ${audioInputs.length} 个输入设备，${audioOutputs.length} 个输出设备`);
+    console.log('[realtime]',`发现 ${audioInputs.length} 个输入设备，${audioOutputs.length} 个输出设备`);
 
     // 输出设备
-    log.realtime('─── 音频输出设备 ───');
+    console.log('[realtime]','─── 音频输出设备 ───');
     for (const d of audioOutputs) {
-      log.realtime(`  [output] ${d.label || '(无标签)'} | id=${d.deviceId.substring(0, 20)}...`);
+      console.log('[realtime]',`  [output] ${d.label || '(无标签)'} | id=${d.deviceId.substring(0, 20)}...`);
     }
 
     // 输入设备
-    log.realtime('─── 音频输入设备（getUserMedia 可用） ───');
+    console.log('[realtime]','─── 音频输入设备（getUserMedia 可用） ───');
     for (const d of audioInputs) {
       const isMic = /麦克风|microphone/i.test(d.label);
       const isLoopback = /stereo mix|what you hear|loopback|cable output|vb-audio|voicemeeter output/i.test(d.label);
@@ -1159,7 +1102,7 @@ async function diagnoseAudioDevices() {
       if (isLoopback) flag = '🔁 [系统回环]';
       else if (isMic) flag = '🎤 [麦克风]';
       else flag = '❓ [未知]';
-      log.realtime(`  [input] ${d.label || '(无标签)'} ${flag}`);
+      console.log('[realtime]',`  [input] ${d.label || '(无标签)'} ${flag}`);
     }
 
     // 检测真正的回环设备（排除麦克风）
@@ -1167,35 +1110,35 @@ async function diagnoseAudioDevices() {
       /stereo mix|what you hear|loopback|cable output|vb-audio|voicemeeter output/i.test(d.label)
     );
 
-    log.realtime('════════════════ 诊断结果 ════════════════');
+    console.log('[realtime]','════════════════ 诊断结果 ════════════════');
     if (loopbackInputs.length > 0) {
-      log.realtime(`✓ 发现 ${loopbackInputs.length} 个回环设备：${loopbackInputs.map(d => d.label).join('、')}`);
-      log.realtime('  → 下次点"捕获系统声音"时这些设备会自动出现在选择器中');
+      console.log('[realtime]',`✓ 发现 ${loopbackInputs.length} 个回环设备：${loopbackInputs.map(d => d.label).join('、')}`);
+      console.log('[realtime]','  → 下次点"捕获系统声音"时这些设备会自动出现在选择器中');
     } else {
-      log.realtimeError('❌ 系统没有任何可用的音频回环设备');
-      log.realtimeError('');
-      log.realtimeError('原因：你的声卡是 Realtek，没默认开启"Stereo Mix"回环');
-      log.realtimeError('');
-      log.realtimeError('══════════ 解决方案（选一个）══════════');
-      log.realtimeError('');
-      log.realtimeError('方案 A：开启 Realtek 立体声混音（无需装软件，2 分钟）');
-      log.realtimeError('  1. 右下角任务栏 → 右键扬声器图标 → "声音设置"');
-      log.realtimeError('  2. 点"更多声音设置" → 切到"录制"标签');
-      log.realtimeError('  3. 右键空白处 → 勾选"显示已禁用的设备"');
-      log.realtimeError('  4. 应该能看到 "立体声混音 / Stereo Mix" → 右键 → 启用');
-      log.realtimeError('  5. 重启本应用，再点"🔍 音频设备"看是否出现');
-      log.realtimeError('');
-      log.realtimeError('方案 B：装 VB-Audio 虚拟声卡（免费，最稳定）');
-      log.realtimeError('  1. 访问 https://vb-audio.com/Cable/ 下载 VBCABLE_Driver_Pack43.zip');
-      log.realtimeError('  2. 解压 → 右键 VBCABLE_Setup.exe → 以管理员身份运行 → Install → 重启电脑');
-      log.realtimeError('  3. Windows 声音设置 → 输出设备 → 选 "CABLE Input"');
-      log.realtimeError('  4. 腾讯会议 → 设置 → 扬声器 → 选 "CABLE Input"');
-      log.realtimeError('  5. 重启本应用，设备列表会出现 "CABLE Output"');
-      log.realtimeError('');
-      log.realtimeError('💡 推荐先试方案 A，2 分钟就能搞定');
+      console.error('[realtime]','❌ 系统没有任何可用的音频回环设备');
+      console.error('[realtime]','');
+      console.error('[realtime]','原因：你的声卡是 Realtek，没默认开启"Stereo Mix"回环');
+      console.error('[realtime]','');
+      console.error('[realtime]','══════════ 解决方案（选一个）══════════');
+      console.error('[realtime]','');
+      console.error('[realtime]','方案 A：开启 Realtek 立体声混音（无需装软件，2 分钟）');
+      console.error('[realtime]','  1. 右下角任务栏 → 右键扬声器图标 → "声音设置"');
+      console.error('[realtime]','  2. 点"更多声音设置" → 切到"录制"标签');
+      console.error('[realtime]','  3. 右键空白处 → 勾选"显示已禁用的设备"');
+      console.error('[realtime]','  4. 应该能看到 "立体声混音 / Stereo Mix" → 右键 → 启用');
+      console.error('[realtime]','  5. 重启本应用，再点"🔍 音频设备"看是否出现');
+      console.error('[realtime]','');
+      console.error('[realtime]','方案 B：装 VB-Audio 虚拟声卡（免费，最稳定）');
+      console.error('[realtime]','  1. 访问 https://vb-audio.com/Cable/ 下载 VBCABLE_Driver_Pack43.zip');
+      console.error('[realtime]','  2. 解压 → 右键 VBCABLE_Setup.exe → 以管理员身份运行 → Install → 重启电脑');
+      console.error('[realtime]','  3. Windows 声音设置 → 输出设备 → 选 "CABLE Input"');
+      console.error('[realtime]','  4. 腾讯会议 → 设置 → 扬声器 → 选 "CABLE Input"');
+      console.error('[realtime]','  5. 重启本应用，设备列表会出现 "CABLE Output"');
+      console.error('[realtime]','');
+      console.error('[realtime]','💡 推荐先试方案 A，2 分钟就能搞定');
     }
   } catch (e) {
-    log.realtimeError('枚举设备失败: ' + e.message);
+    console.error('[realtime]','枚举设备失败: ' + e.message);
   }
 }
 
@@ -1219,12 +1162,12 @@ let __nativeAudioMetaHandler = null;
 
 async function startNativeListening() {
   if (appState.nativeListening) {
-    log.realtime('WASAPI 模式已在运行中');
+    console.log('[realtime]','WASAPI 模式已在运行中');
     return;
   }
 
   try {
-    log.realtime('🎯 启动 WASAPI 直连模式（native-audio-node）...');
+    console.log('[realtime]','🎯 启动 WASAPI 直连模式（native-audio-node）...');
 
     // 1. 注册 IPC 监听器（只注册一次）
     if (!__nativeAudioDataHandler) {
@@ -1266,12 +1209,12 @@ async function startNativeListening() {
       ipcRenderer.on('native-audio-data', __nativeAudioDataHandler);
 
       __nativeAudioErrorHandler = (_event, msg) => {
-        log.realtimeError('WASAPI 错误: ' + msg);
+        console.error('[realtime]','WASAPI 错误: ' + msg);
       };
       ipcRenderer.on('native-audio-error', __nativeAudioErrorHandler);
 
       __nativeAudioMetaHandler = (_event, m) => {
-        log.realtime(`✓ WASAPI 元数据: rate=${m.sampleRate} ch=${m.channelsPerFrame} bits=${m.bitsPerChannel} float=${m.isFloat} enc=${m.encoding}`);
+        console.log('[realtime]',`✓ WASAPI 元数据: rate=${m.sampleRate} ch=${m.channelsPerFrame} bits=${m.bitsPerChannel} float=${m.isFloat} enc=${m.encoding}`);
       };
       ipcRenderer.on('native-audio-metadata', __nativeAudioMetaHandler);
     }
@@ -1279,10 +1222,10 @@ async function startNativeListening() {
     // 2. 启动主进程录制
     const result = await ipcRenderer.invoke('start-native-system-audio');
     if (!result.ok) {
-      log.realtimeError('启动失败: ' + result.error);
+      console.error('[realtime]','启动失败: ' + result.error);
       return;
     }
-    log.realtime('✓ WASAPI 录制已启动');
+    console.log('[realtime]','✓ WASAPI 录制已启动');
 
     // 3. 启动百度 ASR（与 getDisplayMedia 模式共用）
     const config = await ipcRenderer.invoke('get-config');
@@ -1295,20 +1238,20 @@ async function startNativeListening() {
           secretKey: config.baiduSecretKey
         });
         if (tokenRes.success) {
-          log.realtime('✓ access_token 已获取（' + tokenRes.token.substring(0, 8) + '...）');
+          console.log('[realtime]','✓ access_token 已获取（' + tokenRes.token.substring(0, 8) + '...）');
         }
         if (!tokenRes.success) throw new Error(tokenRes.error);
 
         const svc = new RealtimeSpeechService();
         // 应用用户设置的 boost（默认 2x，native-audio-node 返回的是正常电平，不需要大增益）
         svc.setBoost(config.audioBoost || 2);
-        log.realtime('音频增益: ' + (config.audioBoost || 2) + 'x');
+        console.log('[realtime]','音频增益: ' + (config.audioBoost || 2) + 'x');
         let wsOk = false;
         let wsClosed = false;
         svc.on('open', () => {
           wsOk = true;
           appState.wsReconnectCount = 0; // 重置重连计数
-          log.realtime('✓ WebSocket 已连接，WASAPI → 百度识别链路建立');
+          console.log('[realtime]','✓ WebSocket 已连接，WASAPI → 百度识别链路建立');
         });
         svc.on('interim', (data) => {  // ★ 修：服务发的是 'interim' 不是 'partial'
           console.log('[realtime-speech] renderer 收到 interim:', data.text);
@@ -1322,14 +1265,14 @@ async function startNativeListening() {
           await processRecognizedText(data.text);  // ★ 修：传 data.text 而不是 data
         });
         svc.on('error', (e) => {
-          log.realtimeError('WS 错误: ' + e.message);
+          console.error('[realtime]','WS 错误: ' + e.message);
         });
         svc.on('close', (info) => {
           wsClosed = true;
-          log.realtime('WS 关闭: ' + JSON.stringify(info));
+          console.log('[realtime]','WS 关闭: ' + JSON.stringify(info));
           // WS 关了，且还没成功过 → 降级到 REST
           if (!wsOk && appState.nativeListening) {
-            log.realtimeWarn('WS 关闭且未成功，降级到 REST');
+            console.warn('[realtime]','WS 关闭且未成功，降级到 REST');
             appState.systemAudioRt = null;
             appState.nativeUseRest = true;
           }
@@ -1338,19 +1281,19 @@ async function startNativeListening() {
             const reconnectCount = appState.wsReconnectCount || 0;
             if (reconnectCount < 3) {
               appState.wsReconnectCount = reconnectCount + 1;
-              log.realtime(`WS 断开，${reconnectCount + 1}/3 尝试重连...`);
+              console.log('[realtime]',`WS 断开，${reconnectCount + 1}/3 尝试重连...`);
               setTimeout(() => {
                 startNativeListening();
               }, 2000);
             } else {
-              log.realtimeWarn('WS 重连 3 次失败，降级到 REST');
+              console.warn('[realtime]','WS 重连 3 次失败，降级到 REST');
               appState.systemAudioRt = null;
               appState.nativeUseRest = true;
             }
           }
         });
         appState.systemAudioRt = svc;
-        log.realtime('正在连接 wss://vop.baidu.com/realtime_asr ...');
+        console.log('[realtime]','正在连接 wss://vop.baidu.com/realtime_asr ...');
         svc.connect({  // ★ 必须传参！构造函数不保存参数
           accessToken: tokenRes.token,
           appId: config.baiduAppId,
@@ -1359,30 +1302,30 @@ async function startNativeListening() {
         // 10s 超时降级（WS 首次连接可能慢，给足时间）
         setTimeout(() => {
           if (!wsOk && !wsClosed) {
-            log.realtimeWarn('WS 10s 未连上，降级到 REST 模式');
+            console.warn('[realtime]','WS 10s 未连上，降级到 REST 模式');
             try { svc.finish && svc.finish(); } catch (_) {}
             try { svc.close && svc.close(); } catch (_) {}
             appState.systemAudioRt = null;
             appState.nativeUseRest = true;
-            log.realtime('使用 REST 模式（每 1.5 秒识别一次）');
+            console.log('[realtime]','使用 REST 模式（每 1.5 秒识别一次）');
           }
         }, 10000);
       } catch (e) {
-        log.realtimeWarn('WS 模式不可用，降级到 REST: ' + e.message);
+        console.warn('[realtime]','WS 模式不可用，降级到 REST: ' + e.message);
         appState.nativeUseRest = true;
       }
     } else {
       appState.nativeUseRest = true;
-      log.realtime('使用 REST 模式（每 1.5 秒识别一次）');
+      console.log('[realtime]','使用 REST 模式（每 1.5 秒识别一次）');
     }
 
     appState.nativeListening = true;
     appState.isListening = true;
 
-    log.realtime('✓ WASAPI 直连模式已启动，开始实时识别系统声音');
+    console.log('[realtime]','✓ WASAPI 直连模式已启动，开始实时识别系统声音');
 
   } catch (e) {
-    log.realtimeError('启动 WASAPI 失败: ' + e.message);
+    console.error('[realtime]','启动 WASAPI 失败: ' + e.message);
   }
 }
 
@@ -1409,7 +1352,7 @@ async function processNativeRestChunk() {
       scheduleProcessRecognizedText(result.text);
     }
   } catch (e) {
-    log.realtimeError('REST 识别失败: ' + e.message);
+    console.error('[realtime]','REST 识别失败: ' + e.message);
   }
 }
 
@@ -1431,7 +1374,7 @@ async function stopNativeListening() {
   appState.nativeAudioBuffer = [];
   appState.nativeBufferSeconds = 0;
 
-  log.realtime('WASAPI 模式已停止');
+  console.log('[realtime]','WASAPI 模式已停止');
 }
 
 // ============================================================
@@ -1452,13 +1395,13 @@ let micCaptureActive = false;
 
 async function startMicCapture() {
   if (micCaptureActive) {
-    log.realtime('麦克风模式已在运行中');
+    console.log('[realtime]','麦克风模式已在运行中');
     return;
   }
 
   try {
-    log.realtime('🎤 启动麦克风模式...');
-    log.realtime('   提示：让扬声器声音大一些，麦克风能听到即可');
+    console.log('[realtime]','🎤 启动麦克风模式...');
+    console.log('[realtime]','   提示：让扬声器声音大一些，麦克风能听到即可');
 
     // 1. 请求麦克风权限并获取流
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -1472,11 +1415,11 @@ async function startMicCapture() {
 
     const tracks = stream.getAudioTracks();
     if (tracks.length === 0) {
-      log.realtimeError('❌ 麦克风未授权，请在 Windows 设置 → 隐私 → 麦克风 中开启');
+      console.error('[realtime]','❌ 麦克风未授权，请在 Windows 设置 → 隐私 → 麦克风 中开启');
       return;
     }
 
-    log.realtime(`✓ 拿到麦克风流（设备: ${tracks[0].label || 'default'}）`);
+    console.log('[realtime]',`✓ 拿到麦克风流（设备: ${tracks[0].label || 'default'}）`);
 
     // 2. 创建录音器（同系统音频捕获的代码）
     const recorder = createPcmRecorder({ stream });
@@ -1505,7 +1448,7 @@ async function startMicCapture() {
           let wsOk = false;
           svc.on('open', () => {
             wsOk = true;
-            log.realtime('✓ WebSocket 已连接，开始识别');
+            console.log('[realtime]','✓ WebSocket 已连接，开始识别');
             // 把录音器的样本送进 WS
             recorder.onData = (samples) => svc.sendAudio(samples);
             recorder.start();
@@ -1522,11 +1465,11 @@ async function startMicCapture() {
             await processRecognizedText(data.text);  // ★ 修：data.text
           });
           svc.on('error', (e) => {
-            log.realtimeError('WS 错误: ' + e.message);
+            console.error('[realtime]','WS 错误: ' + e.message);
             if (!wsOk) resolve({ ok: false, error: e.message });
           });
           svc.on('close', (info) => {
-            log.realtime('WS 关闭: ' + JSON.stringify(info));
+            console.log('[realtime]','WS 关闭: ' + JSON.stringify(info));
           });
           svc.connect({  // ★ 必须传参！
             accessToken: tokenRes.token,
@@ -1543,7 +1486,7 @@ async function startMicCapture() {
           throw new Error(wsResult.error);
         }
       } catch (e) {
-        log.realtimeWarn('WS 模式不可用，降级到 REST: ' + e.message);
+        console.warn('[realtime]','WS 模式不可用，降级到 REST: ' + e.message);
         runMicRestMode(recorder, config);
       }
     } else {
@@ -1565,20 +1508,20 @@ async function startMicCapture() {
       listenBtn.disabled = true;
     }
 
-    log.realtime('✓ 麦克风模式已启动，开始识别');
+    console.log('[realtime]','✓ 麦克风模式已启动，开始识别');
 
   } catch (e) {
     if (e.name === 'NotAllowedError') {
-      log.realtimeError('❌ 麦克风权限被拒绝');
-      log.realtimeError('   解决：Windows 设置 → 隐私 → 麦克风 → 开启"允许应用访问麦克风"');
+      console.error('[realtime]','❌ 麦克风权限被拒绝');
+      console.error('[realtime]','   解决：Windows 设置 → 隐私 → 麦克风 → 开启"允许应用访问麦克风"');
     } else {
-      log.realtimeError('❌ 麦克风模式启动失败: ' + e.message);
+      console.error('[realtime]','❌ 麦克风模式启动失败: ' + e.message);
     }
   }
 }
 
 function runMicRestMode(recorder, config) {
-  log.realtime('使用 REST 模式（每 1.5 秒识别一次）');
+  console.log('[realtime]','使用 REST 模式（每 1.5 秒识别一次）');
   recorder.start();
   appState.systemAudioRecorder = recorder;
 
@@ -1603,7 +1546,7 @@ function runMicRestMode(recorder, config) {
         await processRecognizedText(result.text);
       }
     } catch (e) {
-      log.realtimeError('REST 识别失败: ' + e.message);
+      console.error('[realtime]','REST 识别失败: ' + e.message);
     }
   }, 1500);
 }
@@ -1627,7 +1570,7 @@ async function stopMicCapture() {
     listenBtn.disabled = false;
   }
 
-  log.realtime('麦克风模式已停止');
+  console.log('[realtime]','麦克风模式已停止');
 }
 
 // ============================================================
@@ -1725,15 +1668,15 @@ async function processRecognizedText(text) {
   // 1) 去重检查：30秒内不处理相同问题
   const lastTime = appState.recentQuestions.get(questionKey);
   if (lastTime && Date.now() - lastTime < appState.duplicateTimeout) {
-    log.recognize('跳过重复问题: "' + trimmedText + '"');
+    console.log('[recognize]','跳过重复问题: "' + trimmedText + '"');
     return;
   }
 
-  log.recognize('处理识别文字: "' + trimmedText + '"');
+  console.log('[recognize]','处理识别文字: "' + trimmedText + '"');
   console.log('[renderer] 准备调用 process-recognized-text:', trimmedText);
 
   try {
-    log.llm('调用 LLM 服务...（模型: ' + appState.config.selectedService + '）');
+    console.log('[llm]','调用 LLM 服务...（模型: ' + appState.config.selectedService + '）');
 
     // 2) 构建对话上下文（最近5轮对话）
     const context = buildConversationContext();
@@ -1759,7 +1702,7 @@ async function processRecognizedText(text) {
         }
       }
 
-      log.llm('✓ LLM 判断为问题: "' + processResult.question + '"');
+      console.log('[llm]','✓ LLM 判断为问题: "' + processResult.question + '"');
       appState.currentQuestion = processResult.question;
 
       document.getElementById('answerLoading').style.display = 'block';
@@ -1786,14 +1729,14 @@ async function processRecognizedText(text) {
       document.getElementById('answerLoading').style.display = 'none';
       document.getElementById('answerReady').style.display = 'block';
     } else if (processResult && processResult.error) {
-      log.llmErr('LLM 处理失败: ' + processResult.error);
+      console.error('[llm]','LLM 处理失败: ' + processResult.error);
       console.error('[renderer] LLM 错误:', processResult.error);
     } else {
-      log.recognize('非问题，跳过: "' + trimmedText + '"');
+      console.log('[recognize]','非问题，跳过: "' + trimmedText + '"');
     }
   } catch (e) {
     console.error('[renderer] 处理识别结果失败:', e);
-    log.llmError('处理失败: ' + e.message);
+    console.error('[llm]','处理失败: ' + e.message);
   }
 }
 
@@ -1877,7 +1820,7 @@ async function loadResume() {
  */
 async function uploadResume() {
   try {
-    log.recognize('选择简历文件...');
+    console.log('[recognize]','选择简历文件...');
     const result = await ipcRenderer.invoke('select-resume-file');
 
     if (result.success) {
@@ -1886,18 +1829,18 @@ async function uploadResume() {
         elements.resumeEditor.value = result.content;
         elements.resumeStatus.textContent = `已加载: ${result.filePath}`;
       }
-      log.recognize('简历加载成功');
+      console.log('[recognize]','简历加载成功');
     } else {
       if (elements.resumeStatus) {
         elements.resumeStatus.textContent = result.error || '上传失败';
       }
-      log.recognizeErr('简历上传失败:', result.error);
+      console.error('[recognize]','简历上传失败:', result.error);
     }
   } catch (error) {
     if (elements.resumeStatus) {
       elements.resumeStatus.textContent = '上传失败: ' + error.message;
     }
-    log.recognizeErr('简历上传异常:', error);
+    console.error('[recognize]','简历上传异常:', error);
   }
 }
 
@@ -1916,14 +1859,14 @@ async function saveResume() {
     if (result.success) {
       appState.resumeContent = content;
       elements.resumeStatus.textContent = '简历已保存';
-      log.recognize('简历保存成功');
+      console.log('[recognize]','简历保存成功');
     } else {
       elements.resumeStatus.textContent = '保存失败: ' + result.error;
-      log.recognizeErr('简历保存失败:', result.error);
+      console.error('[recognize]','简历保存失败:', result.error);
     }
   } catch (error) {
     elements.resumeStatus.textContent = '保存失败: ' + error.message;
-    log.recognizeErr('简历保存异常:', error);
+    console.error('[recognize]','简历保存异常:', error);
   }
 }
 
@@ -1942,16 +1885,16 @@ async function clearResume() {
       elements.resumeEditor.value = '';
       elements.resumeStatus.textContent = '简历已清空';
     }
-    log.recognize('简历已清空');
+    console.log('[recognize]','简历已清空');
   } catch (error) {
-    log.recognizeErr('清空简历失败:', error);
+    console.error('[recognize]','清空简历失败:', error);
   }
 }
 
 // 启动系统音频流式监听
 async function startListening() {
   try {
-    log.realtime('步骤 1/5：调用 getDisplayMedia 触发系统音频捕获...');
+    console.log('[realtime]','步骤 1/5：调用 getDisplayMedia 触发系统音频捕获...');
     // 1) 用 getDisplayMedia 触发系统音频捕获
     //    主进程已注册 setDisplayMediaRequestHandler，会拦截这个调用并弹应用内选择器
     //    （绕开 Chromium 系统选择器，避免 Electron 28 上 "Not supported" 错误）
@@ -1959,7 +1902,7 @@ async function startListening() {
       audio: true,
       video: true   // getDisplayMedia 强制要求 video 字段
     });
-    log.realtime('✓ getDisplayMedia 成功');
+    console.log('[realtime]','✓ getDisplayMedia 成功');
 
     // 2) 立即停止视频轨（我们只要音频）
     displayStream.getVideoTracks().forEach(t => t.stop());
@@ -1967,14 +1910,14 @@ async function startListening() {
     if (audioTracks.length === 0) {
       throw new Error('该窗口未开启音频共享，请在腾讯会议共享时勾选"共享音频"');
     }
-    log.realtime(`✓ 拿到 ${audioTracks.length} 条音频轨，停止视频轨`);
+    console.log('[realtime]',`✓ 拿到 ${audioTracks.length} 条音频轨，停止视频轨`);
     const audioStream = new MediaStream(audioTracks);
 
     // 3) 通知后端开启后端监听（用于声音活动检测）
     const sensitivity = appState.config.detectionSensitivity || 5;
-    log.realtime(`步骤 3/5：开启后端监听，灵敏度=${sensitivity}`);
+    console.log('[realtime]',`步骤 3/5：开启后端监听，灵敏度=${sensitivity}`);
     await ipcRenderer.invoke('start-listening', sensitivity);
-    log.realtime('✓ 后端监听已启动');
+    console.log('[realtime]','✓ 后端监听已启动');
 
     // 4) 根据配置选择模式
     const useWS = appState.config.realtimeMode !== 'rest'
@@ -1982,11 +1925,11 @@ async function startListening() {
                   && appState.config.baiduApiKey
                   && appState.config.baiduSecretKey;
 
-    log.realtime(`步骤 4/5：模式选择 = ${useWS ? 'WebSocket（实时）' : 'REST（兜底）'}`);
+    console.log('[realtime]',`步骤 4/5：模式选择 = ${useWS ? 'WebSocket（实时）' : 'REST（兜底）'}`);
     if (useWS) {
       const ok = await startSystemAudioWebSocket(audioStream);
       if (!ok) {
-        log.realtimeWarn('WebSocket 模式失败，降级到 REST 模式');
+        console.warn('[realtime]','WebSocket 模式失败，降级到 REST 模式');
         await startSystemAudioRest(audioStream);
       } else {
         // 健康检查：WS 在 5s 内被服务端断开（code 1005 等），自动降级到 REST
@@ -1994,26 +1937,26 @@ async function startListening() {
       }
     } else {
       if (!appState.config.baiduAppId) {
-        log.realtimeWarn('未配置 baiduAppId，使用 REST 模式');
+        console.warn('[realtime]','未配置 baiduAppId，使用 REST 模式');
       }
       await startSystemAudioRest(audioStream);
     }
 
     // 5) 用户关掉共享窗口时自动停止
     audioTracks[0].onended = () => {
-      log.realtime('用户停止了音频共享（关闭了会议窗口共享）');
+      console.log('[realtime]','用户停止了音频共享（关闭了会议窗口共享）');
       stopListening();
     };
 
     appState.isListening = true;
     updateListeningUI(true);
-    log.realtime('✓ 全部步骤完成，监听已启动');
+    console.log('[realtime]','✓ 全部步骤完成，监听已启动');
   } catch (error) {
     if (error.name === 'NotAllowedError') {
-      log.realtime('用户取消了音频源选择');
+      console.log('[realtime]','用户取消了音频源选择');
       return;
     }
-    log.realtimeError('启动监听失败: ' + error.message);
+    console.error('[realtime]','启动监听失败: ' + error.message);
     console.error('启动监听失败:', error);
     alert('启动监听失败: ' + error.message);
   }
@@ -2022,39 +1965,39 @@ async function startListening() {
 // WebSocket 流式识别；连接失败返回 false，由调用方降级到 REST
 async function startSystemAudioWebSocket(audioStream) {
   // 1) 拿 access_token
-  log.realtime('WS 模式：向主进程申请百度 access_token...');
+  console.log('[realtime]','WS 模式：向主进程申请百度 access_token...');
   const tokenResult = await ipcRenderer.invoke('get-baidu-access-token', appState.config);
   if (!tokenResult.success) {
-    log.realtimeError('获取 token 失败: ' + tokenResult.error);
+    console.error('[realtime]','获取 token 失败: ' + tokenResult.error);
     return false;
   }
-  log.realtime('✓ access_token 已获取（' + tokenResult.token.substring(0, 8) + '...）');
+  console.log('[realtime]','✓ access_token 已获取（' + tokenResult.token.substring(0, 8) + '...）');
 
   // 2) 创建并连接 WebSocket
   const rt = new RealtimeSpeechService();
-  rt.on('open', () => log.realtime('✓ WebSocket 已连接'));
+  rt.on('open', () => console.log('[realtime]','✓ WebSocket 已连接'));
   rt.on('interim', (data) => {
     if (elements.interimText) elements.interimText.textContent = data.text;
-    log.recognize('中间结果: ' + data.text);
+    console.log('[recognize]','中间结果: ' + data.text);
   });
   rt.on('final', async (data) => {
     if (elements.interimText) elements.interimText.textContent = '';
-    log.recognize('最终结果: ' + data.text);
+    console.log('[recognize]','最终结果: ' + data.text);
     // 使用延迟处理，避免面试官还没说完就触发
     scheduleProcessRecognizedText(data.text);
   });
-  rt.on('error', (err) => log.realtimeError('WS 错误: ' + (err && err.message || err)));
-  rt.on('close', (info) => log.realtime('WS 关闭: ' + JSON.stringify(info)));
+  rt.on('error', (err) => console.error('[realtime]','WS 错误: ' + (err && err.message || err)));
+  rt.on('close', (info) => console.log('[realtime]','WS 关闭: ' + JSON.stringify(info)));
 
   try {
-    log.realtime('正在连接 wss://vop.baidu.com/realtime_asr ...');
+    console.log('[realtime]','正在连接 wss://vop.baidu.com/realtime_asr ...');
     await rt.connect({
       accessToken: tokenResult.token,
       appId: appState.config.baiduAppId,
       appKey: appState.config.baiduApiKey    // ★ 必须传 appkey
     });
   } catch (e) {
-    log.realtimeError('WS 连接失败: ' + e.message);
+    console.error('[realtime]','WS 连接失败: ' + e.message);
     return false;
   }
   appState.systemAudioRt = rt;
@@ -2063,7 +2006,7 @@ async function startSystemAudioWebSocket(audioStream) {
   const recorder = createPcmRecorder({ stream: audioStream });
   await recorder.start();
   appState.systemAudioRecorder = recorder;
-  log.realtime('✓ PCM 录音器已启动，等待音频数据...');
+  console.log('[realtime]','✓ PCM 录音器已启动，等待音频数据...');
 
   // 4) 100ms 一次：取累积样本 → 静音检测 → Int16 → 发给 WS
   let totalSent = 0;
@@ -2089,7 +2032,7 @@ async function startSystemAudioWebSocket(audioStream) {
     
     if (!firstAudioLogged) {
       firstAudioLogged = true;
-      log.realtime('✓ 首次捕获到音频数据: ' + samples.length + ' 个样本（' + (samples.length/16).toFixed(0) + 'ms）');
+      console.log('[realtime]','✓ 首次捕获到音频数据: ' + samples.length + ' 个样本（' + (samples.length/16).toFixed(0) + 'ms）');
     }
     const i16 = new Int16Array(samples.length);
     for (let i = 0; i < samples.length; i++) {
@@ -2102,11 +2045,11 @@ async function startSystemAudioWebSocket(audioStream) {
     const seconds = Math.floor(totalSent / 16000);
     if (seconds > lastSendLog) {
       lastSendLog = seconds;
-      log.realtime('已发送 ' + seconds + 's 音频到百度（累计 ' + totalSent + ' 样本）');
+      console.log('[realtime]','已发送 ' + seconds + 's 音频到百度（累计 ' + totalSent + ' 样本）');
     }
   }, 100);
 
-  log.realtime('✓ WebSocket 模式启动成功');
+  console.log('[realtime]','✓ WebSocket 模式启动成功');
   return true;
 }
 
@@ -2127,12 +2070,12 @@ function watchWebSocketHealth(audioStream) {
   // 5s 后判断
   setTimeout(() => {
     if (audioReceived) {
-      log.realtime('✓ WS 健康检查通过：已收到有效识别结果');
+      console.log('[realtime]','✓ WS 健康检查通过：已收到有效识别结果');
       return;
     }
     if (!rt.isOpen) {
-      log.realtimeWarn('健康检查：WS 在 5s 内被关闭（可能是 AppID 无实时 ASR 权限）');
-      log.realtimeWarn('自动降级到 REST 模式...');
+      console.warn('[realtime]','健康检查：WS 在 5s 内被关闭（可能是 AppID 无实时 ASR 权限）');
+      console.warn('[realtime]','自动降级到 REST 模式...');
       // 停掉现有 pump
       if (appState.systemAudioPump) {
         clearInterval(appState.systemAudioPump);
@@ -2143,7 +2086,7 @@ function watchWebSocketHealth(audioStream) {
       // 启动 REST
       startSystemAudioRest(audioStream);
     } else {
-      log.realtime('WS 仍连接中（5s 内无识别结果，可能音频源是静音）');
+      console.log('[realtime]','WS 仍连接中（5s 内无识别结果，可能音频源是静音）');
     }
   }, 5000);
 }
@@ -2192,6 +2135,27 @@ async function startSystemAudioRest(audioStream) {
   }, 1500);
 }
 
+// 导出系统音频存档：取 recorder 的 archive 缓冲 → 编码 WAV → 主进程存盘
+async function saveSystemRecording() {
+  try {
+    const rec = appState.systemAudioRecorder;
+    if (!rec || typeof rec.takeArchive !== 'function') return null;
+    const samples = rec.takeArchive();
+    if (!samples || samples.length < WAV_SAMPLE_RATE) return null; // 不足 1 秒不存
+    const wav = encodeWav(samples, WAV_SAMPLE_RATE);
+    const sessionId = String(Date.now());
+    const res = await ipcRenderer.invoke('save-system-recording', sessionId, wav);
+    if (res && res.success) {
+      console.log('[realtime]','💾 系统音频已存档：' + (res.path || ''));
+      appState.lastRecordingPath = res.path;
+      return res.path;
+    }
+  } catch (e) {
+    console.error('[saveSystemRecording]', e);
+  }
+  return null;
+}
+
 async function stopListening() {
   appState.isListening = false;
   appState.listeningSource = null;  // 清除来源标志
@@ -2205,6 +2169,8 @@ async function stopListening() {
     appState.systemAudioPump = null;
   }
   if (appState.systemAudioRecorder) {
+    // 停止前先导出系统音频存档（stop 会清空存档缓冲）
+    try { await saveSystemRecording(); } catch (_) {}
     appState.systemAudioRecorder.stop();
     appState.systemAudioRecorder = null;
   }
@@ -2256,16 +2222,57 @@ async function startInterview() {
     answerEl.textContent = '';
   }
 
-  // 如果未在监听中，自动启动音频捕获（来源标记为面试）
+  // 依据「系统音频模式」开关（audioMode）决定采集链路：
+  //   system    → 系统声音（WASAPI 直连优先，失败降级 getDisplayMedia）
+  //   microphone→ 仅麦克风（适合无系统音频环回设备的环境）
+  //   mixed     → 系统声音 + 麦克风同时采集
+  const mode = (appState.config && appState.config.audioMode) || 'system';
+
+  if (mode === 'microphone') {
+    // 仅麦克风模式：避免误开系统音频采集
+    if (!micCaptureActive) {
+      console.log('[realtime]','🚀 开始面试：以麦克风模式采集...');
+      try {
+        await startMicCapture();
+      } catch (e) {
+        console.error('[realtime]','麦克风采集启动失败: ' + e.message);
+      }
+    } else {
+      console.log('[realtime]','✓ 麦克风采集已在运行中，直接开始面试');
+    }
+    return;
+  }
+
+  if (mode === 'mixed') {
+    // 混合模式：两条链路都启动
+    if (!appState.isListening) {
+      console.log('[realtime]','🚀 开始面试：混合模式（系统声音 + 麦克风）...');
+      try {
+        await toggleListening('interview');
+      } catch (e) {
+        console.error('[realtime]','系统音频启动失败: ' + e.message);
+      }
+    }
+    if (!micCaptureActive) {
+      try {
+        await startMicCapture();
+      } catch (e) {
+        console.error('[realtime]','麦克风启动失败: ' + e.message);
+      }
+    }
+    return;
+  }
+
+  // 系统声音模式（默认）：若未在监听中，自动启动系统音频捕获
   if (!appState.isListening) {
-    log.realtime('🚀 开始面试：自动启动系统音频捕获...');
+    console.log('[realtime]','🚀 开始面试：自动启动系统音频捕获...');
     try {
       await toggleListening('interview');
     } catch (e) {
-      log.realtimeError('启动音频捕获失败: ' + e.message);
+      console.error('[realtime]','启动音频捕获失败: ' + e.message);
     }
   } else {
-    log.realtime('✓ 音频捕获已在运行中，直接开始面试');
+    console.log('[realtime]','✓ 音频捕获已在运行中，直接开始面试');
   }
 }
 

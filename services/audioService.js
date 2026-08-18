@@ -134,10 +134,6 @@ class AudioService {
    * 检测文本是否包含问题 - 支持灵敏度设置
    */
   detectQuestion(text, sensitivity = 5) {
-    // ★ 临时：直接返回 true 测试 AI 调用
-    console.log('[detectQuestion] 直接返回 true 进行测试');
-    return true;
-
     if (!text || text.length < 5) return false;
 
     const trimmedText = text.trim();

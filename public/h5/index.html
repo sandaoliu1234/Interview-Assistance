@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<!-- 移动端 viewport：适配微信内浏览器 + 防止双击缩放 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="format-detection" content="telephone=no" />
+<title>面试辅助 · 手机端</title>
+<style>
+  /* ===== 全局：深色主题（贴合桌面面板整体审美），原生 CSS 无框架依赖 ===== */
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100vh;
+    background: #0b1020;              /* 深蓝黑底，与面板深色风格一致 */
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 15px; line-height: 1.55;
+  }
+  .app { max-width: 720px; margin: 0 auto; padding: 16px 14px 40px; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; border-radius: 10px;
+    background: #121a33; border: 1px solid #1e2a55;
+    margin-bottom: 14px;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .status { font-size: 13px; padding: 4px 10px; border-radius: 999px; background: #1f2b52; }
+  .status.ok { background: #0b3d2e; color: #6ee7b7; }
+  .status.bad { background: #3d1717; color: #fca5a5; }
+  .card {
+    background: #121a33; border: 1px solid #1e2a55; border-radius: 12px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: #9db0ff; font-weight: 600; }
+  button {
+    appearance: none; -webkit-appearance: none;
+    width: 100%; padding: 12px 14px; border: none; border-radius: 10px;
+    background: linear-gradient(135deg, #4f46e5, #6366f1); color: #fff;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    transition: transform 0.08s ease, opacity 0.15s ease;
+  }
+  button:active { transform: scale(0.985); }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn-row { display: flex; gap: 10px; }
+  .btn-row button { flex: 1; }
+  .btn-ghost {
+    background: transparent; color: #9db0ff; border: 1px solid #2d3b74;
+  }
+  .btn-danger {
+    background: linear-gradient(135deg, #b91c1c, #ef4444);
+  }
+  .shot-wrap {
+    margin-top: 12px; text-align: center;
+    min-height: 80px;
+    background: #0a0f24; border: 1px dashed #24306a; border-radius: 10px;
+    padding: 10px;
+  }
+  .shot-wrap img { max-width: 100%; height: auto; border-radius: 8px; display: block; margin: 0 auto; }
+  .shot-wrap .hint { color: #5b6a9f; font-size: 13px; padding: 20px 0; }
+  textarea {
+    width: 100%; min-height: 90px; padding: 10px 12px;
+    background: #0a0f24; border: 1px solid #24306a; border-radius: 10px;
+    color: #e6edf3; font-size: 15px; resize: vertical;
+    font-family: inherit;
+  }
+  textarea::placeholder { color: #5b6a9f; }
+  .label-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .label-row small { color: #7d8ec0; font-size: 12px; }
+  .text-block {
+    background: #0a0f24; border: 1px solid #1e2a55; border-radius: 10px;
+    padding: 12px; min-height: 50px; white-space: pre-wrap; word-break: break-word;
+  }
+  .asr-block { color: #cbd5f5; margin-bottom: 14px; }
+  .answer-block { color: #e6edf3; }
+  .answer-block.waiting { color: #7d8ec0; font-style: italic; }
+  .toast {
+    position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
+    background: rgba(18, 26, 51, 0.98); color: #e6edf3;
+    padding: 10px 16px; border-radius: 8px; border: 1px solid #2d3b74;
+    font-size: 13px; z-index: 1000; opacity: 0; transition: opacity 0.2s ease;
+    pointer-events: none; max-width: 90%;
+  }
+  .toast.show { opacity: 1; }
+  .toast.error { border-color: #7f1d1d; background: rgba(60, 15, 15, 0.98); color: #fca5a5; }
+  .toast.ok { border-color: #065f46; background: rgba(6, 59, 42, 0.98); color: #6ee7b7; }
+
+  /* ============================================================
+     调试面板：默认展开，显示 URL / token / 健康状态 / 网络请求日志清单
+     便于用户手机端直接查看"连不上 / 报错"原因，不用去看电脑终端
+  ============================================================ */
+  .debug-panel {
+    background: #0f1429; border: 1px solid #2b3975; border-radius: 12px;
+    margin-bottom: 14px; overflow: hidden;
+  }
+  .debug-panel summary {
+    cursor: pointer; user-select: none; padding: 10px 12px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: #141b37; list-style: none; font-size: 13px; font-weight: 600; color: #aab7ea;
+  }
+  .debug-panel summary::-webkit-details-marker { display: none; }
+  .debug-panel summary::after { content: '▼'; font-size: 11px; color: #7d8ec0; transition: transform 0.15s ease; }
+  .debug-panel[open] summary::after { transform: rotate(180deg); }
+  .debug-body { padding: 12px 14px; font-size: 12px; line-height: 1.55; color: #c7d0f0; }
+  .debug-row { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; word-break: break-all; }
+  .debug-row .k { color: #8392c3; flex: 0 0 auto; min-width: 70px; }
+  .debug-row .v { flex: 1; color: #e6edf3; }
+  .debug-health { margin: 10px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+  .debug-health.ok { background: #072a22; color: #86efac; border: 1px solid #0b5b46; }
+  .debug-health.bad { background: #3a1111; color: #fca5a5; border: 1px solid #7e1d1d; }
+  .debug-health.warn { background: #3a2a08; color: #fde68a; border: 1px solid #8a660c; }
+  .debug-log-list {
+    margin-top: 10px; background: #0a0f24; border: 1px solid #1e2a55; border-radius: 8px;
+    max-height: 260px; overflow-y: auto; padding: 8px 10px;
+  }
+  .debug-log-list:empty::before { content: '（暂无请求日志）'; color: #5b6a9f; font-style: italic; }
+  .debug-log-item {
+    padding: 5px 0; border-bottom: 1px dashed #1e2a55; font-family: ui-monospace, Consolas, "Courier New", monospace;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .debug-log-item:last-child { border-bottom: none; }
+  .debug-log-item .ts { color: #5b6a9f; margin-right: 6px; }
+  .debug-log-item .m-get { color: #60a5fa; }
+  .debug-log-item .m-post { color: #c084fc; }
+  .debug-log-item .ok { color: #6ee7b7; }
+  .debug-log-item .err { color: #fca5a5; }
+  .debug-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .debug-actions button { flex: 1; padding: 8px 10px; font-size: 13px; }
+  .debug-copy-baseurl-btn { background: linear-gradient(135deg, #0e7490, #0891b2); }
+  .debug-clear-btn { background: transparent; color: #aab7ea; border: 1px solid #2d3b74; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- 顶部：状态条 + 标题 -->
+  <header>
+    <h1>🎙️ 面试辅助 · 手机端</h1>
+    <span id="statusBadge" class="status">连接检测中…</span>
+  </header>
+
+  <!-- 调试面板：默认展开；折叠后不占空间，方便随时回来查看 -->
+  <details class="debug-panel" open>
+    <summary id="debugSummary">🐞 调试信息 · 连不上先看这里</summary>
+    <div class="debug-body">
+      <!-- 基本信息：当前 URL / Host / Token -->
+      <div class="debug-row"><span class="k">当前页面</span><span class="v" id="dbgPageUrl">—</span></div>
+      <div class="debug-row"><span class="k">电脑主机</span><span class="v" id="dbgHost">—</span></div>
+      <div class="debug-row"><span class="k">Token</span><span class="v" id="dbgToken">—</span></div>
+      <!-- 健康检查结果块（显示网络层通不通） -->
+      <div id="dbgHealth" class="debug-health warn">⏳ 正在与电脑端进行健康检查…</div>
+      <!-- 调试操作按钮：复制 URL / 清空日志 -->
+      <div class="debug-actions">
+        <button id="dbgCopyUrlBtn" class="debug-copy-baseurl-btn" type="button">📋 复制当前完整 URL</button>
+        <button id="dbgClearLogBtn" class="debug-clear-btn" type="button">清空请求日志</button>
+      </div>
+      <!-- 网络请求日志列表：每个 fetch 一行 -->
+      <div style="margin-top:10px; color:#8392c3; font-size:12px;">最近请求日志 ↓（手机点击失败可直接截屏发给开发者）</div>
+      <div id="dbgLogList" class="debug-log-list"></div>
+    </div>
+  </details>
+
+  <!-- 功能 1：截图（点按钮 → 电脑屏幕截图 → 预览图） -->
+  <section class="card">
+    <h2>① 电脑屏幕截图</h2>
+    <div class="btn-row">
+      <button id="shotBtn" type="button">📸 立即截图</button>
+      <button id="shotClearBtn" class="btn-ghost" type="button">🗑️ 清除</button>
+    </div>
+    <div class="shot-wrap" id="shotWrap">
+      <div class="hint" id="shotHint">点击上方按钮，获取电脑当前屏幕画面</div>
+      <img id="shotImg" alt="截图预览" style="display:none" />
+    </div>
+  </section>
+
+  <!-- 功能 2：问题补充 + AI 提问（带截图走视觉模型，无图走文本模型） -->
+  <section class="card">
+    <div class="label-row">
+      <h2 style="margin:0">② 提交给 AI 回答</h2>
+      <small>至少填一个：截图 or 文字</small>
+    </div>
+    <textarea id="qInput" placeholder="（可选）补充问题描述 / 追问 / 上下文… 例如：请用 Java 8 重写这道题，要求时间复杂度 O(n)"></textarea>
+    <div class="btn-row" style="margin-top:10px">
+      <button id="askBtn" type="button">🤖 提问 AI</button>
+      <button id="qClearBtn" class="btn-ghost" type="button">清空文字</button>
+    </div>
+  </section>
+
+  <!-- 功能 3：答案与 ASR 实时同步（长轮询兜底 + 直接返回双通道） -->
+  <section class="card">
+    <div class="label-row">
+      <h2 style="margin:0">③ 实时内容（与电脑面板同步）</h2>
+      <small id="lastSyncTip">—</small>
+    </div>
+    <div class="label-row" style="margin-top:6px"><span>🗣️ ASR 面试官在说</span></div>
+    <div id="asrBlock" class="text-block asr-block waiting">（暂无 ASR 内容）</div>
+    <div class="label-row" style="margin-top:12px"><span>🤖 AI 答案</span></div>
+    <div id="answerBlock" class="text-block answer-block waiting">（暂无 AI 答案，提交提问后显示）</div>
+  </section>
+
+</div>
+
+<!-- 轻量 Toast 提示组件（单例，不引框架） -->
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+
+// ===== 全局状态（单文件闭包，不引任何状态管理库）=====
+const App = {
+  token: '',          // 一次性连接 Token（IA-xxxx），从 URL ?token= 取
+  host: '',           // 当前访问的 host（protocol+//+host），API 走相对路径时拼接 origin
+  shotDataUrl: '',    // 当前截图的 dataURL（image/jpeg;base64,xxxx），供 /api/answer/ask 传视觉模型
+  pollTimer: null,    // 长轮询定时器句柄
+  lastAnswerAt: 0,    // 上次 AI 答案时间戳（用于判定是否新答案，避免重复 toast）
+  toastTimer: null,   // toast 自动隐藏定时器
+  debugLogs: [],      // 请求日志：每条 {ts, method, path, status, costMs, ok, info}
+  maxDebugLogs: 80,   // 最多保留 N 条（防超长卡顿）
+};
+
+// ===== DOM 快捷获取（$ 等价于 document.getElementById，不引 jQuery）=====
+function $(id) { return document.getElementById(id); }
+
+// ===== Toast：轻提示，3 种类型 default/ok/error =====
+function toast(msg, type) {
+  const el = $('toast');
+  if (!el) return;
+  el.className = 'toast show' + (type === 'ok' ? ' ok' : type === 'error' ? ' error' : '');
+  el.textContent = String(msg || '');
+  if (App.toastTimer) clearTimeout(App.toastTimer);
+  App.toastTimer = setTimeout(() => { el.className = 'toast'; }, 2400);
+}
+
+// ===== 请求日志：追加一条并渲染到调试面板列表（保持最新在顶部） =====
+function addDebugLog(entry) {
+  try {
+    const now = Date.now();
+    const item = Object.assign({ ts: now }, entry || {});
+    App.debugLogs.unshift(item);
+    if (App.debugLogs.length > App.maxDebugLogs) App.debugLogs.length = App.maxDebugLogs;
+    const list = $('dbgLogList');
+    if (!list) return;
+    const pad2 = (n) => (n < 10 ? '0' + n : '' + n);
+    const d = new Date(item.ts);
+    const tsStr = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+    const m = (String(item.method || 'GET').toUpperCase() === 'POST') ? 'POST' : 'GET';
+    const mCls = (m === 'POST') ? 'm-post' : 'm-get';
+    const statusCls = item.ok ? 'ok' : 'err';
+    const costTxt = (item.costMs != null) ? ` ${item.costMs}ms` : '';
+    const infoTxt = item.info ? ` — ${item.info}` : '';
+    const html = `<div class="debug-log-item"><span class="ts">${tsStr}</span><span class="${mCls}">[${m}]</span> <span>${item.path || '-'}</span> <span class="${statusCls}">${item.status || 'ERR'}${costTxt}${infoTxt}</span></div>`;
+    list.insertAdjacentHTML('afterbegin', html);
+    // 防 DOM 过长，保留最多渲染 80 条
+    while (list.children.length > 80) list.removeChild(list.lastChild);
+  } catch (e) {
+    // 调试函数本身失败就静默，不能影响主功能
+    console.warn('[addDebugLog] 失败（非致命）:', e.message);
+  }
+}
+
+// ===== 初始化调试面板基本信息（页面 URL / Host / Token 前 6 位 + 复制/清空按钮） =====
+function initDebugPanel() {
+  try {
+    const page = $('dbgPageUrl');
+    const host = $('dbgHost');
+    const tok = $('dbgToken');
+    if (page) page.textContent = location.href.length > 180 ? (location.href.substring(0, 180) + '…') : location.href;
+    if (host) host.textContent = App.host || location.host || '-';
+    if (tok) tok.textContent = App.token ? (App.token.substring(0, 6) + '***') : '(空)';
+  } catch (_) { /* 非致命 */ }
+  // 复制当前完整 URL
+  try {
+    const btn = $('dbgCopyUrlBtn');
+    if (btn) btn.addEventListener('click', async () => {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(location.href);
+          toast('完整 URL 已复制到剪贴板', 'ok');
+        } else {
+          // 老内核兜底：临时 textarea
+          const ta = document.createElement('textarea');
+          ta.value = location.href; ta.style.position = 'fixed'; ta.style.top = '-999px';
+          document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+          toast('完整 URL 已复制', 'ok');
+        }
+      } catch (e) {
+        toast('复制失败：' + (e.message || '未知错误'), 'error');
+      }
+    });
+  } catch (_) { /* 非致命 */ }
+  // 清空请求日志
+  try {
+    const btn = $('dbgClearLogBtn');
+    if (btn) btn.addEventListener('click', () => {
+      App.debugLogs = [];
+      const list = $('dbgLogList');
+      if (list) list.innerHTML = '';
+      toast('请求日志已清空', 'ok');
+    });
+  } catch (_) { /* 非致命 */ }
+}
+
+// ===== 健康检查：调 GET /health（免 token）判断网络层通不通，把结果写在调试面板显眼位置 =====
+async function runHealthCheck() {
+  const h = $('dbgHealth');
+  const setHtml = (cls, html) => { if (h) { h.className = 'debug-health ' + cls; h.innerHTML = html; } };
+  const start = Date.now();
+  try {
+    setHtml('warn', '⏳ 健康检查进行中：GET /health（免 token）…');
+    addDebugLog({ method: 'GET', path: '/health（免 token）', status: '…', ok: false });
+    const r = await fetch('/health', { cache: 'no-store' });
+    const j = await r.json().catch(() => ({}));
+    const cost = Date.now() - start;
+    if (r.ok && j && j.ok) {
+      addDebugLog({ method: 'GET', path: '/health（免 token）', status: String(r.status), costMs: cost, ok: true });
+      setHtml('ok',
+        `✅ 网络层 <b>完全正常</b>！<br>` +
+        `· 电脑与手机互通：HTTP ${r.status}，耗时 ${cost}ms<br>` +
+        `· <i>如果接下来"连接失败"，通常是 Token 过期或被重启，请重新扫码即可。</i>`
+      );
+      return true;
+    }
+    addDebugLog({ method: 'GET', path: '/health（免 token）', status: String(r.status), costMs: cost, ok: false, info: (j && j.msg) || '非 2xx' });
+    setHtml('bad',
+      `❌ 健康检查失败：HTTP ${r.status}（${cost}ms）<br>` +
+      `· 这种情况通常是 <b>token 仍能过，但服务异常</b>；请把上方日志截图发给开发者`
+    );
+    return false;
+  } catch (e) {
+    const cost = Date.now() - start;
+    const errMsg = (e && e.message) ? e.message : '无详情';
+    addDebugLog({ method: 'GET', path: '/health（免 token）', status: 'EXCEPTION', costMs: cost, ok: false, info: errMsg });
+    // ⚠️ 最常见错误分支：用户看不到 H5 页面内容的 99% 情况都在这
+    let diagnosis = '';
+    if (/failed to fetch|networkerror|网络错误|typeerror/i.test(errMsg)) {
+      diagnosis =
+        `<b>🔴 常见根因（按顺序排查）：</b><br>` +
+        `① 手机和电脑<b>不在同一个 WiFi/同一个局域网</b>？（一个流量一个有线/两个不同 WiFi）<br>` +
+        `② 电脑首选 IP 是 <b>VMware/Hyper-V/虚拟网卡</b>？（需重新扫码，终端会打印"首选 IP = x.x.x.x"）<br>` +
+        `③ Windows 防火墙<b>拦截了 Node.js</b>？（首次运行弹框要点「允许访问」专用网络）<br>` +
+        `④ 公司 WiFi/手机开了<b>AP 隔离/VPN/代理</b>？（导致手机无法直连电脑内网 IP）`;
+    } else {
+      diagnosis = `<b>异常详情：</b>${errMsg}`;
+    }
+    setHtml('bad',
+      `❌ <b>健康检查失败：连不上电脑端</b>（${cost}ms）<br>` +
+      `<b style="color:#fca5a5;">异常：${errMsg}</b><br><br>` +
+      diagnosis
+    );
+    toast('健康检查未通过：手机无法连接电脑（详见调试面板）', 'error');
+    return false;
+  }
+}
+
+// ===== 从 URL 提取 token + 初始化 host =====
+function initFromUrl() {
+  try {
+    const u = new URL(location.href);
+    App.token = (u.searchParams.get('token') || '').trim();
+    App.host = `${u.protocol}//${u.host}`;
+  } catch (_) {
+    // 兼容旧浏览器：正则兜底取 token（new URL 在极个别老微信内核可能失败）
+    const m = location.search.match(/[?&]token=([^&]+)/);
+    App.token = m ? decodeURIComponent(m[1]).trim() : '';
+    App.host = `${location.protocol}//${location.host}`;
+  }
+  if (!App.token) {
+    $('statusBadge').textContent = '缺少 Token';
+    $('statusBadge').className = 'status bad';
+    toast('二维码缺少 Token，请重新扫码', 'error');
+    return false;
+  }
+  return true;
+}
+
+// ===== 给 fetch URL 自动补 token（Query 参数方式，后端 _checkAuth 已支持 URL 鉴权）=====
+function withToken(path) {
+  const sep = path.indexOf('?') >= 0 ? '&' : '?';
+  return `${path}${sep}token=${encodeURIComponent(App.token)}`;
+}
+
+// ===== 连接检测：调 /api/connect 看 token 是否有效，同时拿 AI/面试配置 =====
+async function checkConnect() {
+  const badge = $('statusBadge');
+  const _start = Date.now();
+  const _path = '/api/connect';
+  addDebugLog({ method: 'GET', path: _path, status: '…', ok: false });
+  try {
+    const r = await fetch(withToken('/api/connect'));
+    const j = await r.json();
+    if (r.ok && j && j.ok) {
+      badge.textContent = '✅ 已连接';
+      badge.className = 'status ok';
+      addDebugLog({ method: 'GET', path: _path, status: String(r.status), costMs: Date.now() - _start, ok: true, info: `AI配置：${(j.aiConfig && j.aiConfig.model) || '-'}` });
+      return true;
+    }
+    throw new Error((j && j.msg) || `HTTP ${r.status}`);
+  } catch (e) {
+    badge.textContent = '❌ 连接失败';
+    badge.className = 'status bad';
+    console.error('[connect] 失败:', e.message);
+    addDebugLog({ method: 'GET', path: _path, status: 'ERR', costMs: Date.now() - _start, ok: false, info: e.message || '未知错误' });
+    toast('连接电脑失败：' + (e.message || '未知错误'), 'error');
+    return false;
+  }
+}
+
+// ===== 截图：GET /api/screenshot（返回 JPEG/PNG base64 + mime）=====
+async function doScreenshot() {
+  const btn = $('shotBtn');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '截图中…（1-3s）';
+  const _start = Date.now();
+  const _path = '/api/screenshot?format=jpeg&quality=0.85&maxSize=1600';
+  addDebugLog({ method: 'GET', path: _path, status: '…', ok: false });
+  try {
+    const r = await fetch(withToken('/api/screenshot?format=jpeg&quality=0.85&maxSize=1600'));
+    const j = await r.json();
+    if (!(r.ok && j && j.ok)) throw new Error((j && j.msg) || `HTTP ${r.status}`);
+    if (!j.data || !j.mime) throw new Error('返回数据缺少截图内容');
+    // 拼 dataURL：data:{mime};base64,{data} 供 <img> 和视觉模型使用
+    const dataUrl = `data:${j.mime};base64,${j.data}`;
+    App.shotDataUrl = dataUrl;
+    const img = $('shotImg');
+    const hint = $('shotHint');
+    if (hint) hint.style.display = 'none';
+    img.src = dataUrl; img.style.display = 'block';
+    addDebugLog({ method: 'GET', path: _path, status: String(r.status), costMs: Date.now() - _start, ok: true, info: `${j.width || '?'}×${j.height || '?'} ${j.mime}` });
+    toast(`截图成功（${j.width || '?'}×${j.height || '?'}）`, 'ok');
+  } catch (e) {
+    console.error('[screenshot] 失败:', e.message);
+    addDebugLog({ method: 'GET', path: _path, status: 'ERR', costMs: Date.now() - _start, ok: false, info: e.message || '未知错误' });
+    toast('截图失败：' + (e.message || '未知错误'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+// ===== 清除截图预览 + 清空内存 dataUrl =====
+function clearShot() {
+  App.shotDataUrl = '';
+  const img = $('shotImg');
+  const hint = $('shotHint');
+  img.removeAttribute('src');
+  img.style.display = 'none';
+  if (hint) hint.style.display = 'block';
+}
+
+// ===== 提交提问：POST /api/answer/ask =====
+async function doAskAi() {
+  const btn = $('askBtn');
+  if (btn.disabled) return;
+  const qText = ($('qInput').value || '').trim();
+  if (!qText && !App.shotDataUrl) {
+    toast('请先截图或填写问题文字', 'error');
+    return;
+  }
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = 'AI 思考中…（3-15s）';
+  const ansBlock = $('answerBlock');
+  ansBlock.classList.add('waiting');
+  ansBlock.textContent = 'AI 正在作答，请稍候…';
+  const _start = Date.now();
+  const _path = '/api/answer/ask';
+  addDebugLog({ method: 'POST', path: _path, status: '…', ok: false, info: `textLen=${qText.length}  withImage=${!!App.shotDataUrl}` });
+  try {
+    const body = { text: qText };
+    if (App.shotDataUrl) body.imageDataUrl = App.shotDataUrl;
+    const r = await fetch(withToken('/api/answer/ask'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!(r.ok && j && j.ok)) throw new Error((j && j.msg) || `HTTP ${r.status}`);
+    const ans = String(j.answer || '').trim();
+    ansBlock.classList.remove('waiting');
+    ansBlock.textContent = ans || '(AI 未返回内容)';
+    if (ans) {
+      const cost = j.costMs ? `（${Math.round(j.costMs / 100) / 10}s）` : '';
+      toast(`AI 回答完成${cost}`, 'ok');
+    }
+    addDebugLog({ method: 'POST', path: _path, status: String(r.status), costMs: Date.now() - _start, ok: true, info: `ansLen=${ans.length}${j.costMs ? ' cost=' + j.costMs + 'ms' : ''}` });
+  } catch (e) {
+    console.error('[askAI] 失败:', e.message);
+    ansBlock.classList.remove('waiting');
+    ansBlock.textContent = '(失败)';
+    addDebugLog({ method: 'POST', path: _path, status: 'ERR', costMs: Date.now() - _start, ok: false, info: e.message || '未知错误' });
+    toast('AI 回答失败：' + (e.message || '未知错误'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+// ===== 长轮询兜底：1.5s 拉一次 /api/overlay/status，同步 ASR + 面板 AI 答案 =====
+// 为什么用轮询不用 EventSource：微信内浏览器对 SSE（EventSource）兼容性不稳定（阶梯 3 选更通用的 fetch + setInterval）
+function startPolling() {
+  if (App.pollTimer) return;
+  const _path = '/api/overlay/status';
+  const tick = async () => {
+    const _start = Date.now();
+    try {
+      const r = await fetch(withToken('/api/overlay/status'));
+      if (!r.ok) {
+        addDebugLog({ method: 'GET', path: _path, status: String(r.status), costMs: Date.now() - _start, ok: false });
+        return;
+      }
+      const j = await r.json();
+      if (!j) {
+        addDebugLog({ method: 'GET', path: _path, status: 'EMPTY', costMs: Date.now() - _start, ok: false });
+        return;
+      }
+      // --- ASR 文本：有新内容就更新，避免反复覆盖空白 ---
+      const asrBlock = $('asrBlock');
+      if (j.asrText) {
+        if (asrBlock.classList.contains('waiting')) asrBlock.classList.remove('waiting');
+        asrBlock.textContent = String(j.asrText);
+      }
+      // --- AI 答案：lastAnswerAt 更新则显示（避免覆盖用户当前在看的内容 / 重复 toast）---
+      const ansBlock = $('answerBlock');
+      if (j.answerText && j.lastAnswerAt && j.lastAnswerAt > App.lastAnswerAt) {
+        App.lastAnswerAt = j.lastAnswerAt;
+        ansBlock.classList.remove('waiting');
+        ansBlock.textContent = String(j.answerText);
+      }
+      // --- 同步时间戳显示 ---
+      $('lastSyncTip').textContent = '同步 ' + new Date().toLocaleTimeString();
+      // 调试日志：只在有 ASR/答案更新或 HTTP 非 2xx 时记一条，避免 1.5s 一条刷爆
+      if (j.asrText || j.answerText) {
+        addDebugLog({ method: 'GET', path: _path, status: String(r.status), costMs: Date.now() - _start, ok: true, info: `asrLen=${(j.asrText || '').length} ansLen=${(j.answerText || '').length}` });
+      }
+    } catch (_) { /* 网络抖动静默忽略，下一个 tick 再试 */ }
+  };
+  App.pollTimer = setInterval(tick, 1500);
+  tick(); // 立即跑一次，不等 1.5s
+}
+
+// ===== 事件绑定：统一 try/catch 包裹，单点失败不影响其他按钮 =====
+function bindEvents() {
+  // 截图按钮
+  try {
+    $('shotBtn').addEventListener('click', () => doScreenshot());
+  } catch (e) { console.error('[bind] 截图按钮绑定失败:', e.message); }
+  // 清除截图
+  try {
+    $('shotClearBtn').addEventListener('click', () => clearShot());
+  } catch (e) { console.error('[bind] 清除截图按钮绑定失败:', e.message); }
+  // 提问 AI
+  try {
+    $('askBtn').addEventListener('click', () => doAskAi());
+  } catch (e) { console.error('[bind] 提问按钮绑定失败:', e.message); }
+  // 清空文字
+  try {
+    $('qClearBtn').addEventListener('click', () => { $('qInput').value = ''; toast('已清空文字', 'ok'); });
+  } catch (e) { console.error('[bind] 清空文字按钮绑定失败:', e.message); }
+}
+
+// ===== 入口：按顺序执行（URL → 调试面板 → 健康检查 → 连接检测 → 事件绑定 → 启动轮询）=====
+(async function boot() {
+  if (!initFromUrl()) return;
+  initDebugPanel();                 // 先填充调试面板基本信息（URL/Host/Token）
+  const healthy = await runHealthCheck();   // 免 token 健康检查：不通就显眼提示 + 给出 4 条常见根因
+  if (!healthy) {
+    // 健康检查没通过，仍然允许用户手动点按钮继续（有些极个别手机 fetch 会抛 TypeError，但真实请求其实能通）
+    console.warn('[boot] 健康检查未通过，继续初始化（用户可手动操作）');
+  }
+  bindEvents();
+  await checkConnect();
+  startPolling();
+})();
+</script>
+</body>
+</html>

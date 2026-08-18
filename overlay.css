@@ -1,0 +1,753 @@
+/* ============================================================
+   面试答题独立窗口样式 (overlay.css)
+   说明：
+     - 该文件是独立 BrowserWindow（overlayWindow）加载的样式
+     - 与主窗口 styles.css 视觉一致：同样的 :root 变量、深色 HireMe 主题
+     - 没有全屏遮罩（独立窗口本身就只是面板区域）
+     - 加入字体缩放基准 html { font-size: 16px }，rem 响应
+   ============================================================ */
+
+:root {
+  /* 背景（由深到浅） */
+  --bg-page:        #0b0f17;
+  --bg-elevated:    #141b2a;
+  --bg-card:        #1a2332;
+  --bg-card-hover:  #202c3e;
+  --bg-input:       #111827;
+  /* 边框 */
+  --border:         rgba(255, 255, 255, 0.08);
+  --border-strong:  rgba(255, 255, 255, 0.14);
+  --border-active:  rgba(59, 130, 246, 0.55);
+  /* 文字 */
+  --text-primary:   #f3f4f6;
+  --text-secondary: #9ca3af;
+  --text-tertiary:  #6b7280;
+  --text-inverse:   #ffffff;
+  /* 焦点色（HireMe 蓝） */
+  /* --accent:         #3b82f6; */
+  --accent-hover:   #2563eb;
+  --accent-soft:    rgba(59, 130, 246, 0.16);
+  --accent-ink:     #93c5fd;
+  /* 语义色 */
+  --success:        #22c55e;
+  --warning:        #f59e0b;
+  --danger:         #ef4444;
+  --recording:      #ef4444;
+  /* 尺寸 */
+  --radius-sm:      6px;
+  --radius:         10px;
+  --radius-lg:      14px;
+  --radius-pill:    999px;
+  /* 阴影 */
+  --shadow-xs:      0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-sm:      0 2px 6px rgba(0, 0, 0, 0.25);
+  --shadow-md:      0 6px 18px rgba(0, 0, 0, 0.35);
+  --shadow-lg:      0 16px 40px rgba(0, 0, 0, 0.45);
+  /* 间距（保留命名，便于对齐主窗口） */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px;
+}
+
+/* ==================== Reset & Base ==================== */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* 根元素基准字号 16px = 1rem；JS 通过修改该值实现纯字体缩放（与主窗口同步） */
+html { font-size: 16px; }
+/* 让 BrowserWindow 的内容铺满整个窗口，没有默认 body margin */
+html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 0.875rem;          /* 14px 基准正文 */
+  line-height: 1.55;
+  color: var(--text-primary);
+  background: transparent;      /* 配合 BrowserWindow transparent: true */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  user-select: none;            /* 面板主体不允许选中文本，防误选 */
+  /* ★ 反向拖动策略：全局默认 no-drag，仅 overlay-drag-handle 设 drag，
+     彻底解决 Windows 10 + frame:false + transparent:true 下按钮/徽章点击被吞的问题 */
+  -webkit-app-region: no-drag;
+}
+/* 只有答题区允许选中：方便复制 */
+.interim-display, .answer-display, .qr-info-row span {
+  user-select: text;
+}
+
+/* ==================== 浮动面板本体（取代原 index.html .overlay-content） ==================== */
+.overlay-content {
+  /* 独立窗口：100% 铺满 BrowserWindow，窗口大小=面板大小 */
+  width: 100%;
+  height: 100%;
+  /* 灰色 35% 不透明 + 毛玻璃 + 细边框 */
+  background: rgba(80, 80, 80, 0.35);
+  backdrop-filter: blur(8px);
+  border-radius: 16px;
+  /* ★ 统一外层 padding（原 24px 上下 + 左右）。
+       注：滚动区( panel-scroll-body )需要独立盒模型——所以改成 flex 竖排：
+         [drag-handle(绝对定位外)] + [header] + [panel-scroll-body(可伸缩滚动区)] */
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  /* CSS 投影 + 细边框，增加可读性 */
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  cursor: default;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  /* 绝对定位居中由 BrowserWindow 自身位置决定，不需要 position/top/transform */
+  position: relative;
+  /* ★ 与 body 保持一致：全局 no-drag，仅 overlay-drag-handle 允许拖动窗口 */
+  -webkit-app-region: no-drag;
+}
+
+/* ==================== 拖动手柄 ==================== */
+.overlay-drag-handle {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 24px;
+  background: var(--accent);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  z-index: 10;
+  /* ★ Electron 接管为窗口拖动区 */
+  -webkit-app-region: drag;
+}
+.overlay-drag-handle:active { cursor: grabbing; }
+.overlay-drag-handle .drag-grip {
+  color: #fff;
+  font-size: 0.75rem;    /* 12px */
+  font-weight: bold;
+  letter-spacing: -0.08em;
+}
+
+/* ==================== 头部（状态徽章 + 按钮组） ==================== */
+.overlay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  /* ★ 改为和滚动区一致的 padding：外层 flex 后不再有统一 padding */
+  padding: 14px 20px 10px 20px;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 防止被拖动手柄 drag 一起拖走 */
+  -webkit-app-region: no-drag;
+}
+
+/* ==================== 字体大小控制组件（与主窗口 styles.css 风格一致，毛玻璃 overlay 适配） ==================== */
+.font-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  /* ★ 关键：写在容器本身 + 子按钮，保证可点击（Electron drag 区域优先于 click） */
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.font-zoom .fz-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.6875rem;   /* 11px / 16px */
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: no-drag;
+}
+.font-zoom .fz-btn:hover {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.font-zoom .fz-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: transparent !important; /* 禁用时即使 hover 也不变色，视觉语义正确 */
+  color: var(--text-secondary) !important;
+}
+.font-zoom .fz-val {
+  min-width: 38px;
+  text-align: center;
+  font-size: 0.6875rem;   /* 11px / 16px */
+  color: var(--text-secondary);
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+/* ==================== 统一滚动容器（面试官 + AI助手 + 底部状态） ==================== */
+.panel-scroll-body {
+  /* 占满 flex 剩余空间（外层 display:flex/column） */
+  flex: 1 1 auto;
+  min-height: 0;            /* flex 子元素 overflow 生效必备 */
+  overflow-y: auto;         /* ★ 唯一纵向滚动条 */
+  overflow-x: hidden;
+  padding: 4px 20px 18px 20px;
+  /* 滚动时内容贴边不裁剪，内部 section 带 margin */
+}
+
+/* ---------- 自定义滚动条：与面板暗色 HireMe 主题匹配 ---------- */
+.panel-scroll-body::-webkit-scrollbar {
+  width: 8px;              /* 细而不突兀，匹配面板精致感 */
+  height: 8px;
+}
+.panel-scroll-body::-webkit-scrollbar-track {
+  /* 轨道：半透明，与面板毛玻璃视觉一致（不抢视觉重点） */
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
+  margin: 6px 0;
+}
+.panel-scroll-body::-webkit-scrollbar-thumb {
+  /* 滑块：蓝色半透明，与 --accent-soft/--border-active 同一色相，hover 加深 */
+  background: rgba(59, 130, 246, 0.38);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.panel-scroll-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.62);
+}
+.panel-scroll-body::-webkit-scrollbar-thumb:active {
+  background: rgba(37, 99, 235, 0.85);
+}
+/* Firefox */
+.panel-scroll-body {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(59, 130, 246, 0.45) rgba(255, 255, 255, 0.04);
+}
+
+/* 识别状态徽章：红色半透明 pill */
+.status-badge {
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 0.75rem;        /* 12px */
+  font-weight: 500;
+  /* 不允许 drag，防止拖到徽章把整个窗口拖走（drag-handle 才管用）*/
+  -webkit-app-region: no-drag;
+}
+.status-badge.recording {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--recording);
+}
+.status-badge.paused {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
+}
+
+/* 通用图标按钮：📱 和 × 都继承 */
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  font-size: 14px;
+  line-height: 1;
+  /* ★ 必须写在按钮本身：防止 Electron 把这里视为窗口拖动区，吞掉 click */
+  -webkit-app-region: no-drag;
+}
+.icon-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: var(--border-active);
+}
+
+/* 二维码悬浮按钮（在 icon-btn 基础上无额外形变即可） */
+.qr-toggle-btn { /* 继承 .icon-btn */ }
+
+/* 关闭按钮 × */
+.close-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+  /* ★ 必须写在按钮本身：防止 Electron 把这里视为窗口拖动区，吞掉 click */
+  -webkit-app-region: no-drag;
+}
+.close-btn:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+}
+
+/* ==================== ASR 临时识别区 ==================== */
+.interim-section { margin-bottom: 16px; }
+.interim-section label {
+  display: block;
+  font-size: 0.6875rem;     /* 11px */
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.interim-display {
+  font-size: 0.9375rem;      /* ★ 调小：18px → 15px，阅读密度更自然 */
+  color: var(--text-primary);
+  min-height: 40px;
+  padding: 12px 14px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+  border: 1px dashed var(--border-strong);
+  line-height: 1.55;
+  /* ★ 外层已统一滚动，不再各自滚动（去掉 max-height / overflow-y） */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------- 面试官截图：大图显示（不再是 max-height:200 的缩略图） ---------- */
+.interview-screenshot-wrap {
+  display: none;                       /* 默认隐藏，由 JS 根据有无截图切换 */
+  margin: 4px 0 10px 0;                /* label 与文字块之间的间隔 */
+}
+.interview-screenshot-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.interview-screenshot-title {
+  font-size: 0.75rem;                  /* 12px，与 label 同级尺寸 */
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.interview-screenshot-close {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+}
+.interview-screenshot-close:hover {
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.10);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+.interview-screenshot-img {
+  /* ★ 大图显示：宽度撑满容器（与下方对话框对齐），高度按比例自适应
+       · 最大高度限制 480px（防止特别长的截图直接占满整个面板）
+       · 超过宽度/高度时按比例缩放，保证不溢出面板
+       · 点击仍可新窗口打开原图（保留细节查看） */
+  display: block;
+  width: 100%;
+  max-height: 480px;
+  object-fit: contain;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: #000;            /* 透明图兜底黑底，看清画面轮廓 */
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  cursor: zoom-in;
+}
+
+/* ==================== AI 答案区 ==================== */
+.answer-section { margin-bottom: 16px; }
+.answer-section label {
+  display: block;
+  font-size: 0.6875rem;     /* 11px */
+  font-weight: 600;
+  color: var(--accent-ink);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.answer-display {
+  font-size: 0.8125rem;       /* ★★ 再次调小：14px → 13px，AI 输出通常非常长，紧凑更易读，适合面试屏看大段代码 */
+  color: var(--text-primary);
+  min-height: 60px;
+  /* ★ 外层已统一滚动，不再限制各自 max-height / overflow-y。
+       只要面板还有空间就展开到底，超出时由外层滚动条统一滚动 */
+  padding: 12px 14px;
+  /* 蓝色渐变背景高亮（与主窗口一致） */
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(59, 130, 246, 0.04) 100%);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-active);
+  line-height: 1.6;
+  /* ★ 改成用 Markdown 渲染后，white-space:pre-wrap 会让标题/段落之间额外多一行空白。
+       恢复成 normal，由 CSS 的 margin/padding 正常控制间距，避免 "---" 分隔线和标题出现错位 */
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* ==================== Markdown 渲染样式（约束在 .answer-display / .interim-display 内，不污染全局） ==================== */
+/* 标题：1-6 级分级字号，蓝色主题色上略深，加粗 */
+.answer-display h1, .answer-display h2, .answer-display h3,
+.answer-display h4, .answer-display h5, .answer-display h6,
+.interim-display h1, .interim-display h2, .interim-display h3,
+.interim-display h4, .interim-display h5, .interim-display h6 {
+  color: var(--text-primary);
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 14px 0 10px 0;
+  letter-spacing: 0.01em;
+}
+.answer-display h1, .interim-display h1 { font-size: 1.25rem; border-bottom: 1px solid var(--border-strong); padding-bottom: 6px; }
+.answer-display h2, .interim-display h2 { font-size: 1.12rem; border-bottom: 1px dashed var(--border); padding-bottom: 4px; }
+.answer-display h3, .interim-display h3 { font-size: 1.02rem; color: var(--accent); }   /* ### 用主题蓝，和你截图里的层级一致 */
+.answer-display h4, .interim-display h4 { font-size: 0.95rem; }
+.answer-display h5, .interim-display h5 { font-size: 0.88rem; }
+.answer-display h6, .interim-display h6 { font-size: 0.82rem; color: var(--text-secondary); }
+
+/* 段落 / 列表 / 分隔线：保持紧凑行距 */
+.answer-display p, .interim-display p { margin: 8px 0; }
+.answer-display ul, .answer-display ol,
+.interim-display ul, .interim-display ol {
+  margin: 6px 0 6px 20px;   /* 与左边界对齐，默认缩进 20px 让嵌套符号不超框 */
+  padding: 0;
+}
+.answer-display li, .interim-display li { margin: 3px 0; line-height: 1.6; }
+.answer-display ul > li, .interim-display ul > li { list-style: disc; }
+.answer-display ol > li, .interim-display ol > li { list-style: decimal; }
+.answer-display ul ul > li, .interim-display ul ul > li { list-style: circle; }
+.answer-display hr, .interim-display hr {
+  border: none;
+  border-top: 1px solid var(--border-strong);
+  margin: 14px 0;
+  opacity: 0.7;
+}
+
+/* 强调：**加粗** / *斜体* / ~~删除线~~ 语义色，不用默认浏览器色 */
+.answer-display strong, .interim-display strong {
+  font-weight: 600;
+  color: #e8eefb;   /* 比正文略亮一级，突出要点 */
+}
+.answer-display em, .interim-display em {
+  font-style: italic;
+  color: var(--text-primary);
+}
+.answer-display del, .interim-display del {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}
+
+/* 引用块 >：左边一条蓝色竖条，灰色字，内凹背景 */
+.answer-display blockquote, .interim-display blockquote {
+  margin: 10px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--accent);
+  background: rgba(59, 130, 246, 0.06);
+  color: var(--text-secondary);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  line-height: 1.6;
+}
+
+/* 行内代码 `xxx`：深色底，青绿色字，圆角，左右微量 padding，避免和正文同一基线错位 */
+.answer-display code.inline-code,
+.interim-display code.inline-code,
+.answer-display :not(pre) > code,
+.interim-display :not(pre) > code {
+  font-family: 'JetBrains Mono', 'Consolas', 'Menlo', 'Fira Code', monospace;
+  font-size: 0.78rem;      /* 代码比正文小半号，更紧凑 */
+  padding: 1px 6px;
+  background: rgba(0, 0, 0, 0.38);
+  color: #7dd3fc;           /* 青色字：代码高亮感 */
+  border-radius: 4px;
+  border: 1px solid rgba(125, 211, 252, 0.15);
+  white-space: nowrap;
+}
+
+/* 代码块 ```lang ```：独立段，深色底，带横向滚动 + 圆角边框 */
+.answer-display pre, .interim-display pre {
+  margin: 10px 0;
+  padding: 12px 14px;
+  background: #0d1016;      /* 接近终端的深灰黑 */
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow-x: auto;         /* 代码长就横向滚动，不折行破坏格式 */
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+  /* 自定义横向滚动条（与面板外层风格一致：蓝半透明圆角） */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(59, 130, 246, 0.45) rgba(255,255,255,0.03);
+}
+.answer-display pre::-webkit-scrollbar, .interim-display pre::-webkit-scrollbar {
+  height: 6px;
+}
+.answer-display pre::-webkit-scrollbar-thumb,
+.interim-display pre::-webkit-scrollbar-thumb {
+  background: rgba(59,130,246,0.38);
+  border-radius: 999px;
+}
+.answer-display pre > code, .interim-display pre > code {
+  display: block;
+  font-family: 'JetBrains Mono', 'Consolas', 'Menlo', 'Fira Code', monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: #e2e8f0;
+  white-space: pre;         /* 代码保留缩进与换行，不被 white-space:normal 吃掉 */
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+/* 链接：蓝色 + 下划线 hover，新窗口 */
+.answer-display a, .interim-display a {
+  color: #93c5fd;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.answer-display a:hover, .interim-display a:hover {
+  color: #dbeafe;
+}
+
+/* ==================== 生成中 / 成功提示 ==================== */
+.answer-status { text-align: center; }
+.loading-indicator {
+  color: var(--warning);
+  padding: 12px;
+  font-size: 0.8125rem;       /* 13px */
+  display: none;              /* 默认隐藏，JS 生成中时 display:block */
+}
+.success-indicator {
+  color: var(--success);
+  padding: 12px;
+  font-size: 0.8125rem;
+  display: none;              /* 默认隐藏，JS 生成完成后显示 2s 再隐藏 */
+}
+
+/* ==================== 8 向缩放手柄 ==================== */
+.overlay-resize-handle {
+  position: absolute;
+  /* 已删除原蓝色底色（background: var(--accent);），避免遮挡内容与视觉干扰 */
+  opacity: 0.3;
+  transition: opacity 0.15s ease;
+  z-index: 10;
+  /* 不参与 drag，允许 mousedown → IPC resize */
+  -webkit-app-region: no-drag;
+}
+.overlay-resize-handle:hover { opacity: 0.85; }
+.overlay-resize-handle.resize-n  { top: 0;    left: 10%; right: 10%; height: 6px;  cursor: ns-resize; }
+.overlay-resize-handle.resize-s  { bottom: 0; left: 10%; right: 10%; height: 6px;  cursor: ns-resize; }
+.overlay-resize-handle.resize-w  { left: 0;   top: 10%;  bottom: 10%; width: 6px;  cursor: ew-resize; }
+.overlay-resize-handle.resize-e  { right: 0;  top: 10%;  bottom: 10%; width: 6px;  cursor: ew-resize; }
+.overlay-resize-handle.resize-nw { top: 0;    left: 0;    width: 12px; height: 12px; cursor: nwse-resize; }
+.overlay-resize-handle.resize-ne { top: 0;    right: 0;   width: 12px; height: 12px; cursor: nesw-resize; }
+.overlay-resize-handle.resize-sw { bottom: 0; left: 0;    width: 12px; height: 12px; cursor: nesw-resize; }
+.overlay-resize-handle.resize-se { bottom: 0; right: 0;   width: 12px; height: 12px; cursor: nwse-resize; }
+
+/* ==================== 二维码弹窗 ==================== */
+.qr-modal {
+  /* fixed 面板右下角（注意：父级 .overlay-content 是 relative，实际是定位在面板内部） */
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 260px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 16px;
+  z-index: 999;
+  /* 默认隐藏；点击 📱 按钮 toggle show 类 */
+  display: none;
+  box-shadow: var(--shadow-md);
+  -webkit-app-region: no-drag;
+}
+.qr-modal.show { display: block; }
+
+/* 二维码弹窗拖拽触发区：整行作为把手（扩大拖动命中面积），光标提示 move，防止 Electron 接管整个窗口移动 */
+.qr-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 10px 2px;       /* 左侧 padding 小一些，整体给拖拽更大的命中区 */
+  margin-bottom: 6px;
+  cursor: move;
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+/* 标题文字：去掉旧的 margin-bottom，被 header 的 spacing 接管 */
+.qr-modal h3 {
+  font-size: 0.875rem;        /* 14px */
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+  flex: 1;
+  padding-right: 8px;
+  cursor: move;               /* 文字区也显示可拖，扩大视觉提示的区域面积 */
+}
+/* 右上角 × 关闭按钮：小尺寸，hover 变半透明蓝底 */
+.qr-close-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+.qr-close-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: var(--border-active);
+}
+
+#qrImg {
+  display: block;
+  width: 200px;
+  height: 200px;
+  margin: 0 auto 12px;
+  background: #fff;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+/* 四态连接徽章（与 status-badge 相同风格但固定宽度） */
+.qr-status {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 0.75rem;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+.qr-status.idle {
+  background: rgba(107, 114, 128, 0.18);
+  color: var(--text-secondary);
+}
+.qr-status.listening {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
+}
+.qr-status.connected {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+}
+.qr-status.disconnected {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+}
+
+/* WiFi/IP/端口信息区 */
+.qr-info {
+  font-size: 0.75rem;         /* 12px */
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  line-height: 1.8;
+}
+.qr-info-row {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qr-info-row span {
+  color: var(--text-primary);
+  font-weight: 500;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+}
+
+/* 复制/断开按钮 */
+.qr-actions { display: flex; flex-direction: column; gap: 6px; }
+.qr-btn {
+  width: 100%;
+  height: 32px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 500;
+  transition: background 0.15s ease, opacity 0.15s ease;
+  line-height: 32px;
+  padding: 0 10px;
+}
+.qr-btn.primary {
+  background: var(--accent);
+  color: #fff;
+}
+.qr-btn.primary:hover { background: var(--accent-hover); }
+.qr-btn.secondary {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+.qr-btn.secondary:hover {
+  background: var(--bg-card-hover);
+}
+.qr-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   顶部 Toast：轻量提示（overlay-renderer.js showToast 控制）
+   固定顶部居中，默认半透明不可见，.show 类时上浮显示
+============================================================ */
+.overlay-toast {
+  position: fixed;
+  left: 50%;
+  top: 16px;
+  transform: translate(-50%, -8px);
+  background: rgba(17, 24, 39, 0.98);
+  color: #f8fafc;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  z-index: 99999;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  max-width: 88%;
+  text-align: center;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-app-region: no-drag;   /* 防止被当作窗口拖拽区，点击 toast 附近不干扰移动 */
+}
+.overlay-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.overlay-toast.error {
+  border-color: #b91c1c;
+  background: rgba(69, 12, 12, 0.98);
+  color: #fecaca;
+}
+.overlay-toast.ok {
+  border-color: #047857;
+  background: rgba(6, 53, 38, 0.98);
+  color: #a7f3d0;
+}
+.overlay-toast.warn {
+  border-color: #b45309;
+  background: rgba(70, 37, 4, 0.98);
+  color: #fde68a;
+}

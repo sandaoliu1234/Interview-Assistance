@@ -68,12 +68,6 @@ class SpeechService {
       throw error;
     }
   }
-
-  // 讯飞语音识别
-  async xunfeiSpeechToText(audioData, appId, apiKey, apiSecret) {
-    // 讯飞语音识别实现
-    throw new Error('讯飞语音识别暂未实现');
-  }
 }
 
 module.exports = new SpeechService();

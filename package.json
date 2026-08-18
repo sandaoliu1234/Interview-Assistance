@@ -2,11 +2,12 @@
   "name": "@hireme/desktop",
   "version": "0.3.43",
   "private": true,
-  "description": "Electron",
+  "description": "Interview Assistance (Browser Dev Mode)",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --inspect",
+    "dev": "node dev-server.js",
+    "dev:electron": "electron . --inspect",
     "build": "electron-builder",
     "build:win": "electron-builder --win --x64 --config",
     "build:mac": "electron-builder --mac --arm64 --config",
@@ -14,25 +15,26 @@
     "dist": "electron-builder"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
-    "@deepgram/sdk": "^4.11.3",
     "@types/ws": "^8.18.1",
-    "audiotee": "^0.0.7",
+    "axios": "^1.7.7",
     "docx": "^9.5.1",
     "dotenv": "^17.2.4",
-    "electron-updater": "^6.3.0",
     "file-saver": "^2.0.5",
     "iconv-lite": "^0.6.3",
-    "koffi": "^2.15.2",
+    "koffi": "^2.9.0",
     "mammoth": "^1.11.0",
-    "native-audio-node": "^0.3.5",
     "node-fetch": "^2.7.0",
-    "openai": "^6.18.0",
     "pdfjs-dist": "^5.5.207",
-    "qrcode.react": "^4.2.0",
+    "qrcode": "^1.5.3",
     "ws": "^8.19.0"
   },
   "devDependencies": {
-    "electron-builder": "^26.15.3"
+    "electron": "^32.0.0",
+    "electron-builder": "^24.13.3",
+    "express": "^4.21.2"
+  },
+  "allowScripts": {
+    "electron@32.3.3": true,
+    "koffi@2.16.3": true
   }
 }

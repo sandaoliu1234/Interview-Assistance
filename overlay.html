@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; img-src 'self' data: https:;" />
+  <title>面试答题面板</title>
+  <!-- 独立样式：包含 :root 变量 / 基础 reset / 面板样式 / 二维码按钮与弹窗样式 -->
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <!-- 整个 overlay-window 就是浮动面板本体，铺满整个 BrowserWindow -->
+  <div id="overlayWindow" class="overlay-content">
+
+    <!-- 顶部拖动把手（突出在面板外，-12px；用 -webkit-app-region:drag 让 Electron 接管窗口移动） -->
+    <div class="overlay-drag-handle" id="overlayDragHandle">
+      <span class="drag-grip">⋮⋮</span>
+    </div>
+
+    <!-- 头部：左侧状态徽章；右侧「字体大小(A⁻ / 100% / A⁺)」 + 「📸 截图按钮」 + 「📱 二维码按钮」 + 「× 关闭按钮」
+         顺序：字体控制放在截图按钮的左侧（用户明确要求），关闭按钮仍在最右 -->
+    <div class="overlay-header">
+      <span id="statusBadge" class="status-badge recording">🎤 正在识别系统声音</span>
+      <div class="header-right">
+        <!-- 字体大小控制：与主窗口 index.html 的 font-zoom 组件同结构/同功能，共享 localStorage key → 两窗口同步 -->
+        <div class="font-zoom" id="fontZoomCtl" title="调整面板字体大小（与主窗口同步）">
+          <button class="fz-btn" id="fontZoomOut" type="button" aria-label="缩小字体">A⁻</button>
+          <span class="fz-val" id="fontZoomVal">100%</span>
+          <button class="fz-btn" id="fontZoomIn" type="button" aria-label="放大字体">A⁺</button>
+        </div>
+        <button id="solveToggleBtn" class="solve-toggle-btn icon-btn" type="button" title="全屏截图并解答">📸</button>
+        <button id="qrToggleBtn" class="qr-toggle-btn icon-btn" type="button" title="扫码连接小程序">📱</button>
+        <button id="closeOverlayBtn" class="close-btn" type="button" title="关闭答题面板">&times;</button>
+      </div>
+    </div>
+
+    <!-- ASR 临时/最终识别文本区 -->
+    <!-- ★ 统一滚动容器：面试官 + AI助手 + 底部状态三块一起滚动，不再各自带独立滚动条 -->
+    <div id="panelScrollBody" class="panel-scroll-body">
+
+      <div class="interim-section">
+        <label>面试官：</label>
+        <!-- 【截图显示·改】不再是"缩略图"：宽屏自适应的大尺寸显示，便于直接看清题目
+             - 点击仍可新窗口打开原图（保留细节查看能力）
+             - 右上角仍有关闭按钮（不需要截图画面时可收起）
+        -->
+        <div id="interviewScreenshotWrap" class="interview-screenshot-wrap">
+          <div class="interview-screenshot-bar">
+            <span class="interview-screenshot-title">📸 当前提问画面</span>
+            <button type="button" id="closeInterviewScreenshotBtn"
+              class="interview-screenshot-close" title="收起截图">×</button>
+          </div>
+          <img id="interviewScreenshot" class="interview-screenshot-img" alt="当前题目截图" />
+        </div>
+        <div id="overlayInterimText" class="interim-display"></div>
+      </div>
+
+      <!-- AI 答案文本区 -->
+      <div class="answer-section">
+        <label>AI 助手：</label>
+        <div id="overlayAnswerText" class="answer-display"></div>
+      </div>
+
+      <!-- 生成中/成功状态提示（默认隐藏，由 JS 切换 display） -->
+      <div class="answer-status">
+        <div id="answerLoading" class="loading-indicator">⏳ 正在生成答案...</div>
+        <div id="answerReady" class="success-indicator">✓ 答案已生成，已保存到历史记录</div>
+      </div>
+
+    </div>
+    <!-- 统一滚动容器结束 -->
+
+    <!-- 8 向缩放手柄（鼠标按下 → 发 IPC resize-overlay → 主进程 setBounds） -->
+    <div class="overlay-resize-handle resize-n"  data-direction="n"></div>
+    <div class="overlay-resize-handle resize-s"  data-direction="s"></div>
+    <div class="overlay-resize-handle resize-w"  data-direction="w"></div>
+    <div class="overlay-resize-handle resize-e"  data-direction="e"></div>
+    <div class="overlay-resize-handle resize-nw" data-direction="nw"></div>
+    <div class="overlay-resize-handle resize-ne" data-direction="ne"></div>
+    <div class="overlay-resize-handle resize-sw" data-direction="sw"></div>
+    <div class="overlay-resize-handle resize-se" data-direction="se"></div>
+
+    <!-- 二维码弹窗：fixed 定位面板右下角；默认 display:none，qr-toggle-btn 点击 toggle .show -->
+    <div id="qrModal" class="qr-modal" role="dialog" aria-label="扫码连接小程序">
+      <!-- 整行都可作为拖拽触发区；右上角 × 关闭按钮不受拖拽影响 -->
+      <div class="qr-modal-header" data-drag-handle="1">
+        <h3>微信扫码连接小程序</h3>
+        <button id="qrCloseBtn" class="qr-close-btn" type="button" aria-label="关闭弹窗">&times;</button>
+      </div>
+      <img id="qrImg" alt="扫码连接电脑" width="200" height="200" />
+      <div id="qrStatusLabel" class="qr-status idle">🔴 未启动</div>
+
+      <div class="qr-info">
+        <div class="qr-info-row wifi-line">WiFi：<span id="qrWifiName">-</span></div>
+        <div class="qr-info-row ip-line">IP：<span id="qrIp">-</span></div>
+        <div class="qr-info-row port-line">端口：<span id="qrPort">-</span></div>
+      </div>
+
+      <div class="qr-actions">
+        <button id="qrCopyBtn" class="qr-btn primary" type="button">复制连接信息</button>
+        <button id="qrDisconnectBtn" class="qr-btn secondary" type="button">断开连接</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 轻量 Toast：顶部弹出提示，overlay-renderer.js showToast() 控制显隐（2.6s 自动隐藏） -->
+  <div id="overlayToast" class="overlay-toast" role="status" aria-live="polite"></div>
+
+  <!-- overlay 渲染层逻辑：DOM 初始化 / 拖拽缩放 / 关闭按钮 / ASR 答案渲染 / 二维码弹窗逻辑 -->
+  <script src="overlay-renderer.js"></script>
+</body>
+</html>

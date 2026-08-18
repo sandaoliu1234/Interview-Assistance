@@ -11,6 +11,8 @@ build/
 .idea/
 *.swp
 *.swo
+.cursor/
+docs/
 
 api.md
 使用说明.md
@@ -44,3 +46,14 @@ history.json
 
 # Testing
 coverage/
+.workbuddy/memory/2026-08-16.md
+.workbuddy/memory/MEMORY.md
+HireMe源码级功能确认.md
+HireMe与本项目功能对比.md
+
+# 环境变量（含密钥，禁止提交到仓库）
+.env
+.env.*
+当前项目升级到HireMe功能的技术方案.md
+测试清单.md
+主账号空间-apiKey-.csv
