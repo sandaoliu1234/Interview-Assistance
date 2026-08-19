@@ -30,6 +30,10 @@ const PrivacyAudit = require('./services/privacyAudit');
 // ASR 管线：WASAPI 系统音频 → 百度 ASR → 问题检测 → AI 答题（主进程原生采集，不依赖渲染层）
 const ASRPipeline = require('./services/asrPipeline');
 let asrPipeline = null; // 管线单例，启动面试辅助时创建
+// ★ 缓存"最后一次成功启动 ASR 使用的 config"，供面板端 toggle-asr-pipeline 直接复用，
+//   否则面板端拿不到主窗口保存的百度 API Key / 模型 / 简历 / 场景等完整 config，
+//   就无法独立完成"开始识别"动作（只能停止）。
+let lastAsrConfig = null;
 // 配置与本地持久化管理器（替代散落的 config/history 读写，密钥不再写死在代码里）
 const ConfigManager = require('./src/main/config-manager');
 // 系统级窗口捕获排除（对齐 HireMe 发行版 applyExcludeFromCapture，用 koffi 调 Win32 API）
@@ -814,8 +818,11 @@ function setupDisplayMediaHandler() {
   ipcMain.handle('list-audio-devices-native', async () => {
     try {
       const mod = await loadNativeAudio();
-      const devices = mod.listAudioDevices();
-      return { ok: true, devices };
+      // ⚠️ native 模块静态方法实际叫 listDevices（不是 listAudioDevices），
+      // 之前写错时这个 IPC 一直抛 TypeError 或返回空，导致配置面板没法枚举音频输出设备。
+      const devices = (typeof mod.listDevices === 'function') ? mod.listDevices()
+        : (typeof mod.listAudioDevices === 'function') ? mod.listAudioDevices() : [];
+      return { ok: true, devices: Array.isArray(devices) ? devices : [] };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -1803,6 +1810,11 @@ ipcMain.handle('stop-listening', () => {
  */
 ipcMain.handle('start-asr-pipeline', async (event, config) => {
   try {
+    // ====== ★ 前置保障：必须确保 localHttpServer.start + _attachBus 已执行 ======
+    //   否则 asrPipeline 发出的 bus 事件没人订阅 → history 轮不创建 → 面板不显示本轮对话
+    //   失败降级：仍继续启动管线，ASR/AI 会照常执行，仅面板历史为空
+    await ensureLocalHttpServerWithBus();
+
     // 如果管线已在运行，先停止
     if (asrPipeline && asrPipeline.isRunning) {
       await asrPipeline.stop();
@@ -1819,6 +1831,38 @@ ipcMain.handle('start-asr-pipeline', async (event, config) => {
     // 创建管线实例
     asrPipeline = new ASRPipeline();
 
+    // ★ P1-1/P3-1：把 app.bus 注入到管线实例（作为 emitBus 函数），
+    //   让管线在"开始 AI 答题前"直接发 asr:question-asked 创建提问轮，
+    //   以及"AI 成功/失败"都直接发 asr:answer-generated 结算 history（失败写 error）
+    asrPipeline.emitBus = (evt, payload) => {
+      try { app.bus.emit(evt, payload); } catch (e) {
+        console.error(`[main] asrPipeline.emitBus(${evt}) 失败:`, e && e.message);
+      }
+    };
+    // ★ P3-2：跨入口共享上下文函数：从 localHttpServer.state.history 反向组装最近 5 轮 {role,content}
+    //   这样如果用户先在手机 H5 上提问，再回到系统声音识别，AI 也能看到前面的对话历史
+    asrPipeline.getSharedContext = () => {
+      try {
+        const s = (localHttpServer && localHttpServer.state) ? localHttpServer.state : null;
+        const arr = (s && Array.isArray(s.history)) ? s.history : [];
+        const out = [];
+        // 取最近 5 轮（10 条消息，每轮 user + assistant 各一条）
+        const rounds = arr.slice(-5);
+        for (const r of rounds) {
+          const q = (r && r.questionText) ? String(r.questionText).trim() : '';
+          const a = (r && r.answerText) ? String(r.answerText).trim() : '';
+          if (q) out.push({ role: 'user', content: q });
+          if (a && (r.status === 'answered' || r.status === 'error')) {
+            out.push({ role: 'assistant', content: a });
+          }
+        }
+        return out;
+      } catch (e) {
+        console.warn('[main] asrPipeline.getSharedContext 异常:', e && e.message);
+        return [];
+      }
+    };
+
     // 注册回调：app.bus.emit 解耦 + 双窗口 webContents.send
     asrPipeline.onInterim = (text) => {
       app.bus.emit('asr:interim', text);
@@ -1833,14 +1877,50 @@ ipcMain.handle('start-asr-pipeline', async (event, config) => {
       app.bus.emit('asr:answer-start', question || '');
       broadcastToAllViews('asr:answer-start', question || '');
     };
-    asrPipeline.onAnswer = (text) => {
-      app.bus.emit('asr:answer-generated', text);
-      broadcastToAllViews('asr:answer-generated', { text });
-      // 兼容老通道（不破坏 copilot.js 现有 onAnswer）
+    // ★ P1-2：asrPipeline.onAnswer 现在回传对象 {text, question, durationMs, error}
+    //   - 兼容：如果上游还是传字符串（其他入口），兜底归一化
+    asrPipeline.onAnswer = (payload) => {
+      // 归一化为对象
+      const p = (payload && typeof payload === 'object')
+        ? payload
+        : { text: String(payload || ''), question: '', durationMs: 0, error: '' };
+      const answerText = String(p.text || '');
+      const question = String(p.question || '');
+      const hasError = !!(p.error && String(p.error).trim().length);
+      // bus 发"统一对象版本"（localHttpServer 用它结算 history）
+      // ★ 注意：这里再补一次 bus，保证即使 asrPipeline 内部 emitBus 没走到（例如构造异常），
+      //         history 也能被正确更新；asrPipeline 内部发的那次是"更早的保证"，二者不冲突，
+      //         localHttpServer 的 finishHistoryRound 内若已结算会幂等（historyVersion 会 bump 两次但无副作用）
+      app.bus.emit('asr:answer-generated', {
+        text: answerText,
+        question,
+        error: hasError ? String(p.error) : '',
+        durationMs: Number(p.durationMs) || 0,
+      });
+      // 给主窗口 + overlay 窗口渲染端 IPC 广播（渲染端 onAnswerGenerated 处理）
+      broadcastToAllViews('asr:answer-generated', {
+        text: answerText,
+        question,
+        error: hasError ? String(p.error) : '',
+      });
+      // 兼容老通道 asr:answer（给 copilot.js / 旧 renderer 逻辑，纯 answer 文本）
       const senderWin = BrowserWindow.fromWebContents(event.sender);
       if (senderWin && !senderWin.isDestroyed()) {
-        senderWin.webContents.send('asr:answer', text);
+        if (hasError) {
+          // 失败场景：把错误信息以文本形式也发过去，避免老 UI 空白
+          senderWin.webContents.send('asr:answer', `【AI 生成失败】${p.error}`);
+        } else {
+          senderWin.webContents.send('asr:answer', answerText);
+        }
       }
+      // 伴生设备（手机/iPad 实时查看）广播：成功才广播 answer；失败广播 error 事件
+      try {
+        if (hasError) {
+          relayServer.broadcast({ type: 'answer-error', question, error: String(p.error) });
+        } else {
+          relayServer.broadcast({ type: 'answer', question, answer: answerText || '' });
+        }
+      } catch (_) { /* relayServer 未启动忽略 */ }
     };
     asrPipeline.onError = (message) => {
       console.error('[main] ASR 管线错误:', message);
@@ -1862,6 +1942,8 @@ ipcMain.handle('start-asr-pipeline', async (event, config) => {
     // 启动后显式广播一次 recording=true（防止 onStatus 先于管线 start 回调的 race）
     app.bus.emit('asr:recording-status', true);
     broadcastToAllViews('asr:recording-status', true);
+    // ★ 缓存最后一次启动成功的完整 config，供面板端 toggle-asr-pipeline 独立启动时复用
+    lastAsrConfig = mergedConfig;
 
     return { success: true };
   } catch (error) {
@@ -1888,6 +1970,155 @@ ipcMain.handle('stop-asr-pipeline', async () => {
   }
 });
 
+// ============================================================
+// 面板端专用：一键"开始/停止识别系统声音"切换
+//   - 设计要点：
+//     1) 状态锁：_asrToggleBusy 期间不接受新请求（避免短时间多次启停抖动）
+//     2) 停止：无条件调用 stop-asr-pipeline，即使当前没在运行也视为成功（幂等）
+//     3) 启动：必须有 lastAsrConfig 缓存才能"直接启动"；
+//              如果 lastAsrConfig 为空（用户从未在主窗口启动过）→ 返回 needMainConfig=true，
+//              渲染端提示"请先在主窗口完成 API Key 等设置并点一次『开始面试辅助』"
+// ============================================================
+let _asrToggleBusy = false;
+ipcMain.handle('toggle-asr-pipeline', async () => {
+  if (_asrToggleBusy) {
+    return { success: false, error: '正在切换状态，请稍候再试', busy: true };
+  }
+  _asrToggleBusy = true;
+  try {
+    const isRunning = !!(asrPipeline && asrPipeline.isRunning);
+    if (isRunning) {
+      // ---- 态：识别中 → 停止 ----
+      const res = await ipcMain.emit ? null : null; // 占位，真正走下面逻辑
+      // 直接复用 stop-asr-pipeline 的处理（避免重复代码）
+      try {
+        if (asrPipeline) {
+          await asrPipeline.stop();
+          asrPipeline = null;
+        }
+        app.bus.emit('asr:recording-status', false);
+        broadcastToAllViews('asr:recording-status', false);
+      } catch (e) {
+        return { success: false, error: `停止失败：${e.message}` };
+      }
+      return { success: true, action: 'stopped', isRecording: false };
+    } else {
+      // ---- 态：未识别 → 启动 ----
+      if (!lastAsrConfig) {
+        return {
+          success: false,
+          needMainConfig: true,   // 渲染端据此给出"请回主窗口先启动一次"的提示
+          error: '暂无可复用的配置，请先在主窗口完成设置并点击「开始面试辅助」至少一次',
+        };
+      }
+      // ====== ★ 前置保障：同 start-asr-pipeline，确保 localHttpServer + bus 订阅已就绪 ======
+      //   面板点「一键启动识别」走的就是这条入口，原来经常漏掉 _attachBus → 面板不显示本轮
+      await ensureLocalHttpServerWithBus();
+      // 复用 start-asr-pipeline 的完整逻辑：通过 ipcMain.handle 注册的函数无法直接复用，
+      // 所以这里直接通过 invoke 的方式从"事件层面"触发——但 ipcMain.handle 注册的 handler
+      // 只接受渲染端 invoke 调用，主进程内部得重走一遍。
+      // 简便做法：直接把 start-asr-pipeline 内的创建步骤在内部再跑一次（避免引入循环 invoke 依赖）
+      const mergedConfig = lastAsrConfig;
+      if (asrPipeline && asrPipeline.isRunning) {
+        try { await asrPipeline.stop(); } catch (_) {}
+        asrPipeline = null;
+      }
+      asrPipeline = new ASRPipeline();
+      // 注入 bus / 共享上下文（与 start-asr-pipeline 中完全一致）
+      asrPipeline.emitBus = (evt, payload) => {
+        try { app.bus.emit(evt, payload); } catch (e) {
+          console.error(`[main][toggle] asrPipeline.emitBus(${evt}) 失败:`, e && e.message);
+        }
+      };
+      asrPipeline.getSharedContext = () => {
+        try {
+          const s = (localHttpServer && localHttpServer.state) ? localHttpServer.state : null;
+          const arr = (s && Array.isArray(s.history)) ? s.history : [];
+          const out = [];
+          const rounds = arr.slice(-5);
+          for (const r of rounds) {
+            const q = (r && r.questionText) ? String(r.questionText).trim() : '';
+            const a = (r && r.answerText) ? String(r.answerText).trim() : '';
+            if (q) out.push({ role: 'user', content: q });
+            if (a && (r.status === 'answered' || r.status === 'error')) {
+              out.push({ role: 'assistant', content: a });
+            }
+          }
+          return out;
+        } catch (e) {
+          console.warn('[main][toggle] asrPipeline.getSharedContext 异常:', e && e.message);
+          return [];
+        }
+      };
+      // 注册回调（与 start-asr-pipeline 中完全一致）
+      asrPipeline.onInterim = (text) => {
+        app.bus.emit('asr:interim', text);
+        broadcastToAllViews('asr:interim', text);
+      };
+      asrPipeline.onFinal = (text) => {
+        app.bus.emit('asr:final', text);
+        broadcastToAllViews('asr:final', text);
+      };
+      asrPipeline.onBeforeAnswer = (question) => {
+        app.bus.emit('asr:answer-start', question || '');
+        broadcastToAllViews('asr:answer-start', question || '');
+      };
+      asrPipeline.onAnswer = (payload) => {
+        const p = (payload && typeof payload === 'object')
+          ? payload
+          : { text: String(payload || ''), question: '', durationMs: 0, error: '' };
+        const answerText = String(p.text || '');
+        const question = String(p.question || '');
+        const hasError = !!(p.error && String(p.error).trim().length);
+        app.bus.emit('asr:answer-generated', {
+          text: answerText, question,
+          error: hasError ? String(p.error) : '',
+          durationMs: Number(p.durationMs) || 0,
+        });
+        broadcastToAllViews('asr:answer-generated', {
+          text: answerText, question,
+          error: hasError ? String(p.error) : '',
+        });
+      };
+      asrPipeline.onError = (message) => {
+        console.error('[main][toggle] ASR 管线错误:', message);
+        app.bus.emit('asr:error', message);
+        broadcastToAllViews('asr:error', message);
+      };
+      asrPipeline.onStatus = (status) => {
+        const recording = status === 'started' || status === 'running';
+        app.bus.emit('asr:recording-status', recording);
+        broadcastToAllViews('asr:recording-status', recording);
+        broadcastToAllViews('asr:status', status);
+      };
+      try {
+        await asrPipeline.start(mergedConfig, {});
+        app.bus.emit('asr:recording-status', true);
+        broadcastToAllViews('asr:recording-status', true);
+        // 启动成功 → 再缓存一次（理论上 lastAsrConfig 本来就是最新的，防御性写入）
+        lastAsrConfig = mergedConfig;
+        return { success: true, action: 'started', isRecording: true };
+      } catch (e) {
+        return { success: false, error: `启动失败：${e.message}` };
+      }
+    }
+  } catch (error) {
+    console.error('[main] toggle-asr-pipeline 异常:', error);
+    return { success: false, error: error.message };
+  } finally {
+    _asrToggleBusy = false;
+  }
+});
+
+// 面板端专用：查 ASR 当前运行态 + 是否有可用 config
+ipcMain.handle('get-asr-status', () => {
+  return {
+    success: true,
+    isRecording: !!(asrPipeline && asrPipeline.isRunning),
+    hasCachedConfig: !!lastAsrConfig,
+  };
+});
+
 // 检测文本是否是问题
 ipcMain.handle('detect-question', (event, text, sensitivity = 5) => {
   const isQuestion = audioService.detectQuestion(text, sensitivity);
@@ -1895,10 +2126,15 @@ ipcMain.handle('detect-question', (event, text, sensitivity = 5) => {
 });
 
 // 处理识别的文本，判断是否需要自动生成答案
+// ★ P2-1 修复：这条"主窗口老流程"也必须写入 localHttpServer.state.history（系统B），
+//              否则面板/H5 端根本看不到主窗口产生的问答轮（两套历史分家）。
+//              做法：AI 开始前 bus.emit('asr:question-asked') 创建提问轮，
+//                   AI 完成/失败 bus.emit('asr:answer-generated') 结算。
 ipcMain.handle('process-recognized-text', async (event, text, config, conversationHistory, resumeContent) => {
   try {
     const sensitivity = config.detectionSensitivity || 5;
     const isQuestion = audioService.detectQuestion(text, sensitivity);
+    const questionText = String(text || '').trim();
 
     const _origLog = console.error;
     _origLog(`[process-recognized-text] 文本: ${text}`);
@@ -1907,11 +2143,16 @@ ipcMain.handle('process-recognized-text', async (event, text, config, conversati
 
     if (isQuestion) {
       // 发送桌面通知
-      showNotification('✨ 检测到新问题', text.substring(0, 50) + (text.length > 50 ? '...' : ''));
+      showNotification('✨ 检测到新问题', questionText.substring(0, 50) + (questionText.length > 50 ? '...' : ''));
+
+      // ★ 先创建提问轮（让面板/H5 立刻看到本轮 ⏳ 正在生成）—— 与 ASR 新链路保持一致
+      try {
+        app.bus.emit('asr:question-asked', { question: questionText, source: 'main-window-asr' });
+      } catch (_) { /* 忽略 */ }
 
       // 隐私审计：记录 AI 请求
       const prompt = aiService.buildPrompt(
-        text,
+        questionText,
         config.interviewScene,
         conversationHistory || [],
         resumeContent || ''
@@ -1928,15 +2169,22 @@ ipcMain.handle('process-recognized-text', async (event, text, config, conversati
       _origLog(`[process-recognized-text] 开始调用 AI: ${config.selectedService}`);
       const startTime = Date.now();
 
-      const answer = await aiService.generateAnswer(
-        text,
-        config.interviewScene,
-        config.selectedService,
-        config,
-        conversationHistory || [],
-        resumeContent || '',
-        config.modelTier
-      );
+      let answer = '';
+      let aiError = '';
+      try {
+        answer = await aiService.generateAnswer(
+          questionText,
+          config.interviewScene,
+          config.selectedService,
+          config,
+          conversationHistory || [],
+          resumeContent || '',
+          config.modelTier
+        );
+      } catch (e) {
+        aiError = `AI 生成失败：${e.message || '未知错误'}`;
+        _origLog(`[process-recognized-text] AI 异常: ${aiError}`);
+      }
 
       const duration = Date.now() - startTime;
 
@@ -1947,16 +2195,39 @@ ipcMain.handle('process-recognized-text', async (event, text, config, conversati
         config.selectedService === 'zhipu' ? 'open.bigmodel.cn' : 'unknown',
         Buffer.byteLength(new TextEncoder().encode(answer || '', 'utf-8')),
         duration,
-        true
+        !aiError
       );
 
       _origLog(`[process-recognized-text] AI 完成: ${answer?.length || 0} 字符，耗时 ${duration}ms`);
+
+      // ★ 结算 history：成功/失败都用统一 bus 发（系统B同步）
+      try {
+        app.bus.emit('asr:answer-generated', {
+          text: answer || '',
+          question: questionText,
+          error: aiError,
+          durationMs: duration,
+          source: 'main-window-asr',
+        });
+      } catch (_) { /* 忽略 */ }
+
       // 广播给伴生设备（手机/iPad 实时查看问答）
-      try { relayServer.broadcast({ type: 'answer', question: text, answer: answer || '' }); } catch (_) {}
-      return { isQuestion: true, answer, question: text };
+      try {
+        if (aiError) {
+          relayServer.broadcast({ type: 'answer-error', question: questionText, error: aiError });
+        } else {
+          relayServer.broadcast({ type: 'answer', question: questionText, answer: answer || '' });
+        }
+      } catch (_) { /* 忽略 */ }
+
+      // 异常场景在返回值里也带 error，让主窗口 renderer 能提示
+      if (aiError) {
+        return { isQuestion: true, answer: '', question: questionText, error: aiError };
+      }
+      return { isQuestion: true, answer, question: questionText };
     }
 
-    return { isQuestion: false, question: text };
+    return { isQuestion: false, question: questionText };
   } catch (error) {
     const _origLog = console.error;
     _origLog(`[process-recognized-text] 错误: ${error.message}`);
@@ -2287,6 +2558,42 @@ function attachLocalHttpServerExternals() {
   // 配置读取函数（小程序 /api/connect 下发 AI/OCR/面试配置）
   if (typeof localHttpServer.loadConfigFn !== 'function') {
     localHttpServer.loadConfigFn = () => loadConfig();
+  }
+}
+
+/**
+ * ★ 启动系统声音识别/截图答题/面板多入口联动 的前置保障：确保 localHttpServer 已启动 + bus 订阅已挂载
+ * --------------------------------------------------------------
+ * 为什么要专门加这个？——
+ *   localHttpServer._attachBus() 仅在 localHttpServer.start({bus}) 里被调用，
+ *   而 start() 原来只在「生成二维码」「显式启动本地HTTP服务」两个 IPC 入口里才会跑。
+ *   用户如果直接点「开始面试辅助」→ start-asr-pipeline / toggle-asr-pipeline，
+ *   那么虽然 asrPipeline 会 bus.emit('asr:final' / 'asr:question-asked' / 'asr:answer-generated')，
+ *   但 localHttpServer 里这 3 个订阅从未挂上，结果就是：
+ *     - 面试官原文不写 history.questionText
+ *     - history 轮从未创建
+ *     - 答案 never 结算
+ *     - 浮动答题面板 / H5 / 主窗口历史侧栏 全都不显示这一轮对话 ← ★ 就是你这次遇到的情况
+ *
+ * 行为：
+ *   - 已经启动（status !== 'idle'）：直接 return true，零开销
+ *   - idle：自动 attachExternals → start({bus:app.bus})；成功 true；失败打 warn 并返回 false（不阻断 ASR 管线，仅降级：面板不显示历史，但 ASR/AI 本身还能跑）
+ */
+async function ensureLocalHttpServerWithBus() {
+  try {
+    if (localHttpServer && localHttpServer.status !== 'idle') {
+      return true; // 已启动（含 starting / listening / stopping）→ 不用重复
+    }
+    attachLocalHttpServerExternals();
+    await localHttpServer.start({ bus: app.bus });
+    console.log('[main] ✅ ensureLocalHttpServerWithBus：localHttpServer 已启动，bus 订阅已挂载（history 写入链路就绪）');
+    return true;
+  } catch (e) {
+    // ALL_PORTS_BUSY / NO_IP 等启动失败：只警告，不阻断 ASR 管线
+    const code = (e && e.message) || 'unknown';
+    const msg = (e && e.userMsg) || (e && e.message) || '启动失败';
+    console.warn(`[main] ⚠ ensureLocalHttpServerWithBus 启动失败（已降级：ASR/AI 仍会执行，但 history 轮不会写入，面板可能不显示本轮）code=${code} msg=${msg}`);
+    return false;
   }
 }
 

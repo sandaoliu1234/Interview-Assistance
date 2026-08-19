@@ -857,11 +857,86 @@ class LocalHttpServer {
       this._asrInterimThrottled(text);
     };
     // ---- asr:final（立即推送 + 覆盖 state.asrText）----
+    // ★ 用户要求：面试官对话框和 history 卡片需要显示系统声音识别出的"全部文字"，
+    //   不能只显示被判定为"问题"的那一句。所以这里：只要有 ASR final 结果，
+    //   就把它追加到 history 当前（或新建）一轮的 questionText 区，
+    //   让用户实时看到"面试官都说了什么"，而不需要等 detectQuestion 判为 true 才写入。
     h['asr:final'] = (text) => {
-      this.recordState({ asrText: text });
-      this._broadcast('asr:final', { text });
+      const finalText = String(text || '').trim();
+      // [调试日志] 让主进程终端一眼能确认 bus 事件被 localHttpServer 收到
+      console.log(`[localHttpServer][bus] ⬇ asr:final 收到: len=${(finalText||'').length} text="${(finalText||'').substring(0,80)}"`);
+      // 1) 先写 state.asrText（老字段，保持兼容）
+      this.recordState({ asrText: finalText });
+      // 2) 把这句识别结果追加进 history 面试官区（所有句子都写，不论 detectQuestion 结果）
+      if (finalText && Array.isArray(this.state.history)) {
+        // 策略：找到"最后一条 status=asked 且还没生成 answer"的轮 → 追加文本
+        //       如果找不到就新建一轮（source 默认 asr-panel，后续 detectQuestion 触发 AI 会继续用这轮）
+        let targetRound = null;
+        for (let i = this.state.history.length - 1; i >= 0; i--) {
+          const r = this.state.history[i];
+          if (r && r.status === HISTORY_STATUS_ASKED) { targetRound = r; break; }
+        }
+        if (!targetRound) {
+          // 新建一轮：当前还没有待回答轮，就以"ASR 说话记录"的身份建一轮
+          const newId = this.addHistoryRound({
+            questionText: finalText,
+            questionImage: this.state.questionImage || '',
+            source: 'asr-panel',
+          });
+          targetRound = this.state.history.find((r) => r.id === newId);
+          console.log(`[localHttpServer][history] ✨ 新建本轮（asr:final → 尚无待答轮）id=${newId} | 当前historyCount=${this.state.history.length} | historyVersion=${this.state.historyVersion}`);
+        } else {
+          // 已经有 asked 轮 → 换行追加
+          const prev = (targetRound.questionText || '').trim();
+          targetRound.questionText = prev ? (prev + '\n\n' + finalText) : finalText;
+          // 手动 bump historyVersion：因为是直接改对象属性，recordState 的版本自增没触发
+          this.state.historyVersion = (this.state.historyVersion || 0) + 1;
+          console.log(`[localHttpServer][history] ➕ 追加到待答轮 id=${targetRound.id} | 面试官原文累计 ${(targetRound.questionText||'').length} 字 | historyVersion=${this.state.historyVersion}`);
+        }
+        // 把新写的轮标记为 active：后续如果 detectQuestion 触发 AI → answer 会写到这轮
+        if (targetRound) this._activeHistoryId = targetRound.id;
+      } else if (finalText) {
+        // 防御：如果 state.history 尚未初始化（极早期），给个明确 warn，方便排查
+        console.warn('[localHttpServer][bus] ⚠ asr:final 收到但 state.history 不是数组 → 暂不写面试官原文，请检查 start() 是否正常完成。');
+      }
+      // 3) WS 推给小程序 / H5 端（保持原来行为）
+      this._broadcast('asr:final', { text: finalText });
     };
-    // ---- answer:start（AI 开始答题 → 小程序也显示 loading）----
+    // ---- asr:question-asked（ASR 检测到问题并即将调用 AI）—— 显式创建"待回答提问轮"
+    //   payload = { question: string, source?: string }
+    //   目的：保证在 AI 开始前 history 就有 status=asked 的提问轮，UI 上能立刻显示 ⏳ 正在生成
+    h['asr:question-asked'] = (payload) => {
+      const obj = (payload && typeof payload === 'object') ? payload : { question: String(payload || '') };
+      const question = String(obj.question || '').trim();
+      const source = String(obj.source || 'asr-panel');
+      console.log(`[localHttpServer][bus] ⬇ asr:question-asked 收到: source=${source} question="${(question||'').substring(0,80)}"`);
+      if (!question) return;
+      if (!Array.isArray(this.state.history)) return;
+      // 如果最后已经是 asked 轮，且 questionText 里已经包含这句文本 → 复用它（避免重复创建）
+      const last = this.state.history[this.state.history.length - 1];
+      const reuseLast = !!(last && last.status === HISTORY_STATUS_ASKED);
+      if (reuseLast) {
+        // 把新文本追加到最后一轮的 questionText（如果还不存在），确保 AI 原文问题可见
+        const prev = String(last.questionText || '').trim();
+        if (!prev || prev.indexOf(question) < 0) {
+          last.questionText = prev ? (prev + '\n\n' + question) : question;
+        }
+        // 纠正 source（如果之前是 fallback/unknown）
+        if (!last.source || last.source === 'unknown' || last.source === 'fallback') {
+          last.source = source;
+        }
+        this._activeHistoryId = last.id;
+        this.state.historyVersion = (this.state.historyVersion || 0) + 1;
+        console.log(`[localHttpServer][history] ♻️  复用最后一轮 id=${last.id} 追加提问 | historyVersion=${this.state.historyVersion}`);
+      } else {
+        // 正常创建新的提问轮
+        const newId = this.addHistoryRound({ questionText: question, questionImage: this.state.questionImage || '', source });
+        console.log(`[localHttpServer][history] ✨ 创建提问轮 id=${newId} source=${source} | status=asked ⏳ | historyCount=${this.state.history.length} | historyVersion=${this.state.historyVersion}`);
+      }
+      // 小程序端也同步一下"马上开始生成"
+      this._broadcast('answer:start', { question });
+    };
+    // ---- asr:answer-start（AI 开始答题 → 小程序也显示 loading，兼容外部直接 emit 老通道）----
     h['asr:answer-start'] = (question) => {
       this._broadcast('answer:start', { question: question || '' });
     };
@@ -869,6 +944,11 @@ class LocalHttpServer {
     h['asr:answer-generated'] = (data) => {
       const text = typeof data === 'string' ? data : (data && data.text ? data.text : '');
       const question = data && data.question ? data.question : '';
+      // ★ P3-1：支持上游传入 error 字段（ASR Pipeline 失败场景会带）
+      const errorFromData = data && data.error ? String(data.error).trim() : '';
+      const sourceFromData = data && data.source ? String(data.source) : 'panel-asr';
+      const durationMs = data && Number.isFinite(Number(data.durationMs)) ? Number(data.durationMs) : 0;
+      console.log(`[localHttpServer][bus] ⬇ asr:answer-generated 收到: answerLen=${(text||'').length} error="${errorFromData.substring(0,40)}" durationMs=${durationMs} q="${(question||'').substring(0,40)}"`);
       // ★ 如果带了 question 字段（面板端 ASR→AI 链路会传），可以判断是否要补一轮 history
       //   常见情况：面板端 ASR 识别到 final 问题，外部 AI Service 直接生成答案并通过 bus 推回来
       //   这里：如果确实有 question 且 history 里最新一条不是 asked（即还未创建本轮提问）→ 兜底创建
@@ -877,21 +957,32 @@ class LocalHttpServer {
         const needsRound = !last || last.status !== HISTORY_STATUS_ASKED;
         if (needsRound) {
           try {
-            this.addHistoryRound({
+            const newId = this.addHistoryRound({
               questionText: String(question || ''),
               questionImage: this.state.questionImage || '',
-              source: 'panel-asr',
+              source: sourceFromData,
             });
+            console.log(`[localHttpServer][history] 🩹 兜底创建提问轮（因为 asr:answer-generated 时还没有 asked 轮）id=${newId}`);
           } catch (_) { /* 忽略 */ }
         }
       }
-      // 写 state + 触发 history 结算（把刚刚的提问轮和这段答案关联起来）
+      // 最终要写入的错误文本：如果上游传了就用上游的；如果没有但 answer 空 → 兜底"AI 返回空"
+      const finalError = errorFromData || (text ? '' : 'AI 返回空答案');
+      // 写 state + 触发 history 结算（把刚刚的提问轮和这段答案关联起来；失败→status=error）
       this.recordState({
         answerText: text,
         _historyAction: 'answer',
-        _historyError: text ? '' : 'AI 返回空答案',
+        _historyError: finalError,
       });
-      this._broadcast('answer:generated', { text, question });
+      // 成功/失败后：打一条明确日志，包含本轮 id 与 status
+      if (this._activeHistoryId && Array.isArray(this.state.history)) {
+        const r = this.state.history.find((x) => x && x.id === this._activeHistoryId);
+        if (r) {
+          console.log(`[localHttpServer][history] ${finalError ? '❌ 结算(错误)' : '✅ 结算(成功)'} id=${r.id} status=${r.status} | 答案 ${(r.answerText||'').length} 字${finalError?` reason=${finalError.substring(0,60)}`:''} | historyVersion=${this.state.historyVersion}`);
+        }
+      }
+      // 小程序/WS 广播：把 error 也带上，前端可以显示失败原因
+      this._broadcast('answer:generated', { text, question, error: finalError });
     };
     // ---- asr:recording-status（录制态 true/false）----
     h['asr:recording-status'] = (isRecording) => {
@@ -900,12 +991,15 @@ class LocalHttpServer {
     };
 
     // 挂载到 bus（每个独立 try/catch，一个失败不影响其他）
+    let successCount = 0;
     Object.keys(h).forEach((evt) => {
-      try { this.bus.on(evt, h[evt]); } catch (e) {
+      try { this.bus.on(evt, h[evt]); successCount++; } catch (e) {
         console.error(`[localHttpServer] bus.on(${evt}) 失败:`, e.message);
       }
     });
     this._busHandlers = h;
+    // ★ 明确的挂载成功日志：以后只要看到这行就能确认「ASR bus 事件 → history 写入」链路已就绪
+    console.log(`[localHttpServer] ✅ _attachBus 完成：已订阅 ${successCount}/${Object.keys(h).length} 个事件 → 覆盖 asr:interim/final/question-asked/answer-start/answer-generated/recording-status + 截图/H5 事件`);
   }
 
   // 取消订阅（stop 时调用，防内存泄漏）

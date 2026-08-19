@@ -244,11 +244,20 @@ class RealtimeSpeechService {
 
     let int16;
     let peak = 0;
+    const BOOST = this.boost;     // ★ 统一在这里做 gain：无论输入是 Float32 还是 Int16，都先归一化再 *boost
     if (samples instanceof Int16Array) {
-      int16 = samples;
+      // Int16 分支：先把每个样本按 /32768 归一化到 [-1,1]，再按 BOOST 放大、限幅、转 Int16LE
+      // （修之前的 bug：Int16 直接复用 samples 却不算 peak，导致 Int16 时 peak 永远是 0）
+      int16 = new Int16Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        let v = (samples[i] / 32768) * BOOST;
+        if (v > 1) v = 1; else if (v < -1) v = -1;
+        int16[i] = v < 0 ? Math.round(v * 32768) : Math.round(v * 32767);
+        const a = Math.abs(int16[i]);
+        if (a > peak) peak = a;
+      }
     } else {
-      // Float32 → Int16 转换
-      const BOOST = this.boost;     // ★ 使用动态 boost（默认 50x）
+      // Float32 分支：samples[i] ∈ [-1, 1]，直接 *boost → 限幅 → 转 Int16
       int16 = new Int16Array(samples.length);
       for (let i = 0; i < samples.length; i++) {
         let v = samples[i] * BOOST;

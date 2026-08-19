@@ -363,6 +363,7 @@ const elements = {
 async function init() {
   // 加载配置
   appState.config = await ipcRenderer.invoke('get-config');
+  // 系统A 老历史（仍加载，作为系统B 不可用时的兜底）
   appState.history = await ipcRenderer.invoke('get-history');
 
   // 加载保存的简历
@@ -370,7 +371,52 @@ async function init() {
 
   // 初始化UI
   updateSettingsUI();
-  renderHistory();
+  // 先兜底渲染（如果系统B 没就绪，用户至少能看到老数据）
+  renderHistory(null);
+
+  // 启动"系统B 历史（答题面板/H5/截图/ASR 共用的 state.history）"的周期性刷新
+  // 首次立即刷一次，之后每 2 秒对比 historyVersion 决定是否重绘（避免无脑 DOM 重建）
+  (async function startSysbHistoryPolling() {
+    try {
+      // 全局句柄（便于后续若要卸载可 cancel）
+      window.__sysbHistoryState = window.__sysbHistoryState || {
+        lastVersion: 0,
+        timer: null,
+      };
+      const st = window.__sysbHistoryState;
+
+      // 首次立即刷新
+      await refreshHistoryFromSystemB();
+
+      // 2 秒轮询：historyVersion 变化时才重绘 DOM，减少 CPU 抖动
+      st.timer = setInterval(async () => {
+        try {
+          let snap = null;
+          if (window.electronAPI && typeof window.electronAPI.fetchOverlayState === 'function') {
+            snap = await window.electronAPI.fetchOverlayState();
+          } else if (window.ipcRenderer && typeof window.ipcRenderer.invoke === 'function') {
+            snap = await window.ipcRenderer.invoke('overlay-full-status');
+          } else {
+            return;
+          }
+          if (!snap || !snap.ok) return;
+          const next = Number(snap.historyVersion) || 0;
+          // 版本号变化 或 历史条目数量变化（极端情况：版本号未 +1 但内容变了，数量变化也触发重绘）
+          const count = Array.isArray(snap.history) ? snap.history.length : -1;
+          const countChanged = (typeof st.lastCount === 'number') ? (st.lastCount !== count) : true;
+          if (next !== st.lastVersion || countChanged) {
+            st.lastVersion = next;
+            st.lastCount = count;
+            await refreshHistoryFromSystemB();
+          }
+        } catch (e) {
+          console.warn('[history][sysb] poll 异常:', e && e.message);
+        }
+      }, 2000);
+    } catch (e) {
+      console.warn('[history][sysb] startSysbHistoryPolling 失败:', e && e.message);
+    }
+  })();
 
   // 初始化字体大小缩放（A⁻ / 100% / A⁺）：必须在 bindEvents 前，保证与其他控件互不干扰
   initFontZoom();
@@ -622,31 +668,9 @@ function bindEvents() {
     });
   }
 
-  // 关闭面试蒙版按钮
-  const closeOverlayBtn = document.getElementById('closeOverlayBtn');
-  if (closeOverlayBtn) {
-    closeOverlayBtn.addEventListener('click', async () => {
-      const overlay = document.getElementById('interviewOverlay');
-      overlay.classList.remove('show');
-
-      // 关闭弹窗时，只有监听来源是"面试"时才停止
-      if (appState.isListening && appState.listeningSource === 'interview') {
-        console.log('[realtime]', '🛑 关闭面试弹窗，停止音频捕获');
-        await stopListening();
-      } else if (appState.isListening && appState.listeningSource === 'test') {
-        console.log('[realtime]', 'ℹ️ 关闭面试弹窗，测试模式继续运行（手动停止捕获按钮）');
-      }
-
-      // 清空内容
-      document.getElementById('overlayInterimText').textContent = '';
-      const answerEl = document.getElementById('overlayAnswerText');
-      if (answerEl) {
-        answerEl.textContent = '';
-      }
-      document.getElementById('answerLoading').style.display = 'none';
-      document.getElementById('answerReady').style.display = 'none';
-    });
-  }
+  // 内嵌面试蒙版已废弃（答题面板现已切换为独立 overlayWindow 窗口）
+  // 这里保留 bindEvents 结构，避免移除整个调用点引发后续逻辑错位
+  const _legacyCloseOverlayBtn = null;
   
   initOverlayDragResize();
 }
@@ -891,20 +915,28 @@ async function toggleStealthMode() {
   }
 }
 
-// 渲染历史记录
-function renderHistory() {
+// 渲染历史记录（优先使用系统B：localHttpServer.state.history，即答题面板/H5/截图/ASR 共用的新历史结构；
+// 拿不到系统B 时回退显示系统A 老数据 appState.history，保持兼容性）
+function renderHistory(sysbList) {
+  // ===== 优先：系统B 新数据（通过 fetchOverlayState IPC 拿到的 state.history 数组） =====
+  if (Array.isArray(sysbList) && sysbList.length > 0) {
+    renderHistoryFromSystemB(sysbList);
+    return;
+  }
+
+  // ===== 兜底：系统A 老数据（用户在旧通道中自动保存的 {id,question,answer,timestamp}） =====
   if (appState.history.length === 0) {
     elements.historyList.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">暂无历史记录</div>';
     return;
   }
-  
+
   elements.historyList.innerHTML = appState.history.map(item => `
     <div class="history-item" data-id="${item.id}">
       <div class="question">${escapeHtml(item.question.substring(0, 50))}${item.question.length > 50 ? '...' : ''}</div>
-      <div class="time">${item.timestamp}</div>
+      <div class="time">${escapeHtml(item.timestamp || '')}</div>
     </div>
   `).join('');
-  
+
   // 绑定点击事件
   document.querySelectorAll('.history-item').forEach(item => {
     item.addEventListener('click', () => {
@@ -916,6 +948,136 @@ function renderHistory() {
       }
     });
   });
+}
+
+/**
+ * 渲染侧栏：系统B 历史卡片。
+ * 系统B 数据结构（每一轮 Round）：
+ *   { id, questionText, answerText, questionImage?, status, source?, createdAt }
+ * 展示规则：
+ *   1. 侧栏以"最新在最上"倒序展示（state.history 内存本是正序，最新在下）。
+ *   2. 每轮只显示提问摘要 + 状态徽章 + 创建时间。
+ *   3. 点击后：把提问+答案拼接到主窗口"面试官问题输入框"，方便回看。
+ * @param {Array} sysbHistory 系统B 历史数组（正序或倒序均可，内部按 createdAt 统一排序）
+ */
+function renderHistoryFromSystemB(sysbHistory) {
+  if (!elements.historyList) return;
+  const list = Array.isArray(sysbHistory) ? sysbHistory.slice() : [];
+  if (list.length === 0) {
+    elements.historyList.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">暂无历史记录</div>';
+    return;
+  }
+
+  // 排序：按 createdAt 倒序（最新在最上）；createdAt 为字符串时尝试 Date.parse，失败按原序
+  list.sort((a, b) => {
+    const ta = a && a.createdAt ? (Date.parse(a.createdAt) || a.createdAt || 0) : 0;
+    const tb = b && b.createdAt ? (Date.parse(b.createdAt) || b.createdAt || 0) : 0;
+    if (typeof tb === 'number' && typeof ta === 'number') return tb - ta;
+    return String(tb || '').localeCompare(String(ta || ''));
+  });
+
+  // 来源/状态的显示映射
+  const sourceMap = {
+    'asr-panel': '🎙ASR',
+    'manual': '✍️ 手动',
+    'screenshot': '📸 截图',
+    'h5': '📱 H5',
+    'screen-solve': '🖥解题',
+  };
+  const statusMap = {
+    'asked':      { label: '⏳ 正在答题', cls: 'badge badge-asked' },
+    'answered':   { label: '✅ 已回答',   cls: 'badge badge-answered' },
+    'error':      { label: '❌ 答题失败', cls: 'badge badge-error' },
+  };
+
+  elements.historyList.innerHTML = list.map((r, idx) => {
+    const id = r && r.id ? String(r.id) : `sysb-${idx}`;
+    const q = (r && r.questionText) ? String(r.questionText).trim() : '';
+    const a = (r && r.answerText) ? String(r.answerText).trim() : '';
+    const sourceRaw = r && r.source ? String(r.source) : '';
+    const sourceTxt = sourceMap[sourceRaw] || (sourceRaw ? ('🏷 ' + sourceRaw) : '');
+    const statusRaw = r && r.status ? String(r.status) : '';
+    const statusBadge = statusMap[statusRaw] || { label: '', cls: '' };
+    const createdAt = (r && r.createdAt) ? String(r.createdAt) : '';
+    const qShow = q.length > 50 ? (q.slice(0, 50) + '…') : q;
+    const hasImg = !!(r && r.questionImage && String(r.questionImage).trim().length > 0);
+
+    // data-sysb-id 标识这是系统B 条目；data-idx 存数组索引（排序后的），点击时按 id 查详情
+    return `
+      <div class="history-item" data-sysb-id="${escapeAttr(id)}" data-sysb-real-id="${escapeAttr(String(r && r.id ? r.id : id))}">
+        <div class="history-item-head">
+          ${statusBadge.label ? `<span class="${escapeAttr(statusBadge.cls)}">${escapeHtml(statusBadge.label)}</span>` : ''}
+          ${sourceTxt ? `<span class="badge badge-source">${escapeHtml(sourceTxt)}</span>` : ''}
+          ${hasImg ? `<span class="badge badge-image" title="本轮包含截图">🖼</span>` : ''}
+        </div>
+        <div class="question">${escapeHtml(qShow || '（无提问文本）')}</div>
+        ${a ? `<div class="answer-preview">${escapeHtml(a.length > 60 ? (a.slice(0, 60) + '…') : a)}</div>` : ''}
+        <div class="time">${escapeHtml(createdAt)}</div>
+      </div>
+    `;
+  }).join('');
+
+  // 绑定点击事件：点击一条 → 把提问+答案回写到主窗口输入框，方便复看
+  const items = elements.historyList.querySelectorAll('.history-item');
+  items.forEach((itemEl) => {
+    itemEl.addEventListener('click', () => {
+      const realId = itemEl.getAttribute('data-sysb-real-id');
+      const rawMatch = list.find((h) => h && String(h.id) === String(realId));
+      if (!rawMatch) return;
+      const q = String((rawMatch && rawMatch.questionText) || '').trim();
+      const a = String((rawMatch && rawMatch.answerText) || '').trim();
+      // 回写到主窗口输入框，格式：先提问，再分隔线，再答案（保持人类可读）
+      if (elements.questionInput) {
+        const parts = [];
+        if (q) parts.push('【面试官提问】\n' + q);
+        if (a) parts.push('【AI 助手回答】\n' + a);
+        elements.questionInput.value = parts.join('\n\n');
+      }
+      // 关闭侧栏
+      if (elements.historySidebar) elements.historySidebar.classList.remove('open');
+    });
+  });
+}
+
+/**
+ * 安全的属性值转义（避免 id/source 含引号导致 HTML 属性被截断或 XSS）。
+ * @param {string} val 原始属性值
+ * @returns {string} 转义后的值
+ */
+function escapeAttr(val) {
+  const s = String(val == null ? '' : val);
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * 从系统B 拉取最新历史（通过 IPC overlay-full-status 拿 state 快照）。
+ * 成功时把 history 数组传给 renderHistory() 渲染；失败时 renderHistory() 兜底走系统A 老历史。
+ */
+async function refreshHistoryFromSystemB() {
+  try {
+    // 优先使用 preload.js 暴露的 window.electronAPI.fetchOverlayState（Electron 模式）
+    let snap = null;
+    if (window.electronAPI && typeof window.electronAPI.fetchOverlayState === 'function') {
+      snap = await window.electronAPI.fetchOverlayState();
+    } else if (window.ipcRenderer && typeof window.ipcRenderer.invoke === 'function') {
+      // 兼容老模式：nodeIntegration:true 时渲染层直接 require('electron') 拿到的 ipcRenderer
+      snap = await window.ipcRenderer.invoke('overlay-full-status');
+    } else {
+      // 浏览器模式（dev-server）：没有系统B 的 IPC，不渲染系统B
+      renderHistory(null);
+      return;
+    }
+    if (snap && snap.ok && Array.isArray(snap.history)) {
+      renderHistory(snap.history);
+    } else {
+      // 系统B 不可用（localHttpServer 尚未启动或内部异常）→ 兜底系统A
+      renderHistory(null);
+    }
+  } catch (e) {
+    console.warn('[history][sysb] refreshHistoryFromSystemB 异常:', e && e.message);
+    // 异常不阻塞 UI：兜底显示系统A
+    try { renderHistory(null); } catch (_) { /* ignore */ }
+  }
 }
 
 // HTML转义
@@ -1257,7 +1419,8 @@ async function startNativeListening() {
           console.log('[realtime-speech] renderer 收到 interim:', data.text);
           const el = document.getElementById('interimText');
           if (el) el.textContent = data.text;  // ★ 修：data 是对象 {text, sn, ...}
-          const overlayEl = document.getElementById('overlayInterimText');
+          // 内嵌面试蒙版已移除，不再写入 overlayInterimText
+          const overlayEl = null;
           if (overlayEl) overlayEl.textContent = data.text;
         });
         svc.on('final', async (data) => {
@@ -1458,7 +1621,8 @@ async function startMicCapture() {
           svc.on('interim', (data) => {  // ★ 修：'partial' → 'interim'
             const interimEl = document.getElementById('interimText');
             if (interimEl) interimEl.textContent = data.text;  // ★ 修：data.text
-            const overlayEl = document.getElementById('overlayInterimText');
+            // 内嵌面试蒙版已移除，不再写入 overlayInterimText
+            const overlayEl = null;
             if (overlayEl) overlayEl.textContent = data.text;
           });
           svc.on('final', async (data) => {
@@ -1705,10 +1869,15 @@ async function processRecognizedText(text) {
       console.log('[llm]','✓ LLM 判断为问题: "' + processResult.question + '"');
       appState.currentQuestion = processResult.question;
 
-      document.getElementById('answerLoading').style.display = 'block';
-      document.getElementById('answerReady').style.display = 'none';
+      // 内嵌面试蒙版已移除，这里不再向 answerLoading/answerReady 写入状态；
+      // 新独立窗口 overlay-renderer 通过 app.bus 监听 asr:answer-start / asr:answer-generated 更新 UI。
+      const loadingEl = document.getElementById('answerLoading');
+      const readyEl = document.getElementById('answerReady');
+      if (loadingEl) loadingEl.style.display = 'block';
+      if (readyEl) readyEl.style.display = 'none';
 
-      // 显示答案到弹窗
+      // 内嵌面试蒙版已移除，不再写入 overlayAnswerText；
+      // 答案会通过 ASR bus 广播到独立答题面板 overlay-renderer.js。
       const answerEl = document.getElementById('overlayAnswerText');
       if (answerEl) {
         answerEl.textContent = processResult.answer || '正在生成答案...';
@@ -1723,11 +1892,12 @@ async function processRecognizedText(text) {
         };
         appState.history.unshift(historyItem);
         await ipcRenderer.invoke('save-history', appState.history);
-        renderHistory();
+        // 系统A 写入后先刷新老通道显示；2 秒轮询会自动把系统B 的新历史合并进来
+        renderHistory(null);
       }
 
-      document.getElementById('answerLoading').style.display = 'none';
-      document.getElementById('answerReady').style.display = 'block';
+      if (loadingEl) loadingEl.style.display = 'none';
+      if (readyEl) readyEl.style.display = 'block';
     } else if (processResult && processResult.error) {
       console.error('[llm]','LLM 处理失败: ' + processResult.error);
       console.error('[renderer] LLM 错误:', processResult.error);
@@ -2209,14 +2379,23 @@ function updateListeningUI(isListening) {
 
 // 开始面试
 async function startInterview() {
+  // 内嵌面试蒙版已废弃（答题面板现已切换为独立 overlayWindow 窗口）：
+  // - 不再 show() 本地 document.getElementById('interviewOverlay')；
+  // - 独立面板由主窗口「开始面试辅助」按钮（copilot.js startInterviewAssist）通过 api.openOverlay() 打开。
+  // - 老入口（本函数）仍保留，用于兼容"捕获系统声音"相关的历史模式（microphone/mixed/system）。
+
+  // 内嵌面试蒙版已移除，以下 DOM 已不存在，统一 null-guard 避免报错
   const overlay = document.getElementById('interviewOverlay');
-  overlay.classList.add('show');
+  if (overlay) overlay.classList.add('show');
 
-  document.getElementById('answerLoading').style.display = 'none';
-  document.getElementById('answerReady').style.display = 'none';
+  const loadingEl = document.getElementById('answerLoading');
+  const readyEl = document.getElementById('answerReady');
+  if (loadingEl) loadingEl.style.display = 'none';
+  if (readyEl) readyEl.style.display = 'none';
 
-  // 清空之前的内容
-  document.getElementById('overlayInterimText').textContent = '';
+  // 清空之前的内容（内嵌蒙版已移除，以下为了兼容保留 guard）
+  const interimEl = document.getElementById('overlayInterimText');
+  if (interimEl) interimEl.textContent = '';
   const answerEl = document.getElementById('overlayAnswerText');
   if (answerEl) {
     answerEl.textContent = '';

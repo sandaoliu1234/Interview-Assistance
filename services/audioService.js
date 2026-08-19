@@ -132,16 +132,24 @@ class AudioService {
 
   /**
    * 检测文本是否包含问题 - 支持灵敏度设置
+   * @param {string} text 待检测文本（通常是单句 ASR final 结果）
+   * @param {number} sensitivity 灵敏度 1(最严)-10(最松)，默认 3（降低门槛，避免短提问误筛）
+   * @returns {boolean} 是否判定为"潜在问题/面试触发句"
    */
-  detectQuestion(text, sensitivity = 5) {
-    if (!text || text.length < 5) return false;
+  detectQuestion(text, sensitivity = 3) {
+    if (!text || text.length < 2) return false;
 
     const trimmedText = text.trim();
 
     console.log('[detectQuestion] 输入:', trimmedText, '灵敏度:', sensitivity);
 
     // 1) 最小长度检查（根据灵敏度调整）
-    const minLength = Math.max(8, 14 - sensitivity);
+    //    公式：minLength = Math.max(3, 10 - sensitivity)
+    //    - sensitivity=1(最严) → max(3,9)=9
+    //    - sensitivity=3(默认) → max(3,7)=7  → "自我介绍一下。"(7字) 刚好通过
+    //    - sensitivity=5 → max(3,5)=5
+    //    - sensitivity=10(最松) → max(3,0)=3
+    const minLength = Math.max(3, 10 - sensitivity);
     if (trimmedText.length < minLength) {
       console.log('[detectQuestion] 长度不足:', trimmedText.length, '<', minLength);
       return false;

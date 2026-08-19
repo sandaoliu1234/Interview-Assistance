@@ -472,13 +472,29 @@
           showLoading();
         });
       }
-      // 生成完成 → 写入答案区 → 显示 ✓ 2s
+      // 生成完成 → 写入答案区 → 显示 ✓ 2s（或显示 AI 失败错误）
       // ★ AI 输出是 Markdown：不再用 textContent 把语法符原样显示，改为先 renderMarkdown → set innerHTML
+      // ★ 如果上游 payload.error 非空（ASR/AI 失败）：显示红色错误提示，不显示 ✓ 徽章
       if (typeof api.onAnswerGenerated === 'function') {
-        api.onAnswerGenerated(({ text }) => {
-          answerEl.innerHTML = renderMarkdown(text || '');
-          scrollToBottom();  // 外层滚动到底部（用户看到最新 AI 答案）
-          flashReady();
+        api.onAnswerGenerated((payload) => {
+          const text = (payload && typeof payload === 'object') ? String(payload.text || '') : String(payload || '');
+          const err = (payload && typeof payload === 'object' && payload.error) ? String(payload.error).trim() : '';
+          if (err) {
+            answerEl.innerHTML = `<div class="round-error" style="margin:6px 0 10px;color:#ff8a8a;font-size:14px;line-height:1.55;border:1px dashed rgba(255,138,138,.4);padding:8px 10px;border-radius:6px;background:rgba(255,64,64,.06);">⚠️ ${_escapeHtml(err)}</div>`;
+            scrollToBottom();
+            hideAll();  // 失败不打 ✓ 勾
+            // 手动把答案就绪容器也改成错误样式（如果 readyEl 存在显示一个红叉 2s）
+            try {
+              readyEl.style.display = 'block';
+              readyEl.textContent = '✗ 生成失败';
+              readyEl.style.color = '#ff8a8a';
+              setTimeout(() => { readyEl.style.display = 'none'; readyEl.textContent = ''; readyEl.style.color = ''; }, 2500);
+            } catch (_) { /* ignore */ }
+          } else {
+            answerEl.innerHTML = renderMarkdown(text || '');
+            scrollToBottom();  // 外层滚动到底部（用户看到最新 AI 答案）
+            flashReady();
+          }
         });
       }
       // 小程序侧回写答案（与上面 answerGenerated 相同视觉效果）
@@ -608,6 +624,186 @@
   }
 
   // ============================================================
+  // 7.3 【新增】面板端"开始/停止识别系统声音"切换按钮
+  //      - 目的：面试时不必切回主窗口，直接在面板上就能启停 WASAPI 识别
+  //      - 三态：rec-idle（绿，未识别） / rec-recording（红，识别中，脉冲动画） / rec-loading（禁用）
+  //      - 设计参照 Experience 704997：做"点击防抖 + 切换中禁用 + 状态锁"，避免连点多次启动/停止
+  // ============================================================
+  function initToggleRecBtn() {
+    try {
+      const btn = document.getElementById('toggleRecBtn');
+      if (!btn) return;
+      const iconEl = btn.querySelector('.toggle-rec-icon');
+      const textEl = btn.querySelector('.toggle-rec-text');
+
+      // 本地状态缓存（减少来回 IPC 查询）：初始 null，首次 getAsrStatus 后再更新
+      let cachedIsRecording = null;
+      // 状态锁：切换动作进行中（IPC round-trip）禁止再次点击
+      let isSwitching = false;
+      // 防抖：最小点击间隔 800ms（避免高频点击导致系统"请稍候"提示反复弹出）
+      let lastClickTs = 0;
+      const MIN_CLICK_INTERVAL = 800;
+
+      // ---- 状态 → UI 渲染 ----
+      const applyVisual = ({ recording, switching }) => {
+        if (!btn) return;
+        // 三态 class 互斥
+        btn.classList.remove('rec-idle', 'rec-recording', 'rec-loading');
+        if (switching) {
+          btn.classList.add('rec-loading');
+          btn.disabled = true;
+          btn.setAttribute('aria-busy', 'true');
+        } else {
+          btn.disabled = false;
+          btn.removeAttribute('aria-busy');
+          if (recording) {
+            btn.classList.add('rec-recording');
+            if (iconEl) iconEl.textContent = '⏸';
+            if (textEl) textEl.textContent = '停止识别';
+            btn.title = '点击停止系统声音识别（不关闭面板）';
+          } else {
+            btn.classList.add('rec-idle');
+            if (iconEl) iconEl.textContent = '🎤';
+            if (textEl) textEl.textContent = '开始识别';
+            btn.title = '点击开始系统声音识别（自动调用上一次主窗口的配置）';
+          }
+        }
+      };
+
+      // ---- 简易 Toast：启动失败 / 无配置缓存 / 切换中等提示（不引入额外 DOM，用 body 顶置浮层）----
+      const toast = (msg, kind) => {
+        try {
+          const k = kind === 'error' ? 'error' : (kind === 'warn' ? 'warn' : 'info');
+          let el = document.getElementById('overlay-top-toast');
+          if (!el) {
+            el = document.createElement('div');
+            el.id = 'overlay-top-toast';
+            Object.assign(el.style, {
+              position: 'fixed', top: '8px', left: '50%', transform: 'translateX(-50%)',
+              zIndex: 99999,
+              padding: '6px 12px',
+              borderRadius: '8px',
+              fontSize: '12px', lineHeight: '1.4',
+              color: '#fff',
+              background: 'rgba(30,41,59,.92)',
+              border: '1px solid rgba(148,163,184,.3)',
+              boxShadow: '0 6px 20px rgba(0,0,0,.3)',
+              pointerEvents: 'none',
+              opacity: '0',
+              transition: 'opacity .2s ease, transform .2s ease',
+              whiteSpace: 'pre-wrap',
+              maxWidth: 'calc(100% - 24px)',
+            });
+            document.body.appendChild(el);
+          }
+          const bg = k === 'error' ? 'rgba(153,27,27,.95)'
+            : (k === 'warn' ? 'rgba(180,83,9,.95)' : 'rgba(30,41,59,.92)');
+          el.style.background = bg;
+          el.textContent = String(msg || '');
+          el.style.opacity = '1';
+          el.style.transform = 'translate(-50%, 4px)';
+          clearTimeout(toast._t);
+          toast._t = setTimeout(() => {
+            if (el) { el.style.opacity = '0'; el.style.transform = 'translateX(-50%)'; }
+          }, 3200);
+        } catch (_) { /* ignore */ }
+      };
+
+      // ---- 切换动作 ----
+      const doToggle = async () => {
+        // 防抖（Experience 704997 经验：高频点击是系统提示重复的元凶）
+        const now = Date.now();
+        if (now - lastClickTs < MIN_CLICK_INTERVAL) {
+          toast('操作太快啦，请稍候再试', 'warn');
+          return;
+        }
+        lastClickTs = now;
+        if (isSwitching) return;
+        isSwitching = true;
+        // UI：立即进入"切换中"禁用态（即使 recording 还没改，保持旧图标/文字但禁用）
+        applyVisual({ recording: !!cachedIsRecording, switching: true });
+        try {
+          if (typeof api.toggleAsrPipeline !== 'function') {
+            toast('当前版本不支持面板端启停识别，请回主窗口操作', 'warn');
+            return;
+          }
+          const r = await api.toggleAsrPipeline();
+          if (!r || r.success !== true) {
+            // 特殊：needMainConfig → 用户还没在主窗口启动过 → 给出可操作提示
+            if (r && r.needMainConfig) {
+              toast('⚠️ 请先回主窗口完成 API Key 等设置，\n然后点一次「开始面试辅助」，\n之后就能直接在面板上开始识别啦', 'warn');
+            } else if (r && r.busy) {
+              toast('正在切换状态，请稍候…', 'info');
+            } else {
+              toast(`启停失败：${r && r.error ? r.error : '未知错误'}`, 'error');
+            }
+            return;
+          }
+          // 成功：同步本地缓存（onRecordingStatus 稍后也会回调一次，双保险）
+          cachedIsRecording = !!r.isRecording;
+          applyVisual({ recording: cachedIsRecording, switching: false });
+          toast(r.action === 'started' ? '🎤 已开始识别系统声音' : '⏸ 已停止识别', 'info');
+        } catch (e) {
+          console.error('[overlay] toggleAsrPipeline 异常:', e);
+          toast(`切换失败：${e.message || '未知错误'}`, 'error');
+        } finally {
+          // 收尾：再取一次最新态保证 UI 与主进程一致
+          isSwitching = false;
+          try {
+            if (typeof api.getAsrStatus === 'function') {
+              api.getAsrStatus().then((s) => {
+                if (s && s.success && typeof s.isRecording === 'boolean') {
+                  cachedIsRecording = s.isRecording;
+                  applyVisual({ recording: cachedIsRecording, switching: false });
+                }
+              }).catch(() => {});
+            } else {
+              applyVisual({ recording: !!cachedIsRecording, switching: false });
+            }
+          } catch (_) {
+            applyVisual({ recording: !!cachedIsRecording, switching: false });
+          }
+        }
+      };
+
+      // 绑定点击
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        doToggle();
+      });
+
+      // ---- 初始：用 getAsrStatus 拿到真实当前态 ----
+      (async () => {
+        try {
+          let recording = false;
+          // 通道 1：面板专用 API
+          if (typeof api.getAsrStatus === 'function') {
+            const s = await api.getAsrStatus();
+            if (s && s.success) recording = !!s.isRecording;
+          } else if (typeof api.fetchOverlayState === 'function') {
+            // 通道 2：兜底用状态快照
+            const snap = await api.fetchOverlayState();
+            if (snap && snap.ok) recording = !!snap.isRecording;
+          }
+          cachedIsRecording = recording;
+          applyVisual({ recording, switching: false });
+        } catch (_) { /* 初始化失败保持默认态（idle=绿）即可 */ }
+      })();
+
+      // ---- 订阅主进程广播的 asr:recording-status，保证无论谁启停按钮都和徽章一致 ----
+      if (typeof api.onRecordingStatus === 'function') {
+        api.onRecordingStatus((isRecording) => {
+          cachedIsRecording = !!isRecording;
+          applyVisual({ recording: cachedIsRecording, switching: isSwitching });
+        });
+      }
+    } catch (e) {
+      console.error('[overlay] initToggleRecBtn 失败:', e.message);
+    }
+  }
+
+  // ============================================================
   // 7. 暴露给外部 IPC 直接调用的回写答案（与第 5 条的 onWriteFromOutside 形成双通道）
   // ============================================================
   function initAnswerFromOutside() {
@@ -719,8 +915,9 @@
         if (s === 'panel' || s === 'overlay' || s.startsWith('screenshot')) return ['面板截图', 'panel'];
         if (s === 'h5' || s === 'web' || s.startsWith('http')) return ['H5 网页', 'h5'];
         if (s === 'miniapp' || s === 'wx' || s.startsWith('mini')) return ['小程序', 'miniapp'];
-        if (s === 'asr' || s.startsWith('asr') || s === 'mic') return ['语音识别', 'asr'];
-        if (s === 'unknown' || s === '') return ['其他入口', 'panel'];
+        // ★ 兼容新增的 source 命名：asr-panel（面板系统声音）/ main-window-asr（主窗口老ASR链路）
+        if (s === 'asr' || s.startsWith('asr') || s.endsWith('asr') || s.indexOf('asr') >= 0 || s === 'mic') return ['语音识别', 'asr'];
+        if (s === 'unknown' || s === '' || s === 'fallback') return ['其他入口', 'panel'];
         return [s, 'panel'];
       }
 
@@ -1558,6 +1755,7 @@
       ['缩放手柄', initResizeHandles],
       ['ASR/答案渲染', initAsrAnswerRenderer],
       ['状态徽章', initStatusBadge],
+      ['识别启停按钮', initToggleRecBtn],      // ⭐ 新增：面板端一键开始/停止系统声音识别
       ['外部回写答案', initAnswerFromOutside],
       ['【新】多轮历史渲染器', initHistoryRenderer],   // ⭐ 必须在 initAnswerFromOutside 之后，才能正确 patch
       ['二维码按钮', initQrToggleBtn],

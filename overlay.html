@@ -16,10 +16,20 @@
       <span class="drag-grip">⋮⋮</span>
     </div>
 
-    <!-- 头部：左侧状态徽章；右侧「字体大小(A⁻ / 100% / A⁺)」 + 「📸 截图按钮」 + 「📱 二维码按钮」 + 「× 关闭按钮」
+    <!-- 头部：左侧状态徽章 + 启停按钮；右侧「字体大小(A⁻ / 100% / A⁺)」 + 「📸 截图按钮」 + 「📱 二维码按钮」 + 「× 关闭按钮」
          顺序：字体控制放在截图按钮的左侧（用户明确要求），关闭按钮仍在最右 -->
     <div class="overlay-header">
-      <span id="statusBadge" class="status-badge recording">🎤 正在识别系统声音</span>
+      <div class="header-left">
+        <span id="statusBadge" class="status-badge recording">🎤 正在识别系统声音</span>
+        <!-- ★ 新增：面板端一键"开始/停止识别系统声音"切换按钮（不用回主窗口点启动）
+             - idle 态：绿底 白字 🎤 开始识别
+             - recording 态：红底 白字 ⏸ 停止识别
+             - 切换中：disabled + 半透明 + loading 文案，避免连点 -->
+        <button id="toggleRecBtn" class="toggle-rec-btn rec-idle" type="button" title="启动/停止系统声音识别（面试时可直接在此切换，不需要回主窗口）">
+          <span class="toggle-rec-icon">🎤</span>
+          <span class="toggle-rec-text">开始识别</span>
+        </button>
+      </div>
       <div class="header-right">
         <!-- 字体大小控制：与主窗口 index.html 的 font-zoom 组件同结构/同功能，共享 localStorage key → 两窗口同步 -->
         <div class="font-zoom" id="fontZoomCtl" title="调整面板字体大小（与主窗口同步）">

@@ -132,6 +132,17 @@ const _apiImpl = {
   startRelayServer: (port) => invoke('start-relay-server', port), // 启动伴生中继
   stopRelayServer: () => invoke('stop-relay-server'), // 停止伴生中继
   relayServerStatus: () => invoke('relay-server-status'), // 中继状态
+
+  // ===== 面板端独立启停 ASR（新版 ASRPipeline 通道路由） =====
+  // ★ 面试辅助 2.0 主通道（WASAPI Loopback 原生采集 + 百度实时 ASR WS + AI 答题）
+  //   面板端按钮"开始/停止识别"直接调用 toggleAsrPipeline，不需要回主窗口
+  startAsrPipeline: (config) => invoke('start-asr-pipeline', config),
+  stopAsrPipeline: () => invoke('stop-asr-pipeline'),
+  asrPipelineStatus: () => invoke('asr-pipeline-status'),
+  // ★ 面板端专用：一键切换识别状态（推荐面板端直接用这个，返回 { success, action:'started'|'stopped', isRecording, needMainConfig?, error }）
+  toggleAsrPipeline: () => invoke('toggle-asr-pipeline'),
+  // 面板端专用：查"当前是否识别中 + 是否有可复用配置缓存"
+  getAsrStatus: () => invoke('get-asr-status'),
   relayBroadcast: (payload) => invoke('relay-broadcast', payload), // 广播给伴生设备
 
   // ===== 隐私审计 =====
