@@ -445,6 +445,33 @@ class AIService {
     return result;
   }
 
+  // 通用 LLM 调用入口（面向多 agent：ATS 评分、关键词匹配、内容优化、模拟出题/点评/复盘）。
+  //   - 与 generateAnswer 不同：不要求 scene / conversationHistory / resume，允许调用方自己拼 prompt；
+  //   - 统一：根据 config.selectedService（或显式 serviceOverride）+ modelTier 选模型；
+  //   - 返回：纯文本答案（与 callWenxin/callZhipu/callTongyi 一致）。
+  // @param {string} prompt           调用方自己拼好的完整指令
+  // @param {Object} [config]         用户配置（含 selectedService / 各服务商密钥 / tongyiBaseUrl 等）
+  // @param {string} [modelTier]      standard | advanced | deep | programming
+  // @param {string} [serviceOverride] 强制指定服务商，不传时走 config.selectedService
+  // @returns {Promise<string>}       模型返回的纯文本内容
+  async chat(prompt, config = {}, modelTier, serviceOverride) {
+    const cfg = config || {};
+    const service = String(serviceOverride || cfg.selectedService || 'tongyi').toLowerCase();
+    const tier = String(modelTier || cfg.modelTier || 'standard');
+    const model = this.getModelByTier(service, tier);
+    switch (service) {
+      case 'wenxin':
+        return await this.callWenxin(prompt, cfg.wenxinApiKey, model);
+      case 'zhipu':
+        return await this.callZhipu(prompt, cfg.zhipuApiKey, model);
+      case 'tongyi':
+        return await this.callTongyi(prompt, cfg.tongyiApiKey, model, cfg.tongyiBaseUrl);
+      default:
+        // 兜底：按通义走（如果用户没配置，会在底层抛明确的 API Key 为空错误）
+        return await this.callTongyi(prompt, cfg.tongyiApiKey, model, cfg.tongyiBaseUrl);
+    }
+  }
+
   // 构建面试复盘 prompt：把问答记录整理成结构化文本，要求 LLM 输出复盘报告
   buildReviewPrompt(history) {
     let prompt = `你是一位资深面试教练。以下是候选人本次面试的问答记录，请生成一份详细的复盘报告，包含：

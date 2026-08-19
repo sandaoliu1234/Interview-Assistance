@@ -1602,3 +1602,874 @@ body.stealth-active #logBtn { display: none; }
   line-height: 1.6;
   white-space: pre-wrap;
 }
+
+/* ============================================================
+ * 面试记录 Session 三态视图（viewRouter：home / sessions-list / session-detail）
+ * 思路：单页面应用（SPA）通过 .view-panel / .view-panel.hidden 切换；
+ *       .app-container 设 min-height:100%，每个 view-panel 默认占满容器的可滚动区
+ * ============================================================ */
+.view-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+}
+.view-panel.hidden { display: none !important; }
+
+/* #viewHome 内部：保持原有布局不变（modeTabs + main-content + sidebar 流式）
+ * 优化版：删除了"结束本场/开始新的一场"底部按钮后，不再需要 padding-bottom；
+ * 关闭面试后弹的 end-session-banner 是 viewHome 内的 fixed 居中模态，不占流布局 */
+#viewHome {
+  position: relative;
+  padding-bottom: 18px;
+}
+
+/* 查看全部面试记录按钮：放在开始面试辅助按钮正下方（次级 start-row）。
+ * 宽度默认填满该 row；窄屏自动居中 */
+.start-row.start-row-secondary {
+  margin-top: 0;                  /* 与上面按钮组视觉紧凑 */
+  justify-content: stretch;
+}
+.start-row.start-row-secondary .abtn {
+  flex: 1 1 auto;
+  justify-content: center;
+  max-width: 100%;
+  padding: 12px 16px;
+  font-size: 0.9375rem;
+}
+
+/* 底部操作栏：主窗口"结束本场/开始新的一场"已删除，默认隐藏；
+ * 保留类定义便于未来扩展，避免其它样式引用报错 */
+.bottom-action-bar {
+  display: none !important;
+}
+
+/* ============================================================
+ * 面试结束横幅（end-session-banner）：
+ *   当用户点击浮动答题面板右上角×时，由 main.js 主动结束本场 + 显示主窗口 + 广播事件
+ *   → renderer.js 接收事件 showEndSessionBanner() 显示此中央模态。
+ *   两按钮：🔍 查看本场面试记录 / 🆕 开启新的面试
+ * ============================================================ */
+.end-session-banner {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 80;
+  width: min(480px, calc(100vw - 40px));
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.98) 0%, rgba(17, 24, 39, 0.98) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 18px;
+  padding: 20px 20px 18px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  animation: esbIn .22s ease both;
+  color: var(--text-primary);
+}
+.end-session-banner.hidden { display: none !important; }
+@keyframes esbIn {
+  from { opacity: 0; transform: translate(-50%, -46%) scale(.97); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+.end-session-banner::backdrop,
+.end-session-banner + .backdrop { /* 兜底背景罩：如果要遮罩可加；当前不阻挡下方面板点击（更轻） */ }
+
+.esb-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 1.25rem;
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.esb-close:hover {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-primary);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.esb-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.esb-icon {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4rem;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+}
+.esb-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #fff;
+  margin-bottom: 2px;
+}
+.esb-sub {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.esb-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media (max-width: 520px) {
+  .esb-actions { grid-template-columns: 1fr; }
+}
+.esb-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 0.90625rem;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: transform .08s, box-shadow .15s, filter .15s;
+  user-select: none;
+}
+.esb-btn:hover  { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(0,0,0,.3); }
+.esb-btn:active { transform: translateY(0); filter: brightness(.95); }
+.esb-btn-view {
+  background: linear-gradient(135deg, #6366f1, #3b82f6);
+  border-color: rgba(255,255,255,.1);
+}
+.esb-btn-new  {
+  background: linear-gradient(135deg, #10b981, #059669);
+  border-color: rgba(255,255,255,.1);
+}
+
+/* 底部 toast：操作后反馈 2.5s 自动消失 */
+.bottom-toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 88px;
+  z-index: 60;
+  background: rgba(17, 24, 39, 0.95);
+  color: #fff;
+  border: 1px solid var(--border-active);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 0.8125rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  animation: toastIn .18s ease both;
+}
+.bottom-toast.hidden { display: none; }
+.bottom-toast.toast-warn  { border-color: #f59e0b; color: #fde68a; }
+.bottom-toast.toast-error { border-color: #ef4444; color: #fecaca; }
+.bottom-toast.toast-ok    { border-color: #10b981; color: #a7f3d0; }
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* 列表/详情视图：通用顶部 header */
+.session-view-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  flex: 0 0 auto;
+}
+.session-view-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+  line-height: 1.3;
+}
+.session-detail-titlewrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.session-detail-meta {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.session-detail-meta .pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.session-detail-meta .pill.status-active  { background: rgba(16,185,129,.12); color: #34d399; border-color: rgba(16,185,129,.25); }
+.session-detail-meta .pill.status-closed  { background: rgba(107,114,128,.15); color: #cbd5e1; border-color: rgba(148,163,184,.2); }
+
+.session-detail-toolspacer { flex: 0 0 48px; }
+
+.back-btn {
+  appearance: none;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.back-btn:hover { background: var(--bg-elevated); border-color: var(--border-strong); }
+
+.session-search {
+  flex: 1 1 auto;
+  max-width: 420px;
+  margin-left: auto;
+}
+.session-search input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  outline: none;
+  font-size: 0.875rem;
+}
+.session-search input:focus { border-color: var(--border-active); box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
+
+.session-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  color: var(--text-tertiary);
+  font-size: 0.8125rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex: 0 0 auto;
+}
+
+.sessions-list, .session-detail-chat {
+  padding: 14px 18px 24px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  scrollbar-gutter: stable;
+}
+.sessions-empty, .session-detail-empty {
+  padding: 60px 18px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.875rem;
+}
+.sessions-empty.hidden, .session-detail-empty.hidden { display: none; }
+
+/* 面试记录列表卡片 */
+.session-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: transform .1s ease, border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.session-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-active);
+  box-shadow: 0 6px 18px rgba(0,0,0,.18);
+  background: linear-gradient(180deg, var(--bg-elevated) 0%, rgba(59,130,246,.04) 100%);
+}
+.session-card .sc-row1 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.session-card .sc-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.35;
+  word-break: break-all;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.session-card .sc-status {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.session-card .sc-status.active  { background: rgba(16,185,129,.14); color: #34d399; border-color: rgba(16,185,129,.25); }
+.session-card .sc-status.closed  { background: rgba(148,163,184,.15); color: #cbd5e1; border-color: rgba(148,163,184,.25); }
+.session-card .sc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 0.78125rem;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.session-card .sc-desc {
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 面试详情页：对话气泡 */
+.round-block {
+  margin-bottom: 20px;
+  padding: 10px 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  scroll-margin-top: 90px; /* 锚点跳转避免被 sticky header 盖住 */
+}
+.round-block.round-highlight {
+  animation: roundHighlight 1.6s ease both;
+  border-color: var(--border-active);
+}
+@keyframes roundHighlight {
+  0%   { box-shadow: 0 0 0 0 rgba(59,130,246,.45); }
+  40%  { box-shadow: 0 0 0 8px rgba(59,130,246,0); }
+  100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); }
+}
+.round-block .round-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 2px 8px;
+  margin-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+.round-block .round-head .round-index {
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: rgba(59,130,246,.1);
+  border: 1px solid rgba(59,130,246,.25);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.speech-bubble {
+  max-width: 88%;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+  word-break: break-word;
+  white-space: pre-wrap;
+  border: 1px solid transparent;
+  position: relative;
+}
+.speech-bubble.question {
+  background: var(--bg-input);
+  border-color: var(--border);
+  color: var(--text-primary);
+  margin-left: 0;
+  border-top-left-radius: 4px;
+}
+.speech-bubble.answer {
+  background: linear-gradient(135deg, rgba(59,130,246,.16) 0%, rgba(59,130,246,.06) 100%);
+  border-color: rgba(59,130,246,.28);
+  color: var(--text-primary);
+  margin-left: auto;
+  border-top-right-radius: 4px;
+}
+.speech-bubble .speech-role {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 4px;
+  color: var(--text-tertiary);
+}
+.speech-bubble.question .speech-role { color: #fbbf24; }
+.speech-bubble.answer   .speech-role { color: #60a5fa; }
+.round-block .round-meta-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 0.71875rem;
+  color: var(--text-tertiary);
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+/* ============================================================
+ * 复用类：.abtn 与 .abtn-book 通用次级大按钮
+ *   用于 "📚 查看全部面试记录 / 📚 模拟面试记录" 等正下方行
+ * ============================================================ */
+.abtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.abtn:hover {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--bg-card-hover);
+}
+.abtn:active { transform: translateY(1px); }
+.abtn-book {
+  /* 书籍样式：加一丢丢蓝边柔和感，不抢 CTA 风头 */
+  border-color: rgba(59,130,246,0.35);
+  background: linear-gradient(180deg, rgba(59,130,246,0.05) 0%, var(--bg-card) 100%);
+}
+.abtn-book:hover {
+  background: linear-gradient(180deg, rgba(59,130,246,0.1) 0%, var(--bg-card-hover) 100%);
+}
+
+/* ============================================================
+ * 模拟面试 / 简历优化 新增样式（HireMe 深色风格，
+ * 严格对齐已有 --radius/--s-*/--accent/--bg-elevated 设计令牌）
+ * ============================================================ */
+
+/* ---- 公共：面试类型卡片 带小字副标签（STAR/原理/算法） ---- */
+.tc-sub {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+.type-card .tc-emoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+/* 每种类型一个浅底色（不使用渐变文字 / 不做玻璃） */
+.mock-emoji-behavior { background: rgba(236,72,153,0.18); color: #f9a8d4; }
+.mock-emoji-tech     { background: rgba(59,130,246,0.18); color: #93c5fd; }
+.mock-emoji-prog     { background: rgba(34,197,94,0.18);  color: #86efac; }
+.mock-emoji-comp     { background: rgba(251,191,36,0.18); color: #fcd34d; }
+
+/* ---- 模拟面试：简历三按钮（使用已保存/粘贴/上传） ---- */
+.mock-resume-tools {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-2);
+}
+.mock-resume-tools .seg-btn {
+  flex: 1 1 auto;
+  min-width: 120px;
+}
+.mock-resume-loaded {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  margin-bottom: var(--s-2);
+  word-break: break-all;
+}
+.mock-resume-loaded--ok {
+  border-color: rgba(34,197,94,0.4);
+  color: var(--text-primary);
+  background: rgba(34,197,94,0.06);
+}
+.mock-resume-loaded--ok .mrl-check { color: #34d399; font-weight: 700; }
+.mrl-title { flex-shrink: 0; color: var(--text-tertiary); }
+
+/* ---- 模拟面试：三列小网格（作答方式/题数/语言） ---- */
+@media (min-width: 720px) {
+  .mock-field-grid-3 { grid-template-columns: 1.1fr 1fr 1fr; }
+}
+
+/* ---- 模拟面试：CTA 蓝→紫渐变（贴合截图 2） ---- */
+.start-interview-btn.mock-cta {
+  background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.32);
+}
+
+/* ---- 模拟面试：进行中（run card） ---- */
+.mock-run-card { gap: var(--s-3); }
+.mock-run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.mock-progress {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.mock-run-status {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+.mock-question-box {
+  padding: 14px;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(59,130,246,0.07) 0%, var(--bg-elevated) 100%);
+  border: 1px solid rgba(59,130,246,0.22);
+}
+.mock-question-label {
+  font-size: 0.75rem;
+  color: var(--accent-ink);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.mock-question-text {
+  color: var(--text-primary);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mock-run-actions {
+  display: flex;
+  gap: var(--s-2);
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+.mock-submit-btn {
+  flex: 1 1 240px;
+  background: linear-gradient(90deg, var(--accent), #60a5fa);
+  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.28);
+}
+
+/* 语音作答：麦克风按钮（mock-voice-btn）
+   - 位置：在 mockSubmitAnswerBtn 左侧，由 mockResumePanels.js 动态插入一个 wrap
+   - 默认态：绿色渐变（区分于主 submit 蓝色），录音态：红色 + 脉冲光晕
+   - 宽度固定，避免因为文案/状态徽章变化抖动布局
+*/
+.start-interview-btn.mock-voice-btn {
+  flex: 0 0 128px;
+  min-width: 0;
+  background: linear-gradient(90deg, #10b981, #22c55e);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.26);
+  font-size: 13px;
+  padding: 0 10px;
+  height: 40px;
+  line-height: 1;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.start-interview-btn.mock-voice-btn span {
+  font-size: 15px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+.start-interview-btn.mock-voice-btn:hover {
+  filter: brightness(1.05);
+}
+/* 录音中：红色 + 脉冲点（after 伪元素，避免 JS 再插 DOM） */
+.start-interview-btn.mock-voice-btn.recording {
+  background: linear-gradient(90deg, #ef4444, #f97316);
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45), 0 4px 14px rgba(239, 68, 68, 0.32);
+  animation: mockVoicePulse 1.6s ease-in-out infinite;
+}
+@keyframes mockVoicePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(239,68,68,.55), 0 4px 14px rgba(239,68,68,.32); }
+  70%  { box-shadow: 0 0 0 12px rgba(239,68,68,0),  0 4px 14px rgba(239,68,68,.32); }
+  100% { box-shadow: 0 0 0 0  rgba(239,68,68,0),  0 4px 14px rgba(239,68,68,.32); }
+}
+
+/* 语音作答：状态徽章（紧跟麦克风按钮右侧；文字过长省略）
+   - connecting 态：琥珀色；listening 态：绿色 + 呼吸点
+*/
+.mock-voice-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #e5e7eb;
+  background: rgba(148,163,184,0.08);
+  border: 1px solid rgba(148,163,184,0.24);
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mock-voice-state-badge::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #9ca3af;
+  flex: 0 0 6px;
+}
+.mock-voice-state-badge.connecting::before {
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245,158,11,.22);
+}
+.mock-voice-state-badge.listening::before {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34,197,94,.22);
+  animation: mockVoiceListeningDot 1.2s ease-in-out infinite;
+}
+@keyframes mockVoiceListeningDot {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.6); opacity: .65; }
+}
+.mock-feedback {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(16,185,129,0.06);
+  border: 1px solid rgba(16,185,129,0.28);
+}
+.mock-feedback-title {
+  font-size: 0.8125rem;
+  color: #34d399;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.mock-feedback-body {
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mock-jd-input { min-height: 120px; }
+
+/* ---- 简历优化：Hero（截图 4 顶部标题区） ---- */
+.resume-hero {
+  padding: var(--s-4) var(--s-4) 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+.resume-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, rgba(249,115,22,0.18), rgba(239,68,68,0.14));
+  border: 1px solid rgba(249,115,22,0.35);
+  color: #fdba74;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.resume-hero-title {
+  font-size: 1.25rem;
+  color: var(--text-primary);
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.resume-hero-sub {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+
+/* ---- 简历优化：文件上传虚线区（截图 3） ---- */
+.resume-dropcard { padding: var(--s-3); }
+.resume-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 16px;
+  border: 1.5px dashed rgba(249,115,22,0.4);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(249,115,22,0.05) 0%, var(--bg-card) 100%);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  text-align: center;
+  user-select: none;
+}
+.resume-drop:hover {
+  border-color: rgba(249,115,22,0.7);
+  background: linear-gradient(180deg, rgba(249,115,22,0.1) 0%, var(--bg-card-hover) 100%);
+}
+.resume-drop-icon {
+  width: 48px; height: 48px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 14px;
+  background: rgba(249,115,22,0.18);
+  color: #fb923c;
+  font-size: 1.5rem;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.resume-drop-title { font-size: 0.9375rem; color: var(--text-primary); font-weight: 600; }
+.resume-drop-sub   { font-size: 0.75rem; color: var(--text-tertiary); }
+
+/* ---- 简历优化：JD 小徽章 橙标 ---- */
+.jd-warn {
+  color: #fb923c;
+}
+.jdt-icon {
+  width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+  background: rgba(249,115,22,0.2);
+  margin-right: 2px;
+  color: #fdba74;
+}
+
+/* ---- 简历优化：编辑器字符数 ---- */
+.resume-opt-editor { min-height: 160px; }
+.resume-opt-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  margin-top: 6px;
+}
+.resume-opt-meta-right {
+  color: #86efac;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-weight: 600;
+}
+
+/* ---- 简历优化：CTA 橙→红渐变（截图 3 的大按钮） ---- */
+.start-interview-btn.resume-cta {
+  background: linear-gradient(90deg, #f97316 0%, #ef4444 100%);
+  box-shadow: 0 8px 26px rgba(239,68,68,0.3);
+}
+.rcta-arrow { opacity: 0.85; margin-left: 2px; }
+.start-row-secondary .resume-cta-sub {
+  margin: 0 auto;
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
+/* ---- 简历优化：结果三栏评分卡 ---- */
+.resume-result-card { gap: var(--s-3); }
+.resume-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.resume-result-title {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: #34d399;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.resume-result-actions { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+.resume-score-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+@media (max-width: 720px) {
+  .resume-score-grid { grid-template-columns: 1fr; }
+}
+.score-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.score-ats { border-color: rgba(59,130,246,0.35); background: linear-gradient(180deg, rgba(59,130,246,0.08) 0%, var(--bg-elevated) 100%); }
+.score-kw  { border-color: rgba(251,191,36,0.35); background: linear-gradient(180deg, rgba(251,191,36,0.08) 0%, var(--bg-elevated) 100%); }
+.score-content { border-color: rgba(16,185,129,0.3); background: linear-gradient(180deg, rgba(16,185,129,0.07) 0%, var(--bg-elevated) 100%); }
+.sc-label {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+.sc-value {
+  font-size: 1.625rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.sc-value-txt { font-size: 0.875rem; color: var(--text-primary); }
+.score-ats .sc-value { color: #93c5fd; }
+.score-kw  .sc-value { color: #fcd34d; }
+.score-content .sc-value-txt { color: #86efac; }
+.sc-body {
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

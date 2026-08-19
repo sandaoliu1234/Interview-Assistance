@@ -894,6 +894,14 @@ app.on('activate', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  // 退出前：兜底结束当前面试 session（把 endedAt/status 写回文件），避免留下一堆 status=active 但已关机的"僵尸场"
+  try {
+    const svc = require('./services/localHttpServer');
+    if (svc && typeof svc.endActiveSession === 'function') {
+      const r = svc.endActiveSession();
+      if (r && r.ended) console.log(`[main][will-quit] ✅ 兜底结束本场面试：sessionId=${r.session && r.session.id} title=${r.session && r.session.title}`);
+    }
+  } catch (_) { /* 忽略：localHttpServer 没启动就不需要 end */ }
   // 退出前停止小程序本地 HTTP+WS 服务，避免端口残留
   try {
     const svc = require('./services/localHttpServer');
@@ -1261,9 +1269,99 @@ ipcMain.handle('generate-review', async (event, history, config) => {
   }
 });
 
-// 列出历史会话档案（含 transcript/wav/review）
+// 列出历史会话档案（含 transcript/wav/review）—— 旧语义：configManager 存档，不要与下面面试记录混用
 ipcMain.handle('list-sessions', () => {
   return { success: true, sessions: configManager.listSessions() };
+});
+
+// ============================================================
+// ★ 面试 Session（面试记录）专用 5 个 IPC：前缀 interview-session-
+//   所有通道都先 ensureLocalHttpServerWithBus（幂等），保证：
+//     1) localHttpServer 启动；2) loadConfigFn 已挂；3) sessions 目录已初始化；4) bus 订阅已挂
+//   即便还没开始 ASR 识别（用户一打开 app 就点底部按钮）也能正常返回空列表/开新场。
+// ============================================================
+// 1) 列表：返回 {ok, total, sessions:[摘要…], sessionsVersion, keyword, limit, offset}
+ipcMain.handle('interview-session-list', async (event, opts = {}) => {
+  try {
+    await ensureLocalHttpServerWithBus();
+    const r = localHttpServer.listSessions({
+      keyword: opts && opts.keyword ? String(opts.keyword) : '',
+      limit: Number(opts && opts.limit) || 50,
+      offset: Number(opts && opts.offset) || 0,
+    });
+    return Object.assign({ ok: true }, r);
+  } catch (e) {
+    console.error('[main][interview-session-list] 异常:', e && e.message);
+    return { ok: false, error: 'internal', msg: e && e.message ? e.message : 'list 失败', total: 0, sessions: [] };
+  }
+});
+// 2) 详情：返回 {ok:true, session, from} 或 {ok:false, error, msg}
+ipcMain.handle('interview-session-get', async (event, id) => {
+  try {
+    await ensureLocalHttpServerWithBus();
+    const r = localHttpServer.getSessionDetail(id);
+    // r 本身自带 ok/session/error 字段
+    return Object.assign({ ok: false }, r || {});
+  } catch (e) {
+    console.error('[main][interview-session-get] 异常:', e && e.message);
+    return { ok: false, error: 'internal', msg: e && e.message ? e.message : 'get 失败' };
+  }
+});
+// 3) 开始新的一场面试：主窗口底部 🆕 按钮 / 输入了新公司新职位失焦自动切 触发
+ipcMain.handle('interview-session-start-new', async (event, forceConfig) => {
+  try {
+    await ensureLocalHttpServerWithBus();
+    // forceConfig 校验：允许 null/undefined；是对象才透传
+    const cfg = (forceConfig && typeof forceConfig === 'object') ? forceConfig : undefined;
+    const r = localHttpServer.startNewSession(cfg);
+    return Object.assign({ ok: false }, r || {});
+  } catch (e) {
+    console.error('[main][interview-session-start-new] 异常:', e && e.message);
+    return { ok: false, error: 'internal', msg: e && e.message ? e.message : 'start-new 失败' };
+  }
+});
+// 4) 结束当前场面试：主窗口底部 ⏹ 按钮 / app will-quit 兜底 触发
+ipcMain.handle('interview-session-end-active', async () => {
+  try {
+    await ensureLocalHttpServerWithBus();
+    const r = localHttpServer.endActiveSession();
+    return Object.assign({ ok: false }, r || {});
+  } catch (e) {
+    console.error('[main][interview-session-end-active] 异常:', e && e.message);
+    return { ok: false, error: 'internal', msg: e && e.message ? e.message : 'end-active 失败' };
+  }
+});
+// 5) 根据历史侧栏里的 roundId → 反向查属于哪一场 session（侧栏卡片点击 → 跳详情用）
+//   返回：{ok:true, roundId, sessionId|null, sessionsVersion}
+ipcMain.handle('interview-session-find-by-round', async (event, roundId) => {
+  try {
+    await ensureLocalHttpServerWithBus();
+    const hit = localHttpServer.findSessionByRoundId(roundId);
+    const s = (localHttpServer && localHttpServer.state) ? localHttpServer.state : {};
+    return {
+      ok: true,
+      roundId: roundId ? String(roundId) : '',
+      sessionId: hit ? hit.sessionId : null,
+      sessionsVersion: Number(s && s.sessionsVersion) || 0,
+    };
+  } catch (e) {
+    console.error('[main][interview-session-find-by-round] 异常:', e && e.message);
+    return { ok: false, roundId: roundId ? String(roundId) : '', sessionId: null, error: 'internal', msg: e && e.message ? e.message : 'find-by-round 失败' };
+  }
+});
+// 6) 切场边界辅助：如果用户刚显式×结束了面试（存在 _lastEndedSessionId 标记）→ 强制开新场；否则懒创建。
+//    调用点：开始面试辅助 / open-overlay IPC（创建独立浮层）/ 重新打开答题面板。
+//    目的：保证显式"结束本场"后再次打开浮层 = 落到新场，不会继续/恢复刚结束的那一场。
+ipcMain.handle('interview-session-ensure-if-ended', async (event, cfg) => {
+  try {
+    await ensureLocalHttpServerWithBus();
+    const forceCfg = (cfg && typeof cfg === 'object') ? cfg : undefined;
+    const r = localHttpServer.ensureStartNewSessionIfJustEnded(forceCfg);
+    return Object.assign({ ok: false }, r || {});
+  } catch (e) {
+    console.error('[main][interview-session-ensure-if-ended] 异常:', e && e.message);
+    return { ok: false, error: 'internal', msg: e && e.message ? e.message : 'ensure-if-ended 失败' };
+  }
 });
 
 // 截图解题：接收截图 data URL + 简历/知识库上下文，调视觉模型返回解答
@@ -1450,6 +1548,43 @@ ipcMain.handle('relay-broadcast', (event, payload) => {
 });
 
 // ============================================================
+// ★ 简历优化：保存文件对话框（导出优化后的 DOCX）
+// ============================================================
+ipcMain.handle('save-file-dialog', async (event, options = {}) => {
+  try {
+    const { dialog } = require('electron');
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: options.title || '保存文件',
+      defaultPath: options.defaultPath || '优化后简历.docx',
+      filters: options.filters || [{ name: 'Word 文档', extensions: ['docx'] }]
+    });
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+    return { success: true, filePath: result.filePath };
+  } catch (e) {
+    return { success: false, error: e && e.message || 'save dialog failed' };
+  }
+});
+
+// ============================================================
+// ★ 模拟面试：点『模拟面试记录』直接打开面试记录详情（若有 sessionId）
+//   没有 sessionId 时：只打开主界面的『面试记录』列表（交给渲染层实现 tab 切换），
+//   这里统一返回当前 active / 最近结束的 sessionId，方便前端自行跳详情。
+// ============================================================
+ipcMain.handle('mock-interview-last-session', () => {
+  try {
+    const list = localHttpServer.listSessions({ limit: 1, keyword: '' });
+    const items = (list && list.sessions) || [];
+    const activeId = (localHttpServer.state && localHttpServer.state.activeSessionId) || null;
+    return { ok: true, activeId, lastId: items[0] ? items[0].id : null, firstId: items[0] ? items[0].id : null };
+  } catch (e) {
+    return { ok: false, error: e && e.message || 'query sessions failed', activeId: null, lastId: null };
+  }
+});
+
+
+// ============================================================
 // ★ 独立答题面板（overlayWindow）：可跨屏、毛玻璃、系统音频识别结果专用
 // ============================================================
 
@@ -1503,6 +1638,9 @@ function createOverlayWindow() {
       return overlayWindow;
     } catch (_) { /* 忽略，继续重建 */ }
   }
+  // 开新浮层 = 新的关闭流程：重置 post-close 原子锁
+  //   （上一次 closed 事件的 finally 会再保险地重置一次，这里在入口处也重置保证可靠）
+  _overlayCloseFlowHandled = false;
   const b = getDefaultOverlayBounds();
   overlayWindow = new BrowserWindow({
     x: b.x, y: b.y, width: b.width, height: b.height,
@@ -1598,7 +1736,24 @@ function createOverlayWindow() {
     app.bus.off('local:write-question-from-outside', onWriteQuestionOutside); // 新增清理
     app.bus.off('local:status-changed', onLocalStatusChanged);
     overlayWindow = null;
-    // 用户关面板时不自动停 ASR（允许主窗口继续录，随时 reopen 继续显示）
+
+    // ★ 语义升级：关闭浮层 = 用户明确结束本场面试
+    //   原子锁：如果 ipc-close 已经调了 _postSessionOnOverlayClose（_overlayCloseFlowHandled=true），这里就跳过；
+    //   如果是用户 Alt+F4 直接关系统窗 / will-quit 关窗 → 没有走 IPC，则在 closed 事件里兜底调用 post close。
+    Promise.resolve().then(async () => {
+      await new Promise((r) => setImmediate(r));
+      try {
+        if (!_overlayCloseFlowHandled) {
+          await _postSessionOnOverlayClose({ from: 'closed-event' });
+        }
+      } catch (e) {
+        console.error('[main][overlay][closed] _postSessionOnOverlayClose 异常:', e && e.message);
+      } finally {
+        // 不管成功失败，下一次 createOverlayWindow 的新关闭流程都能重新触发 post close
+        _overlayCloseFlowHandled = false;
+      }
+    });
+    // （停止 ASR 不在此处：用户关面板时不自动停 ASR，允许主窗口继续录，随时 reopen 继续显示）
   });
 
   overlayWindow.loadFile(path.join(__dirname, 'overlay.html')).then(() => {
@@ -1634,6 +1789,126 @@ function closeOverlayWindow() {
 }
 
 /**
+ * 浮动答题面板被关闭后的统一后处理（不管是点×按钮 / IPC close-overlay / 系统关窗 都会到这里）：
+ *   1) 兜底把本场面试 endActiveSession（点叉号代表结束本场面试 —— 用户明确要求）
+ *   2) 把主窗口 show + focus（弹出主窗口）
+ *   3) 给主窗口 webContents.send('overlay:closed-post-session', payload)
+ *      触发 renderer 显示两按钮横幅（查看本场 / 开启新的面试）
+ *
+ * 加 _lastOverlayClosePayload 幂等保护：一次窗口关闭过程只会真正执行一次，
+ * 避免 close-overlay IPC 同步 end + overlayWindow 'closed' 再次 end 造成重复。
+ *
+ * @param {{from?:string}} [opts]  调试用来源：'ipc-close' / 'closed-event'
+ */
+let _lastOverlayPostCloseToken = 0;
+/**
+ * 标记：本次关闭流程里，是否已经真正执行过 endActiveSession（不管成功与否）。
+ * 避免：IPC close-overlay 先 await post close → 关窗 → window.closed 事件 setImmediate 前 token 被
+ *       下一次 open-overlay 里 ensure → startNewSession 又推进 token → 导致 closed 事件"误判 IPC 没执行"进而再 end 一次（no_active_session 无伤但日志冗余）。
+ *       用独立布尔做一次关闭的原子锁更稳：同一个 overlayWindow.closed 生命周期内只执行一次真正后处理。
+ */
+let _overlayCloseFlowHandled = false;
+async function _postSessionOnOverlayClose(opts) {
+  const from = (opts && typeof opts.from === 'string') ? opts.from : 'unknown';
+  // 原子锁：同一关闭流程只做一次真实 post close（多入口不会重复 end）
+  if (_overlayCloseFlowHandled) {
+    console.log(`[main][overlay-post-close] 跳过（本关闭流程已处理过），from=${from}`);
+    void opts;
+    return;
+  }
+  _overlayCloseFlowHandled = true;
+  const token = ++_lastOverlayPostCloseToken;
+  const originClosedAt = Date.now();
+  let endRes = null;
+  try {
+    // --- 1) 结束本场面试（用户点浮动面板右上角 × = 结束本场）---
+    try {
+      await ensureLocalHttpServerWithBus();
+      if (_lastOverlayPostCloseToken !== token) return; // 保护：快速连关窗口不要复用过期 token
+      if (localHttpServer && typeof localHttpServer.endActiveSession === 'function') {
+        endRes = localHttpServer.endActiveSession();
+        console.log(`[main][overlay-post-close] endActiveSession：ended=${!!(endRes && endRes.ended)} sessionId=${String((endRes && endRes.session && (endRes.session.sessionId || endRes.session.id)) || '').slice(0,10)} from=${from}`);
+      }
+    } catch (e) {
+      console.error('[main][overlay-post-close] endActiveSession 异常:', e && e.message);
+    }
+
+    // --- 2) 显示并聚焦主窗口 ---
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    } catch (e) {
+      console.error('[main][overlay-post-close] 显示主窗口异常:', e && e.message);
+    }
+    if (_lastOverlayPostCloseToken !== token) return;
+
+    // --- 3) 组合 payload 广播给主窗口 renderer ---
+    const s = (localHttpServer && localHttpServer.state) ? localHttpServer.state : {};
+    let endedSession = (endRes && endRes.session) ? endRes.session : null;
+    const sessionId = (endedSession && (endedSession.sessionId || endedSession.id)) ? String(endedSession.sessionId || endedSession.id)
+      : (s.activeSessionId ? String(s.activeSessionId) : null);
+    let roundsCount = Number((endedSession && (endedSession.roundsCount || (Array.isArray(endedSession.rounds) ? endedSession.rounds.length : 0))) || 0);
+    let company = '';
+    let position = '';
+    if (endedSession && endedSession.config && typeof endedSession.config === 'object') {
+      company = String(endedSession.config.targetCompany || '').trim();
+      position = String(endedSession.config.targetPosition || '').trim();
+    }
+    if (!company && endedSession) company = String(endedSession.targetCompany || '').trim();
+    if (!position && endedSession) position = String(endedSession.targetPosition || '').trim();
+    company = company || '未知公司';
+    position = position || '未知职位';
+    let endedAt = Number((endedSession && endedSession.endedAt) || 0) || originClosedAt;
+    let startedAt = Number((endedSession && endedSession.startedAt) || 0);
+
+    // 如果 endRes 是 no_active_session（之前已被其他方式结束）且拿到了 sessionId，尝试再查详情以便正确显示 roundsCount
+    if ((!endedSession || roundsCount <= 0) && sessionId && localHttpServer && typeof localHttpServer.getSessionDetail === 'function') {
+      try {
+        const det = localHttpServer.getSessionDetail(sessionId);
+        if (det && det.ok && det.session) {
+          endedSession = det.session;
+          roundsCount = Number((endedSession && (endedSession.roundsCount || (Array.isArray(endedSession.rounds) ? endedSession.rounds.length : 0))) || 0);
+          if (endedSession.config && typeof endedSession.config === 'object') {
+            const c2 = String(endedSession.config.targetCompany || '').trim();
+            const p2 = String(endedSession.config.targetPosition || '').trim();
+            if (c2) company = c2;
+            if (p2) position = p2;
+          }
+          endedAt = Number(endedSession.endedAt) || endedAt;
+          startedAt = Number(endedSession.startedAt) || startedAt;
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    const payload = {
+      ok: true,
+      from,
+      sessionId,
+      roundsCount,
+      endedAt,
+      startedAt,
+      company: company || '未知公司',
+      position: position || '未知职位',
+      endResError: (endRes && !endRes.ok) ? String(endRes.error || '') : '',
+      endResMsg:   (endRes && !endRes.ok) ? String(endRes.msg   || '') : '',
+    };
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('overlay:closed-post-session', payload);
+      }
+    } catch (e) {
+      console.error('[main][overlay-post-close] 广播异常:', e && e.message);
+    }
+    void opts;
+  } catch (e) {
+    console.error('[main][overlay-post-close] 外层异常:', e && e.message);
+  }
+}
+
+/**
  * 获取 overlay 当前状态（用于 copilot.js 的「重新打开按钮」disabled 判断）
  */
 function getOverlayStatus() {
@@ -1645,11 +1920,17 @@ function getOverlayStatus() {
   return { exists, bounds };
 }
 
-/**
- * 答题面板 IPC：close-overlay
- * 由 overlay.html × 按钮 / 拖动手柄双击触发。
- */
-ipcMain.handle('close-overlay', () => {
+ipcMain.handle('close-overlay', async () => {
+  // ★ 语义升级：用户点浮动面板右上角 × = 结束本场面试 + 显示主窗口 + 弹两按钮横幅 + 关浮层
+  // 顺序保证：
+  //  1) 先同步 await _postSessionOnOverlayClose（endActiveSession 同步 flush 写 session endedAt=ended 到 logs/sessions/，并推 token）
+  //  2) 再 closeOverlayWindow() → closed 事件因 snapshotToken != token（token 已推进）会跳过 end 兜底，避免重复 no_active_session
+  //  3) 最后返回 {success:true}
+  try {
+    await _postSessionOnOverlayClose({ from: 'ipc-close' });
+  } catch (e) {
+    console.error('[main][close-overlay] post close 异常：', e && e.message);
+  }
   closeOverlayWindow();
   return { success: true };
 });
@@ -1657,8 +1938,22 @@ ipcMain.handle('close-overlay', () => {
 /**
  * 答题面板 IPC：open-overlay
  * 由 copilot.js 开始面试辅助 / 重新打开答题面板 触发。
+ * 语义升级：如果上一场刚被用户显式 × 结束（_lastEndedSessionId 标记存在）→ 在开浮层前强制开新场，
+ *           确保"重新打开答题面板"不会落到/继续刚才那一场已经结束的面试记录。
  */
-ipcMain.handle('open-overlay', () => {
+ipcMain.handle('open-overlay', async () => {
+  // 先做切场边界判断（结束 → 新场）
+  try {
+    await ensureLocalHttpServerWithBus();
+    if (localHttpServer && typeof localHttpServer.ensureStartNewSessionIfJustEnded === 'function') {
+      const r = localHttpServer.ensureStartNewSessionIfJustEnded(undefined);
+      if (r && r.openedNew) {
+        console.log(`[main][open-overlay] ✅ 检测到上一场刚显式结束，已自动开启新一场 session=${String((r.session && r.session.id) || '').substring(0, 8)}... | closedPreviousId=${String(r.closedPreviousId || '').substring(0, 8)}...`);
+      }
+    }
+  } catch (e) {
+    console.error('[main][open-overlay] ensure-if-ended 异常：', e && e.message);
+  }
   const w = createOverlayWindow();
   const ok = !!(w && !w.isDestroyed());
   return { success: ok, status: getOverlayStatus() };
@@ -1704,6 +1999,9 @@ ipcMain.handle('overlay-full-status', () => {
       // 多轮对话历史（正序数组，最近 10 轮）：与 _routeApiOverlayStatus 完全一致
       history: Array.isArray(s.history) ? s.history : [],
       historyVersion: Number(s.historyVersion) || 0,
+      // 面试 Session：当前进行中 + 版本号（主窗口 viewRouter 轮询刷新列表/详情时可对比）
+      activeSessionId: s.activeSessionId || null,
+      sessionsVersion: Number(s.sessionsVersion) || 0,
     };
   } catch (e) {
     // IPC 抛错时返回 ok:false + 错误信息，让渲染层能打出日志定位，避免静默白屏
@@ -2713,5 +3011,29 @@ ipcMain.handle('disconnect-miniapp', () => {
   } catch (e) {
     console.error('[disconnect-miniapp] 异常:', e.message);
     return { ok: false, error: 'internal', msg: e.message || '断开失败' };
+  }
+});
+
+/**
+ * IPC: get-server-http-info — 渲染层调用模拟面试/简历优化 HTTP 路由时的 baseInfo：{port,token,baseUrl,isRunning}
+ *   如 HTTP 服务尚未启动，会立即启动一次再返回（保证 fetch 可用）。
+ */
+ipcMain.handle('get-server-http-info', async () => {
+  try {
+    attachLocalHttpServerExternals();
+    if (localHttpServer.status === 'idle') {
+      await localHttpServer.start({ bus: app.bus });
+    }
+    const st = localHttpServer.getStatus() || {};
+    return {
+      ok: true,
+      isRunning: !!st && st.status && st.status !== 'idle',
+      port: Number(st && st.port) || 0,
+      token: String(st && st.token ? st.token : ''),
+      baseUrl: (st && st.port) ? `http://127.0.0.1:${st.port}` : '',
+      status: st
+    };
+  } catch (e) {
+    return { ok: false, error: 'internal', msg: e && e.message || '获取 HTTP 服务失败', isRunning:false, port:0, token:'', baseUrl:'' };
   }
 });

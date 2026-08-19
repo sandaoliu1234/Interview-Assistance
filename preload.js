@@ -126,7 +126,30 @@ const _apiImpl = {
   optimizeResume: (text, direction) => invoke('optimize-resume', text, direction), // 简历优化（复用 LLM 引擎）
   generateReview: (history, config) => invoke('generate-review', history, config), // AI 面试复盘
   saveSystemRecording: (sessionId, wav) => invoke('save-system-recording', sessionId, wav), // 系统音频存档
-  listSessions: () => invoke('list-sessions'), // 列出会话档案
+  listSessions: () => invoke('list-sessions'), // 列出会话档案（旧语义：transcript/wav/review，不要与面试记录 interviewSession* 混用）
+
+  // ===== 面试 Session（面试记录）专用：主窗口底部 3 按钮 / 列表页 / 详情页 / 侧栏 round 卡片跳转 =====
+  //   每条 IPC 对应 main.js 里同名前缀 interview-session-* 的 handle；所有通道在第一次调用时会自动启动 localHttpServer 并初始化 sessions 目录
+  interviewSessionList: (opts) => invoke('interview-session-list', opts || {}),                         // 列表（摘要）
+  interviewSessionGet: (id)   => invoke('interview-session-get', id),                                   // 详情（含完整 rounds）
+  interviewSessionStartNew: (cfg) => invoke('interview-session-start-new', cfg),                        // 🆕 开始新的一场面试（cfg 可传 targetCompany/Position 等快照，可空）
+  interviewSessionEndActive: () => invoke('interview-session-end-active'),                              // ⏹ 结束当前场
+  interviewSessionFindByRound: (roundId) => invoke('interview-session-find-by-round', roundId),        // 侧栏 round 卡片 → 定位属于哪场 session
+  // 切场边界：如果上一场被用户显式× 结束（答题面板右上角×）→ 强制开新一场（保证"开始面试辅助"或"重新打开答题面板"不会落到刚结束的那场）
+  ensureSessionIfEnded: (cfg) => invoke('interview-session-ensure-if-ended', cfg || undefined),
+  // 别名：与 copilot.js 内部 api 对象的命名对齐（兼容直接 window.electronAPI.xxx 调用）
+  getSessionDetail: (id) => invoke('interview-session-get', id),
+  endActiveSession: () => invoke('interview-session-end-active'),
+  findSessionByRound: (roundId) => invoke('interview-session-find-by-round', roundId),
+  // 面试事件：main → renderer 单向广播（on 模式，不用 invoke）
+  //   - overlay:closed-post-session：用户点浮动答题面板右上角× → 结束本场 + 主窗口弹出两按钮 banner（查看本场/开启新面试）
+  onOverlayClosedPostSession: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const handler = (_evt, payload) => { try { cb(payload); } catch (e) { console.error('[preload][overlay:closed-post-session] cb 异常:', e && e.message); } };
+    ipcRenderer.on('overlay:closed-post-session', handler);
+    return () => { try { ipcRenderer.off('overlay:closed-post-session', handler); } catch (_) {} };
+  },
+
   screenshotSolve: (imageDataUrl, config, resume, kb) => invoke('screenshot-solve', imageDataUrl, config, resume, kb), // 截图解题
   screenshotScreen: () => invoke('screenshot-screen'), // 截取主屏全屏
   startRelayServer: (port) => invoke('start-relay-server', port), // 启动伴生中继

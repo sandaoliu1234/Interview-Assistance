@@ -13,6 +13,7 @@ build/
 *.swo
 .cursor/
 docs/
+logs/
 
 api.md
 使用说明.md
@@ -57,3 +58,4 @@ HireMe与本项目功能对比.md
 当前项目升级到HireMe功能的技术方案.md
 测试清单.md
 主账号空间-apiKey-.csv
+测试清单-模拟面试与简历优化.md

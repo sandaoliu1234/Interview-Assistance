@@ -103,6 +103,12 @@ const api = (window.electronAPI && typeof window.electronAPI.getInterviewConfig 
         overlayStatus: () => electronIpcRenderer.invoke('overlay-status'),
         resizeOverlay: (dir, dx, dy) => electronIpcRenderer.invoke('resize-overlay', dir, dx, dy),
         moveOverlay: (direction) => electronIpcRenderer.invoke('move-overlay', direction),
+        // 切场边界：如果上一场被显式× 结束 → 强制开新一场
+        ensureSessionIfEnded: (c) => electronIpcRenderer.invoke('interview-session-ensure-if-ended', c),
+        // Session 管理（面试记录）
+        getSessionDetail: (id) => electronIpcRenderer.invoke('get-session-detail', id),
+        endActiveSession: () => electronIpcRenderer.invoke('end-active-session'),
+        findSessionByRound: (roundId) => electronIpcRenderer.invoke('interview-session-find-by-round', roundId),
         // 小程序服务（后续 M2 才会用，先填 IPC 占位保证 fallback 不报错）
         generateQR: () => electronIpcRenderer.invoke('generate-qr'),
         startLocalServer: (p) => electronIpcRenderer.invoke('start-local-server', p),
@@ -637,6 +643,15 @@ function escapeHtml(s) {
 
 /** ASR 事件监听器引用（用于 unregister） */
 let asrListeners = null;
+/**
+ * 答题面板关闭后是否代表「这场面试已被显式结束」：
+ *   - 收到主进程 overlay:closed-post-session 事件 → 置 true
+ *   - 用户主动点击 startInterviewAssist（开始面试辅助）→ 置 false（进入新一场）
+ * 作用：refreshReopenOverlayBtn 中，若 asrRunning=true 但 asrSessionEnded=true → 不显示"重新打开答题面板"，
+ *       避免用户误点后产生「继续刚刚那一场」的困惑心智。
+ *       （用户应点击「开启新的面试」→ startInterviewAssist，入口更清晰）
+ */
+let asrSessionEnded = false;
 
 /**
  * 启动面试辅助（M1 改造：面板独立为 overlayWindow）
@@ -652,6 +667,19 @@ async function startInterviewAssist() {
   } catch (e) {
     console.warn('[copilot] 保存配置失败:', e.message);
   }
+  // 切场边界：如果上一场刚被用户显式× 结束 → 强制开新一场（保证"开始面试辅助"不会落到刚结束的那场）
+  try {
+    if (typeof api.ensureSessionIfEnded === 'function') {
+      const r = await api.ensureSessionIfEnded(cfg);
+      if (r && r.openedNew) {
+        console.log(`[copilot] ensureSessionIfEnded ✅ 已自动开启新一场 session=${String((r.session && (r.session.id || r.session.sessionId)) || '').slice(0,8)}...  |  closedPreviousId=${String(r.closedPreviousId || '').slice(0,8)}...`);
+      }
+    }
+  } catch (e) {
+    console.warn('[copilot] ensureSessionIfEnded 异常：', e.message);
+  }
+  // 进入新一场 → "本场已结束"标记重置为 false
+  asrSessionEnded = false;
   syncAppState();
 
   // =========== 1. 显示答题面板：Electron 走 open-overlay；浏览器走内嵌 overlay ===========
@@ -827,7 +855,9 @@ async function refreshReopenOverlayBtn() {
       btn.innerHTML = '<span>🪟</span> 答题面板已打开（点击置顶）';
       btn.disabled = false;
       btn.title = '将独立答题面板显示到最前面';
-    } else if (asrRunning) {
+    } else if (asrRunning && !asrSessionEnded) {
+      // 只有"ASR 运行中且本场未被显式结束"才显示"重新打开答题面板"
+      //   本场被× 显式结束 → 改走主窗口顶部 banner 的「开启新的面试」按钮
       btn.style.display = '';
       btn.classList.remove('secondary');
       btn.classList.add('primary-outline');
@@ -1280,6 +1310,22 @@ async function initCopilot() {
     if (copilotTab) copilotTab.click();
   } catch (e) {
     console.error('[copilot] 默认切换 Tab 失败:', e.message);
+  }
+
+  // ============ 订阅主进程广播「答题面板关闭→本场面试结束」============
+  //   触发场景：用户点独立浮层右上角 × / 系统 Alt+F4 直接关浮层 / will-quit 关窗
+  //   收到后：① 置 asrSessionEnded=true 让"重新打开答题面板"按钮隐藏（用户应该点 banner 的「开启新的面试」）
+  //           ② 刷新按钮状态
+  if (isElectron && electronIpcRenderer && typeof electronIpcRenderer.on === 'function') {
+    try {
+      electronIpcRenderer.on('overlay:closed-post-session', (_evt, payload) => {
+        console.log('[copilot] 收到 overlay:closed-post-session', payload && payload.sessionId ? `sessionId=${String(payload.sessionId).slice(0,8)}... rounds=${payload.roundsCount}` : payload);
+        asrSessionEnded = true;
+        try { refreshReopenOverlayBtn(); } catch (_) {}
+      });
+    } catch (e) {
+      console.warn('[copilot] 绑定 overlay:closed-post-session 监听失败:', e.message);
+    }
   }
 }
 

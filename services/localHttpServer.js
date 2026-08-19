@@ -41,6 +41,44 @@ let aiService = null;
 try { aiService = require('./aiService'); } catch (e) {
   console.error('[localHttpServer] require(./aiService) 失败，H5 提问功能不可用:', e.message);
 }
+
+// ===== 多 Agent：模拟面试（出题/追问/点评/复盘）=====
+let mockInterviewAgents = null;
+try {
+  const M = require('./mockInterviewAgents');
+  // 仅当 aiService 可用时才实例化编排器，否则给 mockInterviewAgents=null，对应 HTTP 路由会返回 500 + 清晰 msg
+  mockInterviewAgents = aiService ? new M.MockInterviewOrchestrator(aiService) : null;
+} catch (e) {
+  console.error('[localHttpServer] require(./mockInterviewAgents) 失败，模拟面试多 Agent 不可用:', e.message);
+  mockInterviewAgents = null;
+}
+
+// ===== 多 Agent：简历优化（ATS 评分 / 关键词匹配 / 内容优化）=====
+let resumeOptAgents = null;
+try {
+  const R = require('./resumeOptAgents');
+  resumeOptAgents = aiService ? new R.ResumeOptPipeline(aiService) : null;
+} catch (e) {
+  console.error('[localHttpServer] require(./resumeOptAgents) 失败，简历优化多 Agent 不可用:', e.message);
+  resumeOptAgents = null;
+}
+
+// ===== 简历解析：DOCX/PDF/TXT（优先尝试项目已有库，缺失则回退纯文本，不 crash）=====
+let mammoth = null;
+try { mammoth = require('mammoth'); } catch (_) { mammoth = null; }
+let pdfjsLib = null;
+try {
+  // 2.x/3.x/4.x 兼容：优先默认导出，其次 getDocument
+  pdfjsLib = require('pdfjs-dist');
+  if (pdfjsLib && typeof pdfjsLib.getDocument !== 'function' && pdfjsLib.default) pdfjsLib = pdfjsLib.default;
+} catch (_) { pdfjsLib = null; }
+// DOCX 生成：导出优化后的简历
+let docxLib = null;
+let fsLib = null;
+let pathLib = null;
+try { docxLib = require('docx'); } catch (_) { docxLib = null; }
+try { fsLib = require('fs'); } catch (_) { fsLib = null; }
+try { pathLib = require('path'); } catch (_) { pathLib = null; }
 let WebSocketServerCtor = null;
 try {
   // Electron 主进程 / 普通 Node 统一：优先使用项目已安装的 ws 包
@@ -66,6 +104,21 @@ const HISTORY_STATUS_ANSWERED = 'answered';// AI 已返回答案
 const HISTORY_STATUS_ERROR = 'error';      // AI 解题失败（answer 为空/抛异常）
 const SCREENSHOT_TIMEOUT_MS = 15 * 1000;   // 截图超时 15s
 const HTTP_BODY_LIMIT_BYTES = 1024 * 1024; // HTTP POST body 1MB
+// ===== 面试 Session（每场面试一个文件）常量 =====
+const SESSION_DIR_NAME = 'sessions';           // Session 文件存放子目录名：logs/sessions/
+const SESSION_INDEX_NAME = '_index.jsonl';     // Session 索引（摘要）JSONL 文件名：列表页只扫它，秒开
+const SESSION_LIST_MAX_IN_MEM = 50;            // 列表页内存缓存摘要的上限（最新 50 场，更多可翻文件）
+const SESSION_STATUS_ACTIVE = 'active';        // 面试进行中
+const SESSION_STATUS_ENDED = 'ended';          // 面试已结束（手动结束/切换新场/退出app）
+const SESSION_MAX_MEM_ROUNDS = 200;            // 内存里 active session 保留多少轮 rounds（防无限膨胀；更多直接写盘）
+// 切新场时，只有「两个都非空且确实不同」才自动切：避免用户删了公司填个空格产生碎片 session
+function _sessionsSameTarget(a, b) {
+  const ac = String((a && a.targetCompany) || '').trim();
+  const ap = String((a && a.targetPosition) || '').trim();
+  const bc = String((b && b.targetCompany) || '').trim();
+  const bp = String((b && b.targetPosition) || '').trim();
+  return (ac === bc) && (ap === bp);
+}
 
 // ============================================================
 // IP 优先级算法（重要：数值越小越优先；排序时按升序，最前即首选 IP）
@@ -154,12 +207,24 @@ class LocalHttpServer {
       isRecording: false,        // ASR 管线是否在录制
       lastAnswerAt: 0,           // 最近一次 AI 答案生成的时间戳 ms（Date.now()）
       // ===== 多轮对话历史（正序：索引 0 最旧，数组末尾最新）=====
-      //   单条结构：{ id, createdAt, status, source, questionText, questionImage, answerText, answeredAt, errorMsg? }
+      //   单条结构：{ id, createdAt, status, source, questionText, questionImage, answerText, answeredAt, errorMsg?, sessionId? }
       history: [],
       historyVersion: 0,         // history 变更自增版本号，前端对比即可判断是否需要重绘
+      // ===== 面试 Session 层（每场面试 = 1 个 session，内部包含完整 rounds）=====
+      activeSessionId: null,     // 当前正在进行的面试 session id（null=尚未开新场）
+      sessionsVersion: 0,        // session 列表/详情变更自增版本号（前端轮询增量）
     };
     // ===== 对话历史归档目录：项目根目录下 logs/ 下 JSONL，按天切分 =====
     this._historyDir = path.join(__dirname, '..', 'logs');
+    // ===== Session 持久化目录：logs/sessions/ =====
+    this._sessionDir = path.join(this._historyDir, SESSION_DIR_NAME);
+    this._sessionIndexPath = path.join(this._sessionDir, SESSION_INDEX_NAME);
+    // 内存里的 session 摘要列表（最近 SESSION_LIST_MAX_IN_MEM 场，最新在头；结构=索引里的一行）
+    this._sessionSummaryCache = [];
+    // 内存里完整的「当前 active session」对象（含 rounds 数组）；已结束 session 按需从磁盘读
+    this._activeSessionObj = null;
+    // roundId → sessionId 的反向映射（内存里最近若干，命中直接定位；更多从索引+详情文件 lazy scan）
+    this._roundIdToSessionId = new Map();
     // 最近一轮的 id（用来把"写入答案"关联到刚刚"写入问题"的那一轮；如果没有匹配的"活跃轮"则新建一轮）
     this._activeHistoryId = null;
 
@@ -267,7 +332,14 @@ class LocalHttpServer {
     this._heartbeatTimer = setInterval(() => this._heartbeatTick(), HEARTBEAT_INTERVAL_MS);
     this._ipMonitorTimer = setInterval(() => this._ipMonitorTick(), IP_MONITOR_INTERVAL_MS);
 
-    // ===== 1.7 订阅 app.bus（ASR / 答案 / 状态 → 推小程序）=====
+    // ===== 1.7 初始化 sessions（目录 / 索引加载到内存缓存）=====
+    try {
+      this._initSessionsStorage();
+    } catch (se) {
+      console.warn('[localHttpServer][sessions] ⚠️ session 存储初始化失败（仍可运行，只是历史面试记录列表为空）：', se && se.message);
+    }
+
+    // ===== 1.8 订阅 app.bus（ASR / 答案 / 状态 → 推小程序）=====
     if (bus) {
       this.bus = bus;
       this._attachBus();
@@ -448,6 +520,613 @@ class LocalHttpServer {
   }
 
   // ============================================================
+  // 5.2.X Session 层辅助 1：生成单调 Session ID（ses_年月日_时分秒_随机6位）
+  // ============================================================
+  _nextSessionId() {
+    const d = new Date();
+    const pad = (n, w = 2) => String(n).padStart(w, '0');
+    const tag = String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate())
+              + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    return 'ses_' + tag + '_' + Math.random().toString(36).slice(2, 8);
+  }
+
+  // ============================================================
+  // 5.2.X Session 层辅助 2：按 startedAt 时间戳生成展示标题中的时间片（MM月DD日 HH:mm）
+  // ============================================================
+  _formatSessionTime(ts) {
+    const d = new Date(ts || Date.now());
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}月${pad(d.getDate())}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  // ============================================================
+  // 5.2.X Session 层辅助 3：生成 session 标题
+  //   命名 = {公司||未知公司} - {职位||未知职位} - {MM月DD日 HH:mm}
+  // ============================================================
+  _buildSessionTitle({ targetCompany, targetPosition, startedAt }) {
+    const company  = (String(targetCompany || '').trim()) || '未知公司';
+    const position = (String(targetPosition || '').trim()) || '未知职位';
+    const when = this._formatSessionTime(startedAt);
+    return `${company} - ${position} - ${when}`;
+  }
+
+  // ============================================================
+  // 5.2.X Session 层辅助 3bis：把一条"session 摘要（_index.jsonl 的一行）/详情对象（.json 的顶层）"归一化为 UI 卡片可直接消费的结构。
+  //   背景：历史摘要 flush 写的是 roundCount / answeredCount，而 UI（renderSessionsList）读 roundsCount / questionCount / snippet / lastRounds / sessionId。
+  //   约定：不管输入来自旧 JSONL 行还是 session 详情对象，统一输出双份字段名（兼容新老消费代码）：
+  //     - roundsCount   = roundCount （列表卡片"💬 N 轮"）
+  //     - questionCount = rounds 里"有 questionText 或 questionImage 的条数"（UI 显示 "❓ N 题"，若拿不到 rounds 就退回 answeredCount）
+  //     - sessionId     = id（HTTP/IPC 消费者与卡片 data-session-id 双路径兼容）
+  //     - snippet       = 最近一轮问题或答案前 80 字（卡片简短描述；若输入已给 snippet 复用）
+  //     - lastRounds    = 最近 2 轮缩略（{questionText, answerText}；已有则保留）
+  //     - status        = 原 status；兜底用 endedAt>0 ? 'ended' : 'active'
+  //   输入对象不会被修改（避免改坏 detail JSON 或 _sessionSummaryCache 中的源对象），返回新对象。
+  // ============================================================
+  _normalizeSessionSummaryForUI(input, opts) {
+    const s = (input && typeof input === 'object') ? input : {};
+    const out = Object.assign({}, s);
+    // 1) 基础 id 双份
+    if (!out.sessionId && s.id) out.sessionId = s.id;
+    if (!out.id && s.sessionId) out.id = s.sessionId;
+    // 2) 轮次 / 题数：新老字段名都填
+    const rounds = Array.isArray(s.rounds) ? s.rounds : null;
+    const rCount = Number(s.roundsCount != null ? s.roundsCount : s.roundCount) || 0;
+    out.roundCount = rCount;
+    out.roundsCount = rCount;
+    if (rounds && rounds.length && !rCount) { out.roundCount = rounds.length; out.roundsCount = rounds.length; }
+    const ansCount = Number(s.answeredCount || 0) || 0;
+    out.answeredCount = ansCount;
+    let qCount = Number(s.questionCount || 0) || 0;
+    if (!qCount && rounds) {
+      // 从真实 rounds 精算：questionText 非空 或 questionImage 非空 算一条题
+      for (const r of rounds) {
+        if (!r) continue;
+        const q = String(r.questionText || '').trim();
+        const img = String(r.questionImage || '').trim();
+        if (q || img) qCount++;
+      }
+    }
+    if (!qCount) qCount = ansCount; // 拿不到 rounds 的兜底：用已答数估题数
+    out.questionCount = qCount;
+    // 3) 状态兜底：摘要里有 status 优先；否则靠 endedAt 推测
+    if (!out.status) {
+      out.status = (Number(out.endedAt || s.endedAt) > 0) ? SESSION_STATUS_ENDED : SESSION_STATUS_ACTIVE;
+    }
+    // 4) 元信息：公司/职位 —— 如果输入只有 config，把它展开（详情对象里公司职位在 config.targetCompany/config.targetPosition 上）
+    if ((!out.targetCompany || !String(out.targetCompany).trim()) && s.config && typeof s.config === 'object') {
+      out.targetCompany = String(s.config.targetCompany || '').trim();
+      out.targetPosition = String(s.config.targetPosition || '').trim();
+      out.interviewType = out.interviewType || String(s.config.interviewType || '').trim();
+    }
+    // 5) snippet / lastRounds 构建
+    if (!out.lastRounds || !Array.isArray(out.lastRounds) || out.lastRounds.length === 0) {
+      if (rounds && rounds.length) {
+        const tail = rounds.slice(-2).map((r) => ({
+          questionText: String(r && r.questionText || '').substring(0, 80),
+          answerText:   String(r && r.answerText   || '').substring(0, 120),
+        }));
+        out.lastRounds = tail;
+      } else if (Array.isArray(s.lastRounds) && s.lastRounds.length) {
+        out.lastRounds = s.lastRounds.slice();
+      }
+    }
+    if (!out.snippet || !String(out.snippet).trim()) {
+      if (Array.isArray(out.lastRounds) && out.lastRounds.length) {
+        const last = out.lastRounds[out.lastRounds.length - 1];
+        const q = String(last && last.questionText || '').trim();
+        const a = String(last && last.answerText || '').trim();
+        const merged = q ? q : a;
+        if (merged) out.snippet = merged.substring(0, 80);
+      } else if (typeof s.snippet === 'string' && s.snippet.trim()) {
+        out.snippet = s.snippet.substring(0, 80);
+      }
+    }
+    // 6) 时间：startedAt / endedAt / lastActiveAt 统一数字
+    out.startedAt    = Number(out.startedAt    || s.startedAt    || 0) || 0;
+    out.endedAt      = Number(out.endedAt      || s.endedAt      || 0) || 0;
+    out.lastActiveAt = Number(out.lastActiveAt || s.lastActiveAt || out.startedAt) || out.startedAt;
+    // 7) title 兜底：没 title（详情对象可能有 session.id 但没 title 也没 summary）用 _buildSessionTitle 拼一次
+    if (!out.title) {
+      try {
+        out.title = this._buildSessionTitle({
+          targetCompany: out.targetCompany || '',
+          targetPosition: out.targetPosition || '',
+          startedAt:      out.startedAt,
+        });
+      } catch (_) { out.title = '面试会话'; }
+    }
+    void opts;
+    return out;
+  }
+
+  // ============================================================
+  // 5.2.X Session 层辅助 4：原子写 JSON（先写 .tmp 再 rename，避免半写入损坏）
+  // ============================================================
+  _atomicWriteJson(filePath, obj) {
+    const tmp = filePath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(obj), 'utf-8');
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (_) { /* ignore */ }
+    fs.renameSync(tmp, filePath);
+  }
+
+  // ============================================================
+  // 5.2.X Session 层辅助 5：把 sessionsVersion 自增 +1（任何 session/列表 变动都 bump 一次）
+  // ============================================================
+  _bumpSessionsVersion(reason) {
+    this.state.sessionsVersion = (Number(this.state.sessionsVersion) || 0) + 1;
+    if (reason) {
+      console.log(`[sessions] ✏️ sessionsVersion=${this.state.sessionsVersion} 变更：${reason}`);
+    }
+  }
+
+  // ============================================================
+  // 5.2.X Session 层 6：初始化存储（目录不存在就创建；索引损坏就备份重建；加载最近 N 条摘要到内存缓存）
+  // ============================================================
+  _initSessionsStorage() {
+    // 1) 确保目录存在
+    if (!fs.existsSync(this._historyDir)) fs.mkdirSync(this._historyDir, { recursive: true });
+    if (!fs.existsSync(this._sessionDir)) fs.mkdirSync(this._sessionDir, { recursive: true });
+    // 2) 索引文件若损坏 → rename 为 .bak.TIMESTAMP 并重建
+    if (fs.existsSync(this._sessionIndexPath)) {
+      try {
+        const raw = fs.readFileSync(this._sessionIndexPath, 'utf-8');
+        const lines = raw.split('\n').filter((l) => l && l.trim().length > 0);
+        for (const line of lines) JSON.parse(line); // 尝试 JSON 解析，每行都坏才触发备份
+      } catch (e) {
+        const bak = this._sessionIndexPath + '.bak.' + Date.now() + '.jsonl';
+        try { fs.renameSync(this._sessionIndexPath, bak); console.warn(`[sessions] ⚠️ _index.jsonl 解析失败，已备份到 ${path.basename(bak)} 并重建`); }
+        catch (_) { try { fs.unlinkSync(this._sessionIndexPath); } catch (__) { /* ignore */ } }
+      }
+    }
+    // 3) 读最近 N 行到内存缓存（最新在尾 → reverse 放头）
+    const cache = [];
+    if (fs.existsSync(this._sessionIndexPath)) {
+      const raw = fs.readFileSync(this._sessionIndexPath, 'utf-8');
+      const lines = raw.split('\n').filter((l) => l && l.trim().length > 0);
+      // 从最后一行往前取 SESSION_LIST_MAX_IN_MEM 条
+      for (let i = lines.length - 1; i >= 0 && cache.length < SESSION_LIST_MAX_IN_MEM; i--) {
+        try { cache.push(JSON.parse(lines[i])); } catch (_) { /* 坏行跳过 */ }
+      }
+    }
+    this._sessionSummaryCache = cache;
+    // 4) 顺便把最近几场 rounds 的 roundId→sessionId 填入 map，加速侧栏点击跳转定位
+    for (const s of cache.slice(0, 10)) {
+      if (s && s.id) {
+        try {
+          const detailPath = path.join(this._sessionDir, `${s.id}.json`);
+          if (!fs.existsSync(detailPath)) continue;
+          const detail = JSON.parse(fs.readFileSync(detailPath, 'utf-8'));
+          if (detail && Array.isArray(detail.rounds)) {
+            for (const r of detail.rounds) {
+              if (r && r.id) this._roundIdToSessionId.set(String(r.id), String(s.id));
+            }
+          }
+        } catch (_) { /* 某个文件坏了忽略 */ }
+      }
+    }
+    console.log(`[sessions] ✅ 初始化完成：目录=${path.relative(process.cwd(), this._sessionDir)} | 缓存摘要 ${cache.length} 场 | roundId映射${this._roundIdToSessionId.size}条`);
+  }
+
+  // ============================================================
+  // 5.2.X Session 层 7：原子 append 索引 JSONL 单行（新创建 session 或 end 更新 summary 时调用）
+  //   mode='append'：把 summary 追加到索引末尾；mode='rewrite-summary'：先扫描所有 id 相同行，用最新一行覆盖旧的
+  //   为了简化索引不做 in-place 修改，重写策略：整文件重写，命中 id=summary.id 用新 summary 替换（最多 500 场都秒级）
+  // ============================================================
+  _upsertSessionSummary(summary) {
+    if (!summary || !summary.id) return;
+    try {
+      const lines = [];
+      let replaced = false;
+      if (fs.existsSync(this._sessionIndexPath)) {
+        const raw = fs.readFileSync(this._sessionIndexPath, 'utf-8');
+        for (const line of raw.split('\n')) {
+          if (!line || !line.trim()) continue;
+          let row = null;
+          try { row = JSON.parse(line); } catch (_) { row = null; }
+          if (row && row.id === summary.id) { lines.push(JSON.stringify(summary)); replaced = true; }
+          else if (row) { lines.push(line); }
+        }
+      }
+      if (!replaced) lines.push(JSON.stringify(summary));
+      // 整文件重写（500 场也只有几十 KB，完全可接受）
+      fs.writeFileSync(this._sessionIndexPath, lines.join('\n') + '\n', 'utf-8');
+      // 更新内存缓存：如果已存在则替换，否则插入头；超过上限丢最旧
+      const idx = this._sessionSummaryCache.findIndex((x) => x && x.id === summary.id);
+      if (idx >= 0) this._sessionSummaryCache[idx] = summary;
+      else this._sessionSummaryCache.unshift(summary);
+      if (this._sessionSummaryCache.length > SESSION_LIST_MAX_IN_MEM) {
+        this._sessionSummaryCache.splice(SESSION_LIST_MAX_IN_MEM, this._sessionSummaryCache.length - SESSION_LIST_MAX_IN_MEM);
+      }
+      // 把最新的一条（刚刚 upsert 的）始终放头
+      this._sessionSummaryCache.sort((a, b) => Number(b && b.lastActiveAt || 0) - Number(a && a.lastActiveAt || 0));
+    } catch (e) {
+      console.warn('[sessions] upsert summary 失败（已兜底忽略）：', e && e.message);
+    }
+  }
+
+  // ============================================================
+  // 5.2.X Session 层 8：把内存中的 _activeSessionObj 完整写回 {id}.json
+  //   每轮变更都写（单条 JSON 很小，IO 可接受；用户电脑断电最多丢最后几秒的一轮）
+  // ============================================================
+  _flushActiveSessionToDisk(reason) {
+    if (!this._activeSessionObj || !this._activeSessionObj.id) return;
+    try {
+      // 统计信息（列表卡片直接显示不用再打开详情）
+      const rds = Array.isArray(this._activeSessionObj.rounds) ? this._activeSessionObj.rounds : [];
+      let answeredCount = 0, errorCount = 0;
+      for (const r of rds) {
+        if (r && r.status === HISTORY_STATUS_ANSWERED) answeredCount++;
+        else if (r && r.status === HISTORY_STATUS_ERROR) errorCount++;
+      }
+      const lastActiveAt = (rds && rds.length) ? (rds[rds.length - 1].answeredAt || rds[rds.length - 1].createdAt || Date.now()) : (this._activeSessionObj.startedAt || Date.now());
+      this._activeSessionObj.stats = {
+        roundCount: rds.length,
+        answeredCount,
+        errorCount,
+        totalDurationMs: Math.max(0, ((this._activeSessionObj.endedAt || lastActiveAt) - (this._activeSessionObj.startedAt || lastActiveAt))),
+      };
+      this._activeSessionObj.lastActiveAt = lastActiveAt;
+      // 1) 写详情 .json
+      const detailPath = path.join(this._sessionDir, `${this._activeSessionObj.id}.json`);
+      this._atomicWriteJson(detailPath, this._activeSessionObj);
+      // 2) upsert 摘要到索引：先把 _activeSessionObj（含完整 rounds 精算 snippet/lastRounds/qCount）归一化成 UI 结构，再落 JSONL
+      //    保证 _index.jsonl 每行以后读出来就能直接当卡片字段用，不用反复扫详情
+      const norm = this._normalizeSessionSummaryForUI(this._activeSessionObj);
+      const summary = {
+        id:           norm.id,
+        sessionId:    norm.sessionId,     // 别名，方便未来消费
+        title:        norm.title,
+        targetCompany: norm.targetCompany,
+        targetPosition: norm.targetPosition,
+        startedAt:    norm.startedAt,
+        endedAt:      norm.endedAt,
+        status:       norm.status,
+        // 轮次/题数：双份字段（兼容新老渲染与查询）
+        roundCount:   norm.roundCount,
+        roundsCount:  norm.roundsCount,
+        answeredCount:norm.answeredCount,
+        questionCount:norm.questionCount,
+        errorCount:   errorCount,
+        lastActiveAt: norm.lastActiveAt,
+        interviewType:norm.interviewType || '',
+        // 摘要小卡片描述：snippet + 最近 2 轮缩略（均按归一化结果取）
+        snippet:      norm.snippet || '',
+        lastRounds:   Array.isArray(norm.lastRounds) ? norm.lastRounds.slice(0, 2) : [],
+      };
+      this._upsertSessionSummary(summary);
+      // 3) bump version
+      this._bumpSessionsVersion(reason || `flush session ${this._activeSessionObj.id}`);
+    } catch (e) {
+      console.warn('[sessions] flush active session 异常（已兜底忽略）：', e && e.message);
+    }
+  }
+
+  // ============================================================
+  // 5.2.X Session 层 9：打开一场新面试 → 生成 session 文件 + 写摘要 + 挂到 state.activeSessionId + _activeSessionObj
+  //   snapshotCfg：创建时拍的 { targetCompany, targetPosition, interviewType, jobDescription, resumeText } 快照（JD/简历后续修改不影响已发生面试的上下文）
+  //   返回：新 session 对象
+  // ============================================================
+  _openNewSession(snapshotCfg) {
+    const cfg = snapshotCfg || {};
+    const now = Date.now();
+    const session = {
+      id: this._nextSessionId(),
+      title: '',   // 下面 build 一次
+      targetCompany: String(cfg.targetCompany || '').trim(),
+      targetPosition: String(cfg.targetPosition || '').trim(),
+      interviewType: String(cfg.interviewType || '').trim(),
+      jdSnapshot: String(cfg.jobDescription || '').substring(0, 20000),
+      resumeSnapshot: String(cfg.resumeText || cfg.resumeContent || '').substring(0, 40000),
+      startedAt: now,
+      endedAt: 0,
+      status: SESSION_STATUS_ACTIVE,
+      rounds: [],
+      stats: { roundCount: 0, answeredCount: 0, errorCount: 0, totalDurationMs: 0 },
+      lastActiveAt: now,
+    };
+    session.title = this._buildSessionTitle(session);
+    this._activeSessionObj = session;
+    this.state.activeSessionId = session.id;
+    this._flushActiveSessionToDisk(`新开面试 session=${session.id}`);
+    console.log(`[sessions] 🎬 新建面试 session=${session.id} | title=${session.title}`);
+    return session;
+  }
+
+  // ============================================================
+  // 5.2.X Session 层 10：结束当前场（写 endedAt + status=ended + 落盘）
+  //   allowNull：true 表示「没有 active session 也不报错」
+  // ============================================================
+  _closeActiveSession(allowNull = true) {
+    if (!this._activeSessionObj) {
+      if (!allowNull) console.warn('[sessions] 结束当前场失败：没有 active session');
+      return null;
+    }
+    if (this._activeSessionObj.status !== SESSION_STATUS_ENDED) {
+      this._activeSessionObj.status = SESSION_STATUS_ENDED;
+      this._activeSessionObj.endedAt = Date.now();
+    }
+    const sid = this._activeSessionObj.id;
+    const title = this._activeSessionObj.title;
+    this._flushActiveSessionToDisk(`结束面试 session=${sid}`);
+    this._activeSessionObj = null;
+    this.state.activeSessionId = null;
+    console.log(`[sessions] ⏹ 结束面试 session=${sid} | title=${title}`);
+    return { id: sid, title };
+  }
+
+  // ============================================================
+  // 5.2.X Session 层 11：确保存在 active session（没有就自动新开）
+  //   调用时机：addHistoryRound 前置
+  // ============================================================
+  _ensureActiveSessionOrCreate() {
+    if (this._activeSessionObj && this._activeSessionObj.status === SESSION_STATUS_ACTIVE) return this._activeSessionObj;
+    // 读当前配置快照（如果拿不到就空，会被"未知公司/未知职位"兜底）
+    let cfg = {};
+    try { cfg = (typeof this.loadConfigFn === 'function') ? (this.loadConfigFn() || {}) : {}; } catch (_) { cfg = {}; }
+    return this._openNewSession(cfg);
+  }
+
+  // ============================================================
+  // 5.2.X Session 层 12：向 active session 追加/更新一轮
+  //   round 对象里会自动加 sessionId 字段；rounds 超过内存上限仍保留全部（因为是面试完整记录）
+  // ============================================================
+  _appendRoundToActiveSession(round) {
+    if (!round || !round.id) return;
+    const s = this._ensureActiveSessionOrCreate();
+    round.sessionId = s.id;
+    const rounds = Array.isArray(s.rounds) ? s.rounds : (s.rounds = []);
+    // 如果已存在同 id（answer 结算时复用旧 round），找到原地替换；否则 push 新的
+    const idx = rounds.findIndex((x) => x && x.id === round.id);
+    if (idx >= 0) rounds[idx] = round; else rounds.push(round);
+    // 维护 roundId → sessionId 的 map（上限 2000 条，超出清旧）
+    this._roundIdToSessionId.set(String(round.id), String(s.id));
+    if (this._roundIdToSessionId.size > 2000) {
+      let drop = this._roundIdToSessionId.size - 1500;
+      for (const k of this._roundIdToSessionId.keys()) {
+        if (drop-- <= 0) break;
+        this._roundIdToSessionId.delete(k);
+      }
+    }
+    // 每一轮改动立即落盘（保证断电安全）
+    this._flushActiveSessionToDisk(`round=${round.id} ${round.status}`);
+  }
+
+  // ============================================================
+  // 5.2.X Session 层 13：按 roundId 反向查 sessionId（侧栏点击 round 卡片 → 跳详情用）
+  //   内存 map 命中直接返回；否则 fallback 懒扫最近 N 个 session 文件
+  // ============================================================
+  findSessionByRoundId(roundId) {
+    if (!roundId) return null;
+    const rid = String(roundId);
+    const hit = this._roundIdToSessionId.get(rid);
+    if (hit) return { sessionId: hit, roundId: rid };
+    // fallback：扫索引里最近 20 场的详情，命中就返回并填 map
+    const list = Array.isArray(this._sessionSummaryCache) ? this._sessionSummaryCache.slice(0, 20) : [];
+    for (const s of list) {
+      if (!s || !s.id) continue;
+      try {
+        const detailPath = path.join(this._sessionDir, `${s.id}.json`);
+        if (!fs.existsSync(detailPath)) continue;
+        const detail = JSON.parse(fs.readFileSync(detailPath, 'utf-8'));
+        if (!detail || !Array.isArray(detail.rounds)) continue;
+        const found = detail.rounds.some((r) => r && String(r.id) === rid);
+        if (found) {
+          this._roundIdToSessionId.set(rid, String(s.id));
+          return { sessionId: s.id, roundId: rid };
+        }
+      } catch (_) { /* 坏文件跳过 */ }
+    }
+    return null;
+  }
+
+  // ============================================================
+  // 5.2.X 对外：列出所有面试记录（列表页用）—— 返回摘要数组 + 总条数
+  //   params: { keyword?, limit?, offset? }
+  //   keyword 匹配：title/公司/职位；如果搜不到再 lazy 扫摘要对应 session 的 rounds 文本（questionText/answerText）
+  // ============================================================
+  listSessions({ keyword = '', limit = 50, offset = 0 } = {}) {
+    // 强制把索引文件最新状态合并到 cache（避免另一进程写入？本项目单进程，一般不用；但保险起见在 list 时再补一次最多 SESSION_LIST_MAX_IN_MEM 条）
+    try {
+      if (!fs.existsSync(this._sessionIndexPath)) { /* 空 */ }
+      else {
+        const raw = fs.readFileSync(this._sessionIndexPath, 'utf-8');
+        const lines = raw.split('\n').filter((l) => l && l.trim().length > 0);
+        const newest = [];
+        for (let i = lines.length - 1; i >= 0 && newest.length < SESSION_LIST_MAX_IN_MEM; i--) {
+          try { newest.push(JSON.parse(lines[i])); } catch (_) { /* ignore */ }
+        }
+        // 用最新的文件内容替换内存缓存（去重）
+        const merged = new Map();
+        for (const s of newest) if (s && s.id) merged.set(s.id, s);
+        for (const s of this._sessionSummaryCache) if (s && s.id && !merged.has(s.id)) merged.set(s.id, s);
+        this._sessionSummaryCache = Array.from(merged.values()).sort((a, b) => Number(b && b.lastActiveAt || 0) - Number(a && a.lastActiveAt || 0));
+      }
+    } catch (_) { /* ignore */ }
+    let all = Array.isArray(this._sessionSummaryCache) ? this._sessionSummaryCache.slice() : [];
+    const kw = String(keyword || '').trim();
+    if (kw) {
+      const kwLower = kw.toLowerCase();
+      // 先按摘要字段过滤（公司/职位/标题/面试类型 + snippet + lastRounds 里的问答文本）
+      let filtered = all.filter((s) => {
+        const hay = [
+          s && s.title, s && s.targetCompany, s && s.targetPosition, s && s.interviewType, s && s.snippet,
+          ...(Array.isArray(s && s.lastRounds) ? s.lastRounds.flatMap((r) => [r && r.questionText, r && r.answerText]) : [])
+        ].map((x) => String(x || '').toLowerCase());
+        return hay.some((x) => x.indexOf(kwLower) >= 0);
+      });
+      // 如果没命中，lazy 扫每个 session 的 rounds 文本（最多扫最近 15 场，避免 I/O 过大）
+      if (filtered.length === 0) {
+        const scans = all.slice(0, 15);
+        for (const s of scans) {
+          if (!s || !s.id) continue;
+          try {
+            const detailPath = path.join(this._sessionDir, `${s.id}.json`);
+            if (!fs.existsSync(detailPath)) continue;
+            const detail = JSON.parse(fs.readFileSync(detailPath, 'utf-8'));
+            if (!detail || !Array.isArray(detail.rounds)) continue;
+            const hit = detail.rounds.some((r) => {
+              return (String(r && r.questionText || '') + '\n' + String(r && r.answerText || '')).toLowerCase().indexOf(kwLower) >= 0;
+            });
+            if (hit) filtered.push(s);
+          } catch (_) { /* ignore */ }
+        }
+      }
+      all = filtered;
+    }
+    // ★ 关键：返回前统一对每条摘要做"UI 字段归一化"（旧 JSONL 里只有 roundCount/answeredCount 没有 roundsCount/questionCount/snippet/lastRounds 的，懒扫详情补全）。
+    //   限制懒扫最多 30 场：用户传 limit 200 时，只对分页范围内 + 最多前 30 扫详情。
+    const total = all.length;
+    const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+    const off = Math.max(0, Number(offset) || 0);
+    const page = all.slice(off, off + lim);
+    const sessions = page.map((row) => {
+      // 已有 rounds 或已归一化（snippet+lastRounds+roundsCount+questionCount 全有）→ 直接归一化不改内容
+      // 否则：若摘要缺 snippet 或缺 roundsCount → 懒读详情再归一，拿到精确的 rounds / questionCount / lastRounds
+      let needLazyRead = false;
+      const hasRounds = Array.isArray(row.rounds) && row.rounds.length;
+      const hasSnippet = !!(typeof row.snippet === 'string' && row.snippet.trim());
+      const hasLastRounds = !!(Array.isArray(row.lastRounds) && row.lastRounds.length);
+      const hasRoundAlias = typeof row.roundsCount === 'number' || typeof row.questionCount === 'number';
+      if (!hasRounds && (!hasSnippet || !hasLastRounds || !hasRoundAlias)) {
+        needLazyRead = true;
+      }
+      if (needLazyRead && row && row.id) {
+        const detailPath = path.join(this._sessionDir, `${String(row.id)}.json`);
+        try {
+          if (fs.existsSync(detailPath)) {
+            const detail = JSON.parse(fs.readFileSync(detailPath, 'utf-8'));
+            // 详情（有 rounds）归一化结果精度最高；和 summary 的已有字段合并（保留 upsert 过的 roundCount 等）
+            return this._normalizeSessionSummaryForUI(Object.assign({}, row, detail || {}));
+          }
+        } catch (_) { /* 读失败兜底：就用原 row 做归一化（不会 crash） */ }
+      }
+      return this._normalizeSessionSummaryForUI(row);
+    });
+    return { ok: true, total, offset: off, limit: lim, sessions, keyword: kw };
+  }
+
+  // ============================================================
+  // 5.2.X 对外：读取一场面试的完整详情（含 rounds）—— 详情页用
+  // ============================================================
+  getSessionDetail(id) {
+    if (!id) return { ok: false, error: 'empty_id', msg: 'session id 不能为空' };
+    // 优先：如果是当前 active，直接返回内存对象（最新，不需要读盘）
+    if (this._activeSessionObj && String(this._activeSessionObj.id) === String(id)) {
+      return { ok: true, session: this._activeSessionObj, from: 'memory' };
+    }
+    try {
+      const detailPath = path.join(this._sessionDir, `${String(id)}.json`);
+      if (!fs.existsSync(detailPath)) return { ok: false, error: 'not_found', msg: '找不到该面试记录（可能已被删除或不存在）' };
+      const session = JSON.parse(fs.readFileSync(detailPath, 'utf-8'));
+      // 防御：坏文件里没有 rounds 字段
+      if (!session) return { ok: false, error: 'invalid', msg: '面试记录文件损坏' };
+      if (!Array.isArray(session.rounds)) session.rounds = [];
+      // 顺便把 rounds 填入反向 map（侧栏点击定位）
+      for (const r of session.rounds) {
+        if (r && r.id) this._roundIdToSessionId.set(String(r.id), String(session.id));
+      }
+      return { ok: true, session, from: 'disk' };
+    } catch (e) {
+      return { ok: false, error: 'read_fail', msg: '读取面试记录失败：' + (e && e.message || '') };
+    }
+  }
+
+  // ============================================================
+  // 5.2.X 对外：手动开始新的一场面试（主窗口底部按钮触发）
+  //   流程：先结束当前 active → 读当前 targetCompany/Position/JD/简历 快照 → 新开
+  //   可选 forceConfig：显式传入 {targetCompany,targetPosition,interviewType} 覆盖 loadConfig（用于切公司/职位时外部已判定变了）
+  // ============================================================
+  startNewSession(forceConfig) {
+    this._closeActiveSession(true);
+    let cfg = forceConfig || null;
+    if (!cfg) {
+      try { cfg = (typeof this.loadConfigFn === 'function') ? (this.loadConfigFn() || {}) : {}; } catch (_) { cfg = {}; }
+    }
+    const s = this._openNewSession(cfg || {});
+    // ✅ 开启新一场后，清除"上一场显式结束"的标记（避免后续每一次 open-overlay 都被迫开新场）
+    try {
+      if (this.state && Object.prototype.hasOwnProperty.call(this.state, '_lastEndedSessionId')) {
+        this.state._lastEndedSessionId = null;
+      }
+      if (this.state && Object.prototype.hasOwnProperty.call(this.state, '_lastEndedSessionMarker')) {
+        this.state._lastEndedSessionMarker = 0;
+      }
+    } catch (_) { /* ignore */ }
+    console.log(`[sessions] 🆕 startNewSession 完成：session=${s.id} | title=${s.title}`);
+    return { ok: true, session: { id: s.id, title: s.title, startedAt: s.startedAt, status: s.status } };
+  }
+
+  // ============================================================
+  // 5.2.X 对外：如果上一场刚被"用户显式结束（点浮动面板×/结束按钮）" → 强制开新场；否则什么都不做。
+  //   调用时机：① 开始面试辅助（copilotStartBtn 点击）② 独立浮层 open-overlay IPC ③ 重新打开答题面板 reopen 按钮
+  //   设计目的：用户点 × 明确表示"结束本场"，之后任何再次"打开浮层/开始面试"的行为都必须落到【新场】，
+  //             不能再把面试官新的问题写入已 ended 的旧 session，也不能让用户"继续/恢复刚刚结束的那一场"。
+  //   清标记时机：startNewSession 成功后或 ensure 成功新建后，会清掉 _lastEndedSessionId。
+  // ============================================================
+  ensureStartNewSessionIfJustEnded(forceConfig) {
+    try {
+      // 1) 如果当前有 active session → 说明已经在新的一场中了，不处理直接 return
+      if (this._activeSessionObj && this._activeSessionObj.status === SESSION_STATUS_ACTIVE) {
+        return { ok: true, openedNew: false, session: { id: this._activeSessionObj.id, title: this._activeSessionObj.title, startedAt: this._activeSessionObj.startedAt, status: this._activeSessionObj.status } };
+      }
+      // 2) 如果没有"上一场显式结束"的标记 → 按正常的"懒创建"逻辑（_ensureActiveSessionOrCreate 会在 addHistoryRound 需要时再建）不提前建
+      const justEndedId = this.state ? String(this.state._lastEndedSessionId || '').trim() : '';
+      if (!justEndedId) {
+        return { ok: true, openedNew: false, session: null, reason: 'no_last_ended_marker' };
+      }
+      // 3) 存在"上一场刚显式结束"标记 → 强制开新场（把 justEndedId 的语义作为切场边界）
+      const r = this.startNewSession(forceConfig || undefined);
+      return { ok: true, openedNew: true, session: r.session, closedPreviousId: justEndedId };
+    } catch (e) {
+      console.error('[sessions][ensureStartNewSessionIfJustEnded] 异常：', e && e.message);
+      return { ok: false, openedNew: false, error: 'internal', msg: e && e.message ? e.message : 'ensure 失败' };
+    }
+  }
+
+  // ============================================================
+  // 5.2.X 对外：手动结束当前场（主窗口底部 ⏹ 按钮触发；app quit 兜底；浮动面板×）
+  //   语义升级：结束 = 用户明确表达"本场到此为止"，
+  //            写入 state._lastEndedSessionId 标记，供 ensureStartNewSessionIfJustEnded 判断后续是否切新场。
+  // ============================================================
+  endActiveSession() {
+    const beforeId = this._activeSessionObj ? String(this._activeSessionObj.id) : '';
+    const r = this._closeActiveSession(true);
+    // 只要用户显式调 endActiveSession（即使 no_active_session 也不报错），
+    // 都把"上一场结束"的标记记下来：ended sessionId 优先取本次 r.id，没有则用 state.activeSessionId（历史），再没有用 beforeId
+    let endedId = (r && r.id) ? String(r.id) : '';
+    if (!endedId && this.state && this.state.activeSessionId) endedId = String(this.state.activeSessionId);
+    if (!endedId && beforeId) endedId = String(beforeId);
+    try {
+      if (!this.state) this.state = {};
+      this.state._lastEndedSessionId = endedId || '__none__';
+      this.state._lastEndedSessionMarker = Date.now();
+    } catch (_) { /* ignore */ }
+    // 明确日志：方便用户（和我们）观察"点×是否真的调用了结束本场"
+    const sidForLog = (r && r.id) ? String(r.id) : (endedId || '—');
+    const titleForLog = (r && r.title) ? String(r.title) : '—';
+    if (r) {
+      console.log(`[sessions][endActiveSession] ✅ 显式结束本场成功：session=${sidForLog} | title=${titleForLog} | _lastEndedSessionId=${String(this.state._lastEndedSessionId || '')}`);
+    } else {
+      console.log(`[sessions][endActiveSession] ⚠️ 没有活跃 session，但已标记结束边界：_lastEndedSessionId=${String(this.state._lastEndedSessionId || '')}`);
+    }
+    return { ok: true, ended: !!r, session: r || null };
+  }
+
+  // ============================================================
+  // 5.2.X 对外：判断「传入的 {targetCompany,targetPosition} 与当前 active session 是否是同一场」
+  //   —— 用于渲染层 input blur 后决定是否自动切新场
+  // ============================================================
+  isSameSessionTarget(next) {
+    if (!this._activeSessionObj) return true; // 没有 active，谈不上"切换"
+    return _sessionsSameTarget(
+      { targetCompany: this._activeSessionObj.targetCompany, targetPosition: this._activeSessionObj.targetPosition },
+      next || {},
+    );
+  }
+
+  // ============================================================
   // 5.3 对话历史：新增"一轮提问"（还没答案，status=asked）
   //   返回：新创建的轮次 id
   //   调用场景：_autoSolveScreenshotAndSync 里写入面试官问题时、/api/answer/ask 开始处理时、
@@ -465,11 +1144,13 @@ class LocalHttpServer {
       answeredAt: 0,
       errorMsg: '',
     };
+    // ★Session 联动：写一轮之前确保存在 active session；并把 round 立即追加到 session 详情
+    try { this._appendRoundToActiveSession(round); } catch (se) { console.warn('[sessions] append round 异常（已兜底忽略）：', se.message); }
     this.state.history.push(round);
     this.state.historyVersion = (this.state.historyVersion || 0) + 1;
     // 记录活跃轮 id：后续 recordState({ answerText }) 会优先把答案填到这一轮
     this._activeHistoryId = round.id;
-    // 超过上限 → 把最旧的归档落盘
+    // 超过上限 → 把最旧的归档落盘（仍继续保留在 session 详情里，不影响完整面试回看）
     this._evictHistoryIfOverflow();
     return round.id;
   }
@@ -515,6 +1196,15 @@ class LocalHttpServer {
       this.state.historyVersion = (this.state.historyVersion || 0) + 1;
       // 此轮已完结，清理 active 标记
       if (this._activeHistoryId === target.id) this._activeHistoryId = null;
+      // ★Session 联动：把结算后的 round 写回 active session（同 id 替换；详情页能看到完整的答案/错误）
+      try {
+        // 如果 target 已有 sessionId，对应 session 不一定在内存（极端情况：手动切换了 activeSessionObj 但还在同轮结算）；
+        // 简单起见：如果当前 _activeSessionObj 存在且 target.sessionId === _activeSessionObj.id 或者 target 没有 sessionId，
+        // 就当作"当前 active 的 round"处理；否则不刷，避免把已结束 session 覆盖成新内容
+        const shouldAppendToActive = this._activeSessionObj
+          && (!target.sessionId || String(target.sessionId) === String(this._activeSessionObj.id));
+        if (shouldAppendToActive) this._appendRoundToActiveSession(target);
+      } catch (se) { console.warn('[sessions] finish round → session 同步异常（已兜底忽略）：', se.message); }
       // 防御性：溢出再归档一次（正常不会触发，除非 addHistoryRound 没被走到但新增了）
       this._evictHistoryIfOverflow();
     }
@@ -1080,6 +1770,34 @@ class LocalHttpServer {
     if ((pathname === '/h5' || pathname === '/h5/' || pathname === '/h5/index.html') && req.method === 'GET') return this._routeH5(req, res, { _reqStartTs, _remoteIp, _method });
     // ---- 新增：H5 提交问题（纯文本或带截图）给 AI 生成答案，自动同步到电脑面板 ----
     if (pathname === '/api/answer/ask' && req.method === 'POST') return this._routeApiAnswerAsk(req, res, { _reqStartTs, _remoteIp, _method });
+    // ---- 新增：面试记录 Session HTTP 接口（主窗口底部按钮 / 列表页 / 详情页 / 侧栏 round 卡片跳转）----
+    //   全部走 token 鉴权（和其它 /api 一致，避免局域网内他人直接扫历史面试内容）
+    if (pathname === '/api/sessions'                 && req.method === 'GET')  return this._routeApiSessionsList(req, res, parsed, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/sessions/start-new'       && req.method === 'POST') return this._routeApiSessionsStartNew(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/sessions/end-active'      && req.method === 'POST') return this._routeApiSessionsEndActive(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/sessions/find-by-round'   && req.method === 'GET')  return this._routeApiSessionsFindByRound(req, res, parsed, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/sessions/ensure-if-ended' && req.method === 'POST') return this._routeApiSessionsEnsureIfEnded(req, res, { _reqStartTs, _remoteIp, _method });
+    // /api/sessions/:id 必须在非 / 结尾的最后匹配（解析 pathname 段）
+    if (req.method === 'GET' && /^\/api\/sessions\/[^/]+$/.test(pathname)) {
+      const id = decodeURIComponent(pathname.substring('/api/sessions/'.length));
+      return this._routeApiSessionDetail(req, res, id, { _reqStartTs, _remoteIp, _method });
+    }
+
+    // ---- 新增：模拟面试（多 Agent）HTTP 接口 ----
+    if (pathname === '/api/mock-interview/session'      && req.method === 'POST') return this._routeApiMockInterviewSession(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/mock-interview/next-question' && req.method === 'POST') return this._routeApiMockInterviewNextQ(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/mock-interview/submit-answer' && req.method === 'POST') return this._routeApiMockInterviewSubmitAnswer(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/mock-interview/submit-followup' && req.method === 'POST') return this._routeApiMockInterviewSubmitFollowup(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/mock-interview/final-review'  && req.method === 'POST') return this._routeApiMockInterviewFinalReview(req, res, { _reqStartTs, _remoteIp, _method });
+
+    // ---- 新增：简历优化（多 Agent）HTTP 接口 ----
+    if (pathname === '/api/resume-opt/run'               && req.method === 'POST') return this._routeApiResumeOptRun(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/resume-opt/parse-file'        && req.method === 'POST') return this._routeApiResumeOptParseFile(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/resume-opt/export-docx'       && req.method === 'POST') return this._routeApiResumeOptExportDocx(req, res, { _reqStartTs, _remoteIp, _method });
+    // ---- 新增：简历优化三阶段独立路由（渲染层串行调用，实现"出一张卡、渲染一张卡"的真实进度反馈） ----
+    if (pathname === '/api/resume-opt/ats'               && req.method === 'POST') return this._routeApiResumeOptATS(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/resume-opt/keywords'          && req.method === 'POST') return this._routeApiResumeOptKeywords(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/resume-opt/content'           && req.method === 'POST') return this._routeApiResumeOptContent(req, res, { _reqStartTs, _remoteIp, _method });
 
     // 404
     console.log(`[HTTP-OUT] ➡️ 404 NOT FOUND  ${_method} ${pathname}  from=${_remoteIp}  cost=${Date.now() - _reqStartTs}ms`);
@@ -1219,6 +1937,9 @@ class LocalHttpServer {
       // ===== 多轮对话历史（正序数组，最近 10 轮）=====
       history: Array.isArray(this.state.history) ? this.state.history : [],
       historyVersion: Number(this.state.historyVersion) || 0,
+      // ===== 面试 Session：当前进行中的 sessionId + sessionsVersion（版本变化即代表列表/详情有新内容可刷新）=====
+      activeSessionId: this.state.activeSessionId || null,
+      sessionsVersion: Number(this.state.sessionsVersion) || 0,
     }, reqDebug);
   }
 
@@ -1852,6 +2573,9 @@ class LocalHttpServer {
       // 多轮对话历史：小程序/面板端可选择解析渲染（正序数组）
       history: Array.isArray(this.state.history) ? this.state.history : [],
       historyVersion: Number(this.state.historyVersion) || 0,
+      // 面试 Session：和 HTTP /api/overlay/status 保持一致
+      activeSessionId: this.state.activeSessionId || null,
+      sessionsVersion: Number(this.state.sessionsVersion) || 0,
     });
   }
 
@@ -1897,6 +2621,110 @@ class LocalHttpServer {
   }
 
   // ============================================================
+  // 面试 Session HTTP 路由 1：GET /api/sessions?keyword=&limit=&offset= → 列表摘要
+  // ============================================================
+  _routeApiSessionsList(req, res, parsed, reqDebug) {
+    try {
+      const q = (parsed && parsed.query) || {};
+      const result = this.listSessions({
+        keyword: q.keyword || '',
+        limit: Number(q.limit) || 50,
+        offset: Number(q.offset) || 0,
+      });
+      // 附带最新 sessionsVersion，前端可做增量刷新
+      result.sessionsVersion = Number(this.state.sessionsVersion) || 0;
+      this._json(res, 200, result, reqDebug);
+    } catch (e) {
+      console.error('[sessions][HTTP] list 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || 'list 失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // 面试 Session HTTP 路由 2：GET /api/sessions/:id → 详情（含完整 rounds）
+  // ============================================================
+  _routeApiSessionDetail(req, res, id, reqDebug) {
+    try {
+      const r = this.getSessionDetail(id);
+      const code = r.ok ? 200 : (r.error === 'not_found' ? 404 : 500);
+      if (r.ok) r.sessionsVersion = Number(this.state.sessionsVersion) || 0;
+      this._json(res, code, r, reqDebug);
+    } catch (e) {
+      console.error('[sessions][HTTP] detail 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || 'detail 失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // 面试 Session HTTP 路由 3：POST /api/sessions/start-new → 开新场（body 可选 {targetCompany,targetPosition,interviewType}）
+  // ============================================================
+  async _routeApiSessionsStartNew(req, res, reqDebug) {
+    try {
+      let body = null;
+      try { body = await this._readJsonBody(req); } catch (_) { body = null; }
+      const r = this.startNewSession(body || undefined);
+      this._json(res, 200, r, reqDebug);
+    } catch (e) {
+      console.error('[sessions][HTTP] start-new 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || 'start-new 失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // 面试 Session HTTP 路由 4：POST /api/sessions/end-active → 结束当前场
+  // ============================================================
+  async _routeApiSessionsEndActive(req, res, reqDebug) {
+    try {
+      // 吞掉可能的 body 错误（没 body 也允许）
+      try { await this._readJsonBody(req); } catch (_) { /* ignore */ }
+      const r = this.endActiveSession();
+      this._json(res, 200, r, reqDebug);
+    } catch (e) {
+      console.error('[sessions][HTTP] end-active 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || 'end-active 失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // 面试 Session HTTP 路由 5.5：POST /api/sessions/ensure-if-ended
+  //   如果上一场被显式结束（用户点×/结束按钮）→ 强制开新场；否则懒创建，不提前建 session
+  //   用于：开始面试辅助按钮 / 浮层 open-overlay / 重新打开答题面板 → 任何"即将开始新答题"的入口
+  //   保证：显式× 结束后不会再"继续刚刚那一场"
+  // ============================================================
+  async _routeApiSessionsEnsureIfEnded(req, res, reqDebug) {
+    try {
+      let body = null;
+      try { body = await this._readJsonBody(req); } catch (_) { body = null; }
+      const r = this.ensureStartNewSessionIfJustEnded(body || undefined);
+      this._json(res, 200, r, reqDebug);
+    } catch (e) {
+      console.error('[sessions][HTTP] ensure-if-ended 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || 'ensure-if-ended 失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // 面试 Session HTTP 路由 6：GET /api/sessions/find-by-round?roundId=xxx → 定位 round 属于哪场 session
+  //   返回：{ok:true, sessionId, roundId} 找不到返回 ok:true + sessionId=null
+  // ============================================================
+  _routeApiSessionsFindByRound(req, res, parsed, reqDebug) {
+    try {
+      const q = (parsed && parsed.query) || {};
+      const roundId = q.roundId || '';
+      const hit = this.findSessionByRoundId(roundId);
+      this._json(res, 200, {
+        ok: true,
+        roundId,
+        sessionId: hit ? hit.sessionId : null,
+        sessionsVersion: Number(this.state.sessionsVersion) || 0,
+      }, reqDebug);
+    } catch (e) {
+      console.error('[sessions][HTTP] find-by-round 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || 'find-by-round 失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
   // 19. 主动断开当前小程序连接（用户在二维码弹窗点"断开连接"）
   // ============================================================
   disconnectMiniapp() {
@@ -1907,6 +2735,555 @@ class LocalHttpServer {
     this.minSocket = null;
     this._setStatus('disconnected');
     return { success: true };
+  }
+
+  // ============================================================
+  // 20. 工具：从 body/loadConfigFn 合并当前用户配置（selectedService/密钥/模型档位/baseUrl 等）
+  // ============================================================
+  _getMergedUserConfig(bodyCfg = {}) {
+    const fromFn = (typeof this.loadConfigFn === 'function') ? (this.loadConfigFn() || {}) : {};
+    return Object.assign({}, fromFn, bodyCfg || {});
+  }
+
+  // ============================================================
+  // 21. 模拟面试 HTTP 路由：
+  //   a) POST /api/mock-interview/session
+  //      新建/重启一次模拟面试：复用 startNewSession 并在 session.meta.mockInterview 存入用户配置快照
+  // ============================================================
+  async _routeApiMockInterviewSession(req, res, reqDebug) {
+    try {
+      if (!mockInterviewAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '模拟面试服务不可用（mockInterviewAgents 加载失败）' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      // 基础校验：职位/行业/类型必填
+      const typeRaw = String(body.type || '').trim();
+      const type = mockInterviewAgents.normalizeType(typeRaw); // 兼容 comprehensive/technical/programming
+      const targetPosition = String(body.targetPosition || '').trim();
+      const industry = String(body.industry || '').trim();
+      if (!typeRaw || !['behavior', 'tech', 'coding', 'stress',
+        'technical', 'programming', 'comprehensive'].includes(typeRaw)) {
+        return this._json(res, 400, { ok: false, error: 'invalid', msg: '请选择面试类型（behavior/tech/coding/stress/technical/programming/comprehensive）' }, reqDebug);
+      }
+      if (!targetPosition) return this._json(res, 400, { ok: false, error: 'invalid', msg: '请填写目标职位' }, reqDebug);
+      if (!industry) return this._json(res, 400, { ok: false, error: 'invalid', msg: '请填写行业/领域' }, reqDebug);
+      const totalQuestions = Math.max(1, Math.min(15, Number(body.totalQuestions) || 5));
+      const answerMode = ['voice', 'text'].includes(body.answerMode) ? body.answerMode : 'text';
+      const language = ['zh', 'en'].includes(body.language) ? body.language : 'zh';
+      const maxFollowups = Math.max(0, Math.min(5, Number(body.maxFollowups))); // 0 表示禁用追问
+
+      // 以用户表单为"强制配置"创建新 session（JD/简历也拍快照）
+      const snapshotCfg = {
+        targetCompany: String(body.targetCompany || industry || '').trim(), // 没有公司就填行业占位（原字段复用）
+        targetPosition,
+        interviewType: type, // behavior/tech/coding/stress
+        jobDescription: String(body.jdText || '').substring(0, 20000),
+        resumeText: String(body.resumeText || '').substring(0, 40000),
+        // 下面这些是"模拟面试专属"扩展字段，会存进 session 的 meta 里
+        _mockInterview: {
+          mode: 'mockInterview', // 与真实 Copilot 面试区分
+          industry,
+          answerMode, // voice/text
+          language,
+          totalQuestions,
+          maxFollowups: Number.isFinite(maxFollowups) ? maxFollowups : 2,
+          currentIndex: 0,     // 已完成题数
+          history: [],         // [{question,answer,followups:[{q,a}],score,highlights,improvements,summary}]
+          createdAt: Date.now()
+        }
+      };
+      const r = this.startNewSession(snapshotCfg);
+      // 再把 meta 写入（startNewSession 里只支持原字段，这里扩展 mockInterview 专属部分）
+      try {
+        const s = this._activeSessionObj;
+        if (s) {
+          s.meta = s.meta || {};
+          s.meta.mockInterview = snapshotCfg._mockInterview;
+          this._flushActiveSessionToDisk(`新建模拟面试 session=${s && s.id}`);
+        }
+      } catch (_) { /* 忽略 meta 写入失败 */ }
+      this._json(res, 200, { ok: true, session: r }, reqDebug);
+    } catch (e) {
+      console.error('[mock-interview][HTTP] session 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '模拟面试启动失败' }, reqDebug);
+    }
+  }
+
+  // 取 active session 中的 mockInterview 配置（若无则返回 null）
+  _getActiveMockCtx() {
+    const s = this._activeSessionObj;
+    if (!s) return null;
+    const mi = (s.meta && s.meta.mockInterview) || null;
+    if (!mi) return null;
+    return {
+      session: s,
+      mi,
+      type: s.interviewType || mi.industry ? (s.interviewType || 'behavior') : 'behavior',
+      targetPosition: s.targetPosition || '',
+      industry: mi.industry || s.targetCompany || '',
+      jdText: s.jdSnapshot || '',
+      resumeText: s.resumeSnapshot || '',
+      answerMode: mi.answerMode || 'text',
+      language: mi.language || 'zh',
+      totalQuestions: Number(mi.totalQuestions) || 5,
+      maxFollowups: Number.isFinite(mi.maxFollowups) ? mi.maxFollowups : 2
+    };
+  }
+
+  // ============================================================
+  // b) POST /api/mock-interview/next-question
+  //   参数：sessionId（可选，默认用 active）
+  //   返回：{ok, done:boolean, questionIndex, totalQuestions, question, focus, expected}
+  // ============================================================
+  async _routeApiMockInterviewNextQ(req, res, reqDebug) {
+    try {
+      if (!mockInterviewAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '模拟面试服务不可用' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const ctx = this._getActiveMockCtx();
+      if (!ctx) return this._json(res, 400, { ok: false, error: 'invalid', msg: '没有进行中的模拟面试（请先点击『开始模拟面试』）' }, reqDebug);
+      const cfg = this._getMergedUserConfig(body.config);
+      const done = ctx.mi.currentIndex >= ctx.totalQuestions;
+      if (done) {
+        // 达到总题数：给出结束提示，不继续出题
+        return this._json(res, 200, {
+          ok: true,
+          done: true,
+          questionIndex: ctx.totalQuestions,
+          totalQuestions: ctx.totalQuestions,
+          message: '已完成全部题目，请点击『结束并生成复盘报告』。'
+        }, reqDebug);
+      }
+      const questionIndex = ctx.mi.currentIndex + 1; // 第 N 题（1-based）
+      const q = await mockInterviewAgents.generateQuestion({
+        type: ctx.type,
+        targetPosition: ctx.targetPosition,
+        industry: ctx.industry,
+        jdText: ctx.jdText,
+        resumeText: ctx.resumeText,
+        language: ctx.language,
+        questionIndex,
+        totalQuestions: ctx.totalQuestions,
+        history: ctx.mi.history || [],
+        config: cfg
+      });
+      // 把当前题挂到 session.meta.mockInterview.currentQuestion 上（提交答案时做校验）
+      try {
+        ctx.mi.currentQuestion = {
+          index: questionIndex,
+          question: q.question,
+          focus: q.focus,
+          expected: q.expected,
+          createdAt: Date.now()
+        };
+        this._flushActiveSessionToDisk(`模拟面试下一题 session=${ctx.session.id}`);
+      } catch (_) { /* ignore */ }
+      this._json(res, 200, {
+        ok: true,
+        done: false,
+        questionIndex,
+        totalQuestions: ctx.totalQuestions,
+        question: q.question,
+        focus: q.focus,
+        expected: q.expected
+      }, reqDebug);
+    } catch (e) {
+      console.error('[mock-interview][HTTP] next-question 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '生成题目失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // c) POST /api/mock-interview/submit-answer
+  //   参数：{answer, sessionId?}
+  //   返回：{ok, feedback:{score,highlights,improvements,summary},
+  //              followup:{needFollowup,question?,reason?}}
+  // ============================================================
+  async _routeApiMockInterviewSubmitAnswer(req, res, reqDebug) {
+    try {
+      if (!mockInterviewAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '模拟面试服务不可用' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const answer = String(body.answer || '').trim();
+      if (!answer) return this._json(res, 400, { ok: false, error: 'invalid', msg: '回答不能为空' }, reqDebug);
+      const ctx = this._getActiveMockCtx();
+      if (!ctx) return this._json(res, 400, { ok: false, error: 'invalid', msg: '没有进行中的模拟面试' }, reqDebug);
+      const currentQ = ctx.mi.currentQuestion;
+      if (!currentQ) return this._json(res, 400, { ok: false, error: 'invalid', msg: '当前没有待作答题目（请先『下一题』）' }, reqDebug);
+
+      const cfg = this._getMergedUserConfig(body.config);
+      const { feedback, followup } = await mockInterviewAgents.submitAnswer({
+        type: ctx.type,
+        question: currentQ.question,
+        answer,
+        resumeText: ctx.resumeText,
+        jdText: ctx.jdText,
+        language: ctx.language,
+        followups: [],
+        maxFollowups: ctx.maxFollowups,
+        config: cfg
+      });
+
+      // 把本轮（主问题 + 回答 + 空 followups + 初步点评）先入 history；若要追问，会在 submit-followup 中回写
+      const item = {
+        question: currentQ.question,
+        focus: currentQ.focus,
+        expected: currentQ.expected,
+        answer,
+        followups: [],
+        score: feedback.score,
+        highlights: feedback.highlights,
+        improvements: feedback.improvements,
+        summary: feedback.summary,
+        questionIndex: currentQ.index,
+        answeredAt: Date.now()
+      };
+      ctx.mi.history = Array.isArray(ctx.mi.history) ? ctx.mi.history : [];
+      ctx.mi.history.push(item);
+      // 如果不需要追问，视为本题完成 → currentIndex + 1，并清 currentQuestion
+      if (!followup || !followup.needFollowup) {
+        ctx.mi.currentIndex = Number(ctx.mi.currentIndex) + 1;
+        ctx.mi.currentQuestion = null;
+      } else {
+        // 暂存待追问信息，后续 submit-followup 用到
+        ctx.mi.pendingFollowup = {
+          question: followup.question,
+          reason: followup.reason || '',
+          startedAt: Date.now()
+        };
+      }
+      this._flushActiveSessionToDisk(`模拟面试提交答案 session=${ctx.session.id}`);
+
+      this._json(res, 200, {
+        ok: true,
+        feedback,
+        followup: followup || { needFollowup: false, reason: 'no followup' },
+        historyItem: item,
+        currentIndex: Number(ctx.mi.currentIndex) || 0,
+        totalQuestions: ctx.totalQuestions
+      }, reqDebug);
+    } catch (e) {
+      console.error('[mock-interview][HTTP] submit-answer 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '提交回答失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // d) POST /api/mock-interview/submit-followup
+  //   参数：{followupAnswer}  候选人回答追问
+  //   返回：{ok, feedback, followup, followups, needContinue}
+  //         若 needContinue=true → 继续追问；否则本题完成
+  // ============================================================
+  async _routeApiMockInterviewSubmitFollowup(req, res, reqDebug) {
+    try {
+      if (!mockInterviewAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '模拟面试服务不可用' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const fuAns = String(body.followupAnswer || '').trim();
+      if (!fuAns) return this._json(res, 400, { ok: false, error: 'invalid', msg: '追问回答不能为空' }, reqDebug);
+      const ctx = this._getActiveMockCtx();
+      if (!ctx) return this._json(res, 400, { ok: false, error: 'invalid', msg: '没有进行中的模拟面试' }, reqDebug);
+      const currentQ = ctx.mi.currentQuestion;
+      const pending = ctx.mi.pendingFollowup;
+      if (!currentQ || !pending || !pending.question) {
+        return this._json(res, 400, { ok: false, error: 'invalid', msg: '当前没有待回答的追问' }, reqDebug);
+      }
+      const history = ctx.mi.history || [];
+      const last = history[history.length - 1];
+      if (!last || last.question !== currentQ.question) {
+        return this._json(res, 400, { ok: false, error: 'invalid', msg: '状态异常：历史中找不到对应题目，可能已被误删除。' }, reqDebug);
+      }
+      const cfg = this._getMergedUserConfig(body.config);
+      const { feedback, followup, followups } = await mockInterviewAgents.submitFollowupAnswer({
+        type: ctx.type,
+        question: currentQ.question,
+        answer: last.answer,
+        resumeText: ctx.resumeText,
+        jdText: ctx.jdText,
+        language: ctx.language,
+        followups: last.followups || [],
+        lastFollowupQuestion: pending.question,
+        lastFollowupAnswer: fuAns,
+        maxFollowups: ctx.maxFollowups,
+        config: cfg
+      });
+      // 回写最后一道 history 的 followups 与点评
+      last.followups = followups || [];
+      last.score = feedback.score;
+      last.highlights = feedback.highlights;
+      last.improvements = feedback.improvements;
+      last.summary = feedback.summary;
+      last.lastFollowupAt = Date.now();
+
+      const needContinue = !!(followup && followup.needFollowup);
+      if (needContinue) {
+        // 还有追问：更新 pendingFollowup
+        ctx.mi.pendingFollowup = { question: followup.question, reason: followup.reason || '', startedAt: Date.now() };
+      } else {
+        // 本题彻底结束：index+1，清 currentQuestion / pendingFollowup
+        ctx.mi.pendingFollowup = null;
+        ctx.mi.currentQuestion = null;
+        ctx.mi.currentIndex = Number(ctx.mi.currentIndex) + 1;
+      }
+      this._flushActiveSessionToDisk(`模拟面试追问提交 session=${ctx.session.id}`);
+      this._json(res, 200, {
+        ok: true,
+        needContinue,
+        feedback,
+        followup: followup || { needFollowup: false },
+        followups: followups || []
+      }, reqDebug);
+    } catch (e) {
+      console.error('[mock-interview][HTTP] submit-followup 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '提交追问失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // e) POST /api/mock-interview/final-review
+  //   返回：{ok, review:string 复盘 MD, averageScore, totalQuestions, scores:number[]}
+  // ============================================================
+  async _routeApiMockInterviewFinalReview(req, res, reqDebug) {
+    try {
+      if (!mockInterviewAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '模拟面试服务不可用' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const ctx = this._getActiveMockCtx();
+      if (!ctx) return this._json(res, 400, { ok: false, error: 'invalid', msg: '没有进行中的模拟面试' }, reqDebug);
+      const history = Array.isArray(ctx.mi.history) ? ctx.mi.history : [];
+      const cfg = this._getMergedUserConfig(body.config);
+      const review = history.length ? await mockInterviewAgents.finalReview(history, cfg) : '本次模拟面试尚未产生答题记录，暂无复盘内容。';
+      const scores = history.map(h => Number(h.score)).filter(n => Number.isFinite(n));
+      const averageScore = scores.length ? +(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : 0;
+      // 把最终复盘写入 session.meta.mockInterview.finalReview，并结束 active session
+      try {
+        ctx.mi.finalReview = review;
+        ctx.mi.averageScore = averageScore;
+        ctx.mi.scores = scores;
+        ctx.mi.endedAt = Date.now();
+        ctx.mi.done = true;
+        // 结束 session：调用标准 close，这样面试记录列表会显示它
+        this._closeActiveSession(true);
+      } catch (_) { /* ignore */ }
+
+      this._json(res, 200, {
+        ok: true,
+        review,
+        averageScore,
+        totalQuestions: Number(ctx.totalQuestions) || 0,
+        answeredCount: history.length,
+        scores
+      }, reqDebug);
+    } catch (e) {
+      console.error('[mock-interview][HTTP] final-review 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '生成复盘失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // 22. 简历解析：DOCX/PDF/TXT 统一转文本（内部工具 + HTTP 路由都用）
+  //   input: {ext:'docx|pdf|txt', filePath?|fileBase64?}
+  // ============================================================
+  async _parseResumeToText({ ext, filePath, fileBase64 }) {
+    const suffix = String(ext || '').toLowerCase().replace(/^\.+/, '');
+    if (filePath && fsLib && fsLib.existsSync && fsLib.existsSync(filePath) && fsLib.readFileSync) {
+      // 从本地磁盘路径读取
+      const buf = fsLib.readFileSync(filePath);
+      return await this._parseResumeFromBuffer(suffix, buf);
+    }
+    if (fileBase64) {
+      // 渲染层用 Base64 传过来（渲染层没有 fs 权限时使用）
+      const clean = String(fileBase64).replace(/^data:[^;]+;base64,/, '');
+      const buf = Buffer.from(clean, 'base64');
+      return await this._parseResumeFromBuffer(suffix, buf);
+    }
+    return { ok: false, text: '', error: 'parse-failed', msg: '未提供 filePath 或 fileBase64' };
+  }
+
+  async _parseResumeFromBuffer(ext, buf) {
+    const sizeKB = buf ? (buf.length / 1024) : 0;
+    if (!buf || !buf.length) return { ok: false, text: '', error: 'empty', msg: '文件为空' };
+    try {
+      if (ext === 'txt' || ext === 'md' || ext === 'log') {
+        return { ok: true, text: buf.toString('utf8'), parser: 'utf8', sizeKB };
+      }
+      if (ext === 'docx' && mammoth && mammoth.extractRawText) {
+        const r = await mammoth.extractRawText({ buffer: buf });
+        return { ok: true, text: (r && typeof r.value === 'string') ? r.value : '', parser: 'mammoth', sizeKB };
+      }
+      if (ext === 'pdf' && pdfjsLib && typeof pdfjsLib.getDocument === 'function') {
+        // 用 data 方式（Uint8Array）
+        const task = pdfjsLib.getDocument({ data: new Uint8Array(buf), disableFontFace: true, useSystemFonts: true });
+        const doc = await task.promise;
+        const total = doc.numPages || 0;
+        const parts = [];
+        for (let i = 1; i <= total; i++) {
+          const page = await doc.getPage(i);
+          const content = await page.getTextContent();
+          if (content && Array.isArray(content.items)) {
+            const lines = content.items.map(it => it.str || '').join(' ');
+            parts.push(lines);
+          }
+        }
+        return { ok: true, text: parts.join('\n\n'), parser: 'pdfjs', pages: total, sizeKB };
+      }
+      // 兜底：按 utf8 读取（至少保留可读部分）
+      return { ok: false, text: buf.toString('utf8'), error: 'parser-missing', msg: ext + ' 解析库未安装（mammoth/pdfjs），已回退纯 UTF-8 读取，结果可能不可用。', parser: 'fallback-utf8', sizeKB };
+    } catch (e) {
+      // 兜底也给 utf8，避免 UI 卡死
+      return { ok: false, text: buf.toString('utf8'), error: 'parser-error', msg: e.message || '解析失败', parser: 'fallback-utf8', sizeKB };
+    }
+  }
+
+  // ============================================================
+  // 简历优化 HTTP 路由
+  //   a) POST /api/resume-opt/parse-file
+  // ============================================================
+  async _routeApiResumeOptParseFile(req, res, reqDebug) {
+    try {
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const ext = String(body.ext || '').toLowerCase();
+      const filePath = body.filePath ? String(body.filePath) : '';
+      const fileBase64 = body.fileBase64 ? String(body.fileBase64) : '';
+      if (!ext) return this._json(res, 400, { ok: false, error: 'invalid', msg: '缺少 ext：docx/pdf/txt' }, reqDebug);
+      const r = await this._parseResumeToText({ ext, filePath, fileBase64 });
+      this._json(res, 200, Object.assign({ ok: !!r.ok }, r), reqDebug);
+    } catch (e) {
+      console.error('[resume-opt][HTTP] parse-file 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '解析失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // b) POST /api/resume-opt/run
+  //   串行跑 ATS/关键词/内容优化 三个 agent；若 onStage 需要广播可后续接入 WS/bus
+  // ============================================================
+  async _routeApiResumeOptRun(req, res, reqDebug) {
+    try {
+      if (!resumeOptAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '简历优化服务不可用（resumeOptAgents 加载失败）' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const resumeText = String(body.resumeText || '').trim();
+      if (resumeText.length < 50) return this._json(res, 400, { ok: false, error: 'invalid', msg: '简历文本过短（至少 50 字）' }, reqDebug);
+      const jdText = String(body.jdText || '').trim();
+      const language = ['zh', 'en'].includes(body.language) ? body.language : 'zh';
+      const cfg = this._getMergedUserConfig(body.config);
+      const result = await resumeOptAgents.run({ resumeText, jdText, language, config: cfg });
+      // 也把本次优化结果缓存到 localStorage 替代方案：简单写入 active session 不存在就忽略
+      this._json(res, 200, { ok: true, result }, reqDebug);
+    } catch (e) {
+      console.error('[resume-opt][HTTP] run 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '简历优化失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // c) POST /api/resume-opt/export-docx
+  //   参数：{content:'优化后全文', savePath:'D:/xxx.docx'（主进程传）, filename?}
+  //   主进程会用 dialog.showSaveDialog 拿到 savePath 再过来调
+  // ============================================================
+  async _routeApiResumeOptExportDocx(req, res, reqDebug) {
+    try {
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const content = String(body.content || '').trim();
+      const savePath = String(body.savePath || '').trim();
+      if (!content) return this._json(res, 400, { ok: false, error: 'invalid', msg: '导出内容为空' }, reqDebug);
+      if (!savePath) return this._json(res, 400, { ok: false, error: 'invalid', msg: '缺少 savePath' }, reqDebug);
+      if (!docxLib) return this._json(res, 500, { ok: false, error: 'service', msg: '未安装 docx 库，导出 DOCX 不可用' }, reqDebug);
+      if (!fsLib || !fsLib.writeFileSync) return this._json(res, 500, { ok: false, error: 'service', msg: 'fs 不可用' }, reqDebug);
+      // DOCX：逐行构建 Paragraph（空行也给一个空段落），列表（- / •）作为 bullet
+      const { Document, Packer, Paragraph, TextRun } = docxLib;
+      const lines = content.split(/\r?\n/);
+      const children = lines.map(line => {
+        const isBullet = /^\s*([-*•]|\d+[\.、)])\s+/.test(line);
+        const text = line.replace(/^\s+([-*•]|\d+[\.、)])\s+/, '').replace(/\s+$/g, '');
+        return new Paragraph({
+          spacing: { after: 120 },
+          bullet: isBullet ? isBullet : undefined,
+          children: [new TextRun({ text: text.length ? text : ' ', size: 22, font: 'Calibri' })],
+        });
+      });
+      const doc = new Document({
+        creator: 'HireMe',
+        title: '优化后简历',
+        sections: [{ properties: {}, children }]
+      });
+      const buffer = await Packer.toBuffer(doc);
+      fsLib.writeFileSync(savePath, Buffer.from(buffer));
+      this._json(res, 200, { ok: true, savePath, bytes: buffer.length }, reqDebug);
+    } catch (e) {
+      console.error('[resume-opt][HTTP] export-docx 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '导出失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // d1) POST /api/resume-opt/ats
+  //   参数：{resumeText, jdText?, language?, config?}
+  //   返回：{ok:true, stage:'ats', result: ATSScoringAgent.score() 结果}
+  // 目的：给渲染层"阶段一完成就立刻渲染 ATS 卡片"，提升进度感知
+  // ============================================================
+  async _routeApiResumeOptATS(req, res, reqDebug) {
+    try {
+      if (!resumeOptAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '简历优化服务不可用' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const resumeText = String(body.resumeText || '').trim();
+      if (resumeText.length < 50) return this._json(res, 400, { ok: false, error: 'invalid', msg: '简历文本过短（<50 字）' }, reqDebug);
+      const cfg = this._getMergedUserConfig(body.config);
+      const result = await resumeOptAgents.runATS({
+        resumeText,
+        jdText: String(body.jdText || '').trim(),
+        language: ['zh', 'en'].includes(body.language) ? body.language : 'zh',
+        config: cfg
+      });
+      this._json(res, 200, { ok: true, stage: 'ats', result }, reqDebug);
+    } catch (e) {
+      console.error('[resume-opt][HTTP] ats 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || 'ATS 阶段失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // d2) POST /api/resume-opt/keywords
+  //   参数：{resumeText, jdText?, language?, config?}
+  //   返回：{ok:true, stage:'keywords', result: KeywordMatchAgent.match() 结果}
+  // ============================================================
+  async _routeApiResumeOptKeywords(req, res, reqDebug) {
+    try {
+      if (!resumeOptAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '简历优化服务不可用' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const resumeText = String(body.resumeText || '').trim();
+      if (resumeText.length < 50) return this._json(res, 400, { ok: false, error: 'invalid', msg: '简历文本过短（<50 字）' }, reqDebug);
+      const cfg = this._getMergedUserConfig(body.config);
+      const result = await resumeOptAgents.runKeywords({
+        resumeText,
+        jdText: String(body.jdText || '').trim(),
+        language: ['zh', 'en'].includes(body.language) ? body.language : 'zh',
+        config: cfg
+      });
+      this._json(res, 200, { ok: true, stage: 'keywords', result }, reqDebug);
+    } catch (e) {
+      console.error('[resume-opt][HTTP] keywords 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '关键词阶段失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // d3) POST /api/resume-opt/content
+  //   参数：{resumeText, jdText?, language?, config?}
+  //   返回：{ok:true, stage:'content', result: ContentOptAgent.optimize() 结果}
+  // ============================================================
+  async _routeApiResumeOptContent(req, res, reqDebug) {
+    try {
+      if (!resumeOptAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '简历优化服务不可用' }, reqDebug);
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const resumeText = String(body.resumeText || '').trim();
+      if (resumeText.length < 50) return this._json(res, 400, { ok: false, error: 'invalid', msg: '简历文本过短（<50 字）' }, reqDebug);
+      const cfg = this._getMergedUserConfig(body.config);
+      const result = await resumeOptAgents.runContent({
+        resumeText,
+        jdText: String(body.jdText || '').trim(),
+        language: ['zh', 'en'].includes(body.language) ? body.language : 'zh',
+        config: cfg
+      });
+      this._json(res, 200, { ok: true, stage: 'content', result }, reqDebug);
+    } catch (e) {
+      console.error('[resume-opt][HTTP] content 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '内容优化阶段失败' }, reqDebug);
+    }
   }
 }
 

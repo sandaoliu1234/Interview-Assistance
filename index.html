@@ -39,10 +39,15 @@
         </div>
       </div>
       <div class="header-right">
+        <!-- 历史记录侧栏：按钮顺序 👁️ 快速隐藏 / 📋 历史 / ⚙️ 设置，最常用的在左边方便点 -->
         <button id="quickHideBtn" class="icon-btn" title="快速隐藏 (Ctrl+Shift+H)" type="button">👁️</button>
+        <button id="openHistoryBtn" class="icon-btn" title="历史记录 (Ctrl+H)" type="button">📋</button>
         <button id="settingsBtn" class="icon-btn" title="设置" type="button">⚙️</button>
       </div>
     </header>
+
+    <!-- 主视图 #viewHome：包裹原三 Tab + 三 main + history 侧栏 + 底部操作栏；SPA 路由通过 viewRouter 切换 show/hidden -->
+    <section class="view-panel" id="viewHome" data-view="home">
 
     <!-- 模式切换：Copilot / 模拟面试 / 简历优化（与 HireMe 保持一致） -->
     <nav class="mode-tabs" id="modeTabs">
@@ -255,7 +260,7 @@
         改了简历 / JD / 知识库后，如果面试已开始，需先「结束面试」→ 再点「开始面试辅助」才会用新内容。
       </p>
 
-      <!-- 开始面试辅助 -->
+      <!-- 开始面试辅助 + 高级设置；下方直接放「查看全部面试记录」（用户要求：直接放在开始面试辅助按钮下方） -->
       <div class="start-row">
         <button id="copilotStartBtn" class="start-interview-btn" type="button">
           <span>🚀</span> 开始面试辅助
@@ -263,6 +268,9 @@
         <button class="advanced-settings-btn" id="advancedSettingsBtn" type="button">
           <span>⚙️</span> 高级设置
         </button>
+      </div>
+      <div class="start-row start-row-secondary">
+        <button class="abtn abtn-book" id="btnViewAllSessions" type="button" title="查看全部面试记录">📚 查看全部面试记录</button>
       </div>
 
       <!-- 重新打开答题面板（Electron 模式：面板被误关后点此恢复；浏览器模式隐藏） -->
@@ -293,12 +301,254 @@
       <p class="footer-hint">显示/隐藏窗口 <span id="footerHotkey">Ctrl+Shift+H</span></p>
     </main>
 
-    <!-- ========== 模拟面试面板：空白占位 ========== -->
+    <!-- ========== 模拟面试面板：参考 HireMe 截图 1/2，深色卡片式表单布局 ========== -->
     <main class="main-content hidden" id="classicPanel">
+      <!-- 面试类型 2x2 卡片 -->
+      <section class="copilot-card">
+        <h3 class="section-title">面试类型</h3>
+        <div class="type-grid" id="mockInterviewTypeGrid">
+          <button class="type-card mock-type" data-type="behavior" type="button">
+            <span class="tc-emoji mock-emoji-behavior">&#128172;</span>
+            <span class="tc-label">行为面试</span>
+            <span class="tc-sub">STAR 方法</span>
+          </button>
+          <button class="type-card mock-type" data-type="technical" type="button">
+            <span class="tc-emoji mock-emoji-tech">&#128736;&#65039;</span>
+            <span class="tc-label">技术面试</span>
+            <span class="tc-sub">原理/系统设计</span>
+          </button>
+          <button class="type-card mock-type" data-type="programming" type="button">
+            <span class="tc-emoji mock-emoji-prog">&#128187;</span>
+            <span class="tc-label">编程面试</span>
+            <span class="tc-sub">算法/代码</span>
+          </button>
+          <button class="type-card mock-type active" data-type="comprehensive" type="button">
+            <span class="tc-emoji mock-emoji-comp">&#129513;</span>
+            <span class="tc-label">综合面试</span>
+            <span class="tc-sub">常见问题</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 职位 * / 行业 *  -->
+      <section class="copilot-card">
+        <div class="field-grid">
+          <div class="field-block">
+            <label class="field-label" for="mockTargetPosition">职位 <span class="required">*</span></label>
+            <input type="text" id="mockTargetPosition" class="copilot-input" placeholder="如：Java 开发工程师" value="">
+          </div>
+          <div class="field-block">
+            <label class="field-label" for="mockTargetIndustry">行业 <span class="required">*</span></label>
+            <input type="text" id="mockTargetIndustry" class="copilot-input" placeholder="如：互联网 / 金融 / 制造" value="">
+          </div>
+        </div>
+      </section>
+
+      <!-- JD（可选） -->
+      <section class="copilot-card">
+        <div class="card-header">
+          <h3 class="section-title">职位描述 (JD) <span class="optional">mock.optional</span></h3>
+        </div>
+        <textarea id="mockJobDesc" class="copilot-textarea mock-jd-input" placeholder="粘贴职位描述 (工作职责/任职要求等)，AI 会围绕 JD 出题"></textarea>
+      </section>
+
+      <!-- 简历（面试官将基于简历提问） -->
+      <section class="copilot-card">
+        <div class="card-header">
+          <h3 class="section-title">简历 <span class="optional">面试官将根据简历提问 · mock.optional</span></h3>
+        </div>
+        <div class="mock-resume-tools">
+          <button class="seg-btn mock-use-btn active" id="mockUseSavedResumeBtn" type="button" data-mode="saved">
+            <span class="sb-main">&#10004; 使用已有简历</span>
+          </button>
+          <button class="seg-btn mock-use-btn" id="mockPasteResumeBtn" type="button" data-mode="paste">
+            <span class="sb-main">&#128203; 粘贴简历</span>
+          </button>
+          <button class="seg-btn mock-use-btn" id="mockUploadResumeBtn" type="button" data-mode="upload">
+            <span class="sb-main">&#128228; 上传 PDF/DOCX</span>
+          </button>
+        </div>
+        <div class="mock-resume-loaded mock-resume-loaded--ok" id="mockResumeLoadedBox">
+          <span class="mrl-check">&#10004;</span>
+          <span class="mrl-title">已加载简历：</span>
+          <span class="mrl-body" id="mockResumeLoadedBody">—</span>
+        </div>
+        <textarea id="mockResumeEditor" class="copilot-textarea" placeholder="粘贴简历内容（如未保存任何简历，可直接在这里填写）"></textarea>
+      </section>
+
+      <!-- 作答方式 / 题目数 / 面试语言 三列网格 -->
+      <section class="copilot-card">
+        <div class="field-grid mock-field-grid-3">
+          <div class="field-block">
+            <label class="field-label">作答方式</label>
+            <div class="seg-control">
+              <button class="seg-btn mock-ans-mode active" data-mode="voice" type="button">
+                <span class="sb-main">&#127908;&#65039; 语音</span>
+              </button>
+              <button class="seg-btn mock-ans-mode" data-mode="text" type="button">
+                <span class="sb-main">&#128196; 文字</span>
+              </button>
+            </div>
+          </div>
+          <div class="field-block">
+            <label class="field-label">题目数</label>
+            <select id="mockQuestionCount" class="copilot-input">
+              <option value="4">4 题 (快速)</option>
+              <option value="6">6 题 (标准-)</option>
+              <option value="8" selected>8 题 (标准)</option>
+              <option value="10">10 题 (强化)</option>
+              <option value="12">12 题 (超长)</option>
+            </select>
+          </div>
+          <div class="field-block">
+            <label class="field-label">面试语言</label>
+            <select id="mockLanguage" class="copilot-input">
+              <option value="zh" selected>中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <!-- 开始 CTA（蓝->紫渐变，贴合 HireMe 截图 2）+ 模拟面试记录 -->
+      <div class="start-row">
+        <button id="mockStartBtn" class="start-interview-btn mock-cta" type="button">
+          <span>&#128640;</span> 开始模拟面试
+        </button>
+      </div>
+      <div class="start-row start-row-secondary">
+        <button class="abtn abtn-book" id="mockViewHistoryBtn" type="button" title="查看模拟面试记录">&#128214; 模拟面试记录</button>
+      </div>
+
+      <!-- 模拟面试进行中（题目 + 输入框）面板：默认隐藏；开始后显示 -->
+      <section class="copilot-card mock-run-card hidden" id="mockRunCard">
+        <div class="mock-run-head">
+          <div class="mock-progress" id="mockProgress">第 1 / 8 题</div>
+          <div class="mock-run-status" id="mockRunStatus">准备中…</div>
+        </div>
+        <div class="mock-question-box">
+          <div class="mock-question-label">&#127912; 面试官</div>
+          <div class="mock-question-text" id="mockQuestionText">正在生成第一道题目…</div>
+        </div>
+        <div class="field-block">
+          <label class="field-label">你的回答 <span id="mockAnswerHintLabel">（文字作答：输入后按回车或点『提交回答』）</span></label>
+          <textarea id="mockAnswerEditor" class="copilot-textarea" placeholder="在下方作答；如选择『语音』则直接讲话即可，识别后会自动填入"></textarea>
+        </div>
+        <div class="mock-run-actions">
+          <button id="mockSubmitAnswerBtn" class="start-interview-btn mock-submit-btn" type="button">提交回答</button>
+          <button id="mockHintBtn" type="button" class="advanced-settings-btn" title="请求 AI 给答题提示">&#128161; 答题提示</button>
+          <button id="mockEndBtn" type="button" class="advanced-settings-btn" title="结束本次模拟面试">&#9201; 结束面试</button>
+        </div>
+        <!-- 每轮 AI 点评 -->
+        <div class="mock-feedback hidden" id="mockFeedbackBox">
+          <div class="mock-feedback-title">&#128172; 本轮点评</div>
+          <div class="mock-feedback-body" id="mockFeedbackBody"></div>
+        </div>
+      </section>
     </main>
 
-    <!-- ========== 简历优化面板：空白占位 ========== -->
+    <!-- ========== 简历优化面板：参考 HireMe 截图 3/4，上传/粘贴 + JD 可选 + 语言切换 + 橙红渐变 CTA ========== -->
     <main class="main-content hidden" id="resumePanel">
+      <!-- Hero 标题：贴合截图 4 顶部的 ★ 简历优化 / AI 简历分析与优化 / ATS... -->
+      <section class="resume-hero">
+        <span class="resume-hero-badge">&#9733; 简历优化</span>
+        <h2 class="resume-hero-title">AI 简历分析与优化</h2>
+        <p class="resume-hero-sub">ATS 评分 · 关键词匹配 · 逐条优化 · DOCX 导出</p>
+      </section>
+
+      <!-- 文件上传虚线区（贴合截图 3 顶部 点击上传简历文件） -->
+      <section class="copilot-card resume-dropcard">
+        <label class="resume-drop" id="resumeDropzone" for="resumeFileInput">
+          <input type="file" id="resumeFileInput" accept=".pdf,.docx,.doc,.txt" hidden>
+          <div class="resume-drop-icon">&#11014;&#65039;</div>
+          <div class="resume-drop-title">点击上传简历文件</div>
+          <div class="resume-drop-sub">支持 PDF、DOCX、TXT 格式</div>
+        </label>
+      </section>
+
+      <!-- 简历内容 * -->
+      <section class="copilot-card">
+        <div class="card-header">
+          <h3 class="section-title">简历内容 <span class="required">*</span>
+            <span class="tool-hint" id="resumeOptStatus">尚未加载</span>
+          </h3>
+          <div class="card-tools">
+            <button class="tool-btn" id="resumeOptUseSavedBtn" type="button">&#128203; 使用已保存</button>
+            <button class="tool-btn primary" id="resumeOptUploadBtn" type="button">&#128228; 上传 PDF/DOCX</button>
+            <button class="tool-btn" id="resumeOptClearBtn" type="button">&#128465;&#65039; 清空</button>
+          </div>
+        </div>
+        <textarea id="resumeOptEditor" class="copilot-textarea resume-opt-editor" placeholder="粘贴/上传简历内容（中英文均可），AI 会从 ATS 可解析度、JD 匹配度、表达力三方面分析并输出优化版。"></textarea>
+        <div class="resume-opt-meta">
+          <span class="resume-opt-meta-left">支持中英文简历</span>
+          <span class="resume-opt-meta-right"><span id="resumeOptCharCount">0</span> 字</span>
+        </div>
+      </section>
+
+      <!-- 目标职位 JD 可选 -->
+      <section class="copilot-card">
+        <div class="card-header">
+          <h3 class="section-title jd-warn">
+            <span class="jdt-icon">&#127919;</span> 目标职位 JD
+            <span class="optional">可选，填写后匹配度分析更精准</span>
+          </h3>
+        </div>
+        <textarea id="resumeOptJobEditor" class="copilot-textarea" placeholder="粘贴目标职位的 JD，AI 会对比关键词匹配度，找出缺失项并在优化时补足。"></textarea>
+      </section>
+
+      <!-- 优化语言 切换（中文/English） -->
+      <section class="copilot-card">
+        <div class="field-block">
+          <label class="field-label">优化语言</label>
+          <div class="seg-control">
+            <button class="seg-btn resume-lang-btn active" data-lang="zh" type="button">中文</button>
+            <button class="seg-btn resume-lang-btn" data-lang="en" type="button">English</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 分析 CTA（橙→红渐变，贴合截图 3 大按钮） -->
+      <div class="start-row">
+        <button id="resumeOptStartBtn" class="start-interview-btn resume-cta" type="button">
+          <span>&#9889;</span> 开始分析优化
+          <span class="rcta-arrow">&#10140;</span>
+        </button>
+      </div>
+      <div class="start-row start-row-secondary">
+        <p class="resume-cta-sub">AI 将从 ATS 评分、关键词匹配、内容优化三个维度分析你的简历</p>
+      </div>
+
+      <!-- 分析结果区：默认隐藏，出结果后显示（三栏卡片 + 全文优化 + 导出 DOCX） -->
+      <section class="copilot-card resume-result-card hidden" id="resumeResultCard">
+        <div class="resume-result-head">
+          <div class="resume-result-title">&#9989; 分析完成</div>
+          <div class="resume-result-actions">
+            <button id="resumeOptExportDocxBtn" class="tool-btn primary" type="button">&#128229; 导出优化版 DOCX</button>
+            <button id="resumeOptCopyBtn" class="tool-btn" type="button">&#128203; 复制优化版内容</button>
+          </div>
+        </div>
+        <div class="resume-score-grid">
+          <div class="score-card score-ats">
+            <div class="sc-label">ATS 评分</div>
+            <div class="sc-value" id="scAtsValue">—</div>
+            <div class="sc-body" id="scAtsBody">分析中…</div>
+          </div>
+          <div class="score-card score-kw">
+            <div class="sc-label">关键词匹配</div>
+            <div class="sc-value" id="scKwValue">—</div>
+            <div class="sc-body" id="scKwBody">分析中…</div>
+          </div>
+          <div class="score-card score-content">
+            <div class="sc-label">内容优化建议</div>
+            <div class="sc-value sc-value-txt" id="scContentTitle">—</div>
+            <div class="sc-body" id="scContentBody">分析中…</div>
+          </div>
+        </div>
+        <div class="field-block" style="margin-top: var(--s-3);">
+          <label class="field-label">优化后简历全文 <span class="optional">可直接导出 DOCX</span></label>
+          <textarea id="resumeOptOutput" class="copilot-textarea resume-opt-editor" placeholder="优化版内容会出现在这里。"></textarea>
+        </div>
+      </section>
     </main>
 
     <!-- 历史记录侧边栏 -->
@@ -309,7 +559,63 @@
       </div>
       <div id="historyList" class="history-list"></div>
     </aside>
+
+      <!-- 面试底部横幅 toast：执行操作后的反馈（⚠️ 删除了底部操作栏的 ⏹ / 🆕；📚 挪到卡片区；toast 仍然保留） -->
+      <div class="bottom-toast hidden" id="bottomToast" role="status" aria-live="polite"></div>
+
+      <!-- ★ 面试结束横幅：浮动答题面板被用户点击右上角 × 关闭时，主窗口弹此 banner；
+            提供两个操作：「查看本场面试记录」(跳详情) / 「开启新的面试」(startNewSession) -->
+      <div class="end-session-banner hidden" id="endSessionBanner" role="dialog" aria-modal="true" aria-labelledby="endSessionBannerTitle">
+        <button class="esb-close" id="esbClose" type="button" title="关闭">&times;</button>
+        <div class="esb-head">
+          <div class="esb-icon">✅</div>
+          <div>
+            <div class="esb-title" id="endSessionBannerTitle">本场面试已结束</div>
+            <div class="esb-sub" id="endSessionBannerSub">—</div>
+          </div>
+        </div>
+        <div class="esb-actions">
+          <button class="esb-btn esb-btn-view"   id="esbViewDetailBtn" type="button">🔍 查看本场面试记录</button>
+          <button class="esb-btn esb-btn-new"    id="esbNewSessionBtn" type="button">🆕 开启新的面试</button>
+        </div>
+      </div>
+
+    </section>
+    <!-- #viewHome 结束 -->
+
+    <!-- 面试记录列表视图：viewRouter.go('list') 显示 -->
+    <section class="view-panel hidden" id="viewSessionsList" data-view="sessions-list">
+      <header class="session-view-header">
+        <button class="back-btn" id="btnListBackHome" type="button" title="返回首页">← 返回首页</button>
+        <h2 class="session-view-title">📚 全部面试记录</h2>
+        <div class="session-search">
+          <input type="search" id="sessionSearchInput" placeholder="搜索公司/职位…（回车执行）">
+        </div>
+      </header>
+      <div class="session-list-toolbar">
+        <span class="session-total" id="sessionTotalHint">共 0 场</span>
+        <button class="secondary-btn" id="btnReloadSessionList" type="button">🔄 刷新</button>
+      </div>
+      <div class="sessions-list" id="sessionsListContainer"></div>
+      <div class="sessions-empty hidden" id="sessionsEmptyHint">💡 还没有面试记录。去 Copilot 开始识别，或点击底部「🆕 开始新的一场」。</div>
+    </section>
+
+    <!-- 面试记录详情视图：viewRouter.go('detail', sessionId, roundId?) 显示 -->
+    <section class="view-panel hidden" id="viewSessionDetail" data-view="session-detail">
+      <header class="session-view-header">
+        <button class="back-btn" id="btnDetailBack" type="button" title="返回列表">← 返回列表</button>
+        <div class="session-detail-titlewrap">
+          <h2 class="session-view-title" id="sessionDetailTitle">面试详情</h2>
+          <div class="session-detail-meta" id="sessionDetailMeta"></div>
+        </div>
+        <div class="session-detail-toolspacer"></div>
+      </header>
+      <div class="session-detail-chat" id="sessionDetailChat"></div>
+      <div class="session-detail-empty hidden" id="sessionDetailEmpty">该场面试还没有任何对话轮次。</div>
+    </section>
+
   </div>
+  <!-- .app-container 结束 -->
 
   <!-- 设置弹窗 -->
   <div id="settingsModal" class="modal">
@@ -483,5 +789,6 @@
 
   <script src="renderer.js"></script>
   <script src="src/renderer/copilot.js"></script>
+  <script src="src/renderer/mockResumePanels.js"></script>
 </body>
 </html>

@@ -325,8 +325,10 @@ const elements = {
   closeSettingsBtn: document.getElementById('closeSettingsBtn'),
   saveSettingsBtn: document.getElementById('saveSettingsBtn'),
   historySidebar: document.getElementById('historySidebar'),
+  openHistoryBtn: document.getElementById('openHistoryBtn'), // 顶栏 📋 历史按钮：打开/关闭侧栏
   closeHistoryBtn: document.getElementById('closeHistoryBtn'),
   historyList: document.getElementById('historyList'),
+  copilotHistoryRow: document.getElementById('copilotHistoryRow'), // 主窗口「📋 面试记录」卡片：点击展开侧栏
   alwaysOnTop: document.getElementById('alwaysOnTop'),
   opacitySlider: document.getElementById('opacitySlider'),
   opacityValue: document.getElementById('opacityValue'),
@@ -356,7 +358,38 @@ const elements = {
   modeTabs: document.getElementById('modeTabs'),
   copilotPanel: document.getElementById('copilotPanel'),
   classicPanel: document.getElementById('classicPanel'),
-  resumePanel: document.getElementById('resumePanel')
+  resumePanel: document.getElementById('resumePanel'),
+  // 公司/职位 JD
+  targetCompany: document.getElementById('targetCompany'),
+  targetPosition: document.getElementById('targetPosition'),
+  jobDescription: document.getElementById('jobDescription'),
+  // 面试记录：📚 查看全部面试记录（已挪到卡片区开始面试辅助正下方；⏹/🆕 已删除 —— 用户要求：浮动面板点×=结束本场；主窗口不再放两按钮）
+  btnViewAllSessions: document.getElementById('btnViewAllSessions'),
+  bottomToast: document.getElementById('bottomToast'),
+  // 面试记录：关闭浮动面板后弹的「本场已结束」两按钮横幅
+  endSessionBanner:   document.getElementById('endSessionBanner'),
+  esbClose:           document.getElementById('esbClose'),
+  esbViewDetailBtn:   document.getElementById('esbViewDetailBtn'),
+  esbNewSessionBtn:   document.getElementById('esbNewSessionBtn'),
+  endSessionBannerTitle: document.getElementById('endSessionBannerTitle'),
+  endSessionBannerSub:   document.getElementById('endSessionBannerSub'),
+  // 面试记录：viewRouter 三面板
+  viewHome: document.getElementById('viewHome'),
+  viewSessionsList: document.getElementById('viewSessionsList'),
+  viewSessionDetail: document.getElementById('viewSessionDetail'),
+  // 面试记录：列表页
+  btnListBackHome: document.getElementById('btnListBackHome'),
+  sessionsListContainer: document.getElementById('sessionsListContainer'),
+  sessionsEmptyHint: document.getElementById('sessionsEmptyHint'),
+  sessionSearchInput: document.getElementById('sessionSearchInput'),
+  sessionTotalHint: document.getElementById('sessionTotalHint'),
+  btnReloadSessionList: document.getElementById('btnReloadSessionList'),
+  // 面试记录：详情页
+  btnDetailBack: document.getElementById('btnDetailBack'),
+  sessionDetailTitle: document.getElementById('sessionDetailTitle'),
+  sessionDetailMeta:  document.getElementById('sessionDetailMeta'),
+  sessionDetailChat:  document.getElementById('sessionDetailChat'),
+  sessionDetailEmpty: document.getElementById('sessionDetailEmpty')
 };
 
 // 初始化（唯一入口）
@@ -457,6 +490,20 @@ async function init() {
       document.body.classList.remove('stealth-temp-reveal');
     }
   });
+
+  // ★ 面试记录 Session 初始化
+  //   1) 绑定面试相关 UI（📚 查看全部面试记录 / 结束横幅两按钮 / 公司&职位失焦自动开新场 / 列表&详情控件）
+  //   2) viewRouter 初始化：默认显示 #viewHome
+  //   3) 监听浮动面板关闭事件：main.js _postSessionOnOverlayClose → onOverlayClosedPostSession → 显示横幅
+  try {
+    bindSessionUIActions();
+    bindOverlayClosedPostSessionListener();
+    if (typeof viewRouter === 'object' && viewRouter && typeof viewRouter.init === 'function') {
+      viewRouter.init();
+    }
+  } catch (e) {
+    console.warn('[session] 初始化失败（非致命）：', e && e.message);
+  }
 }
 
 // 启动应用
@@ -577,7 +624,41 @@ function bindEvents() {
     });
   }
   
-  // 历史记录侧边栏
+  // 历史记录侧边栏：顶栏按钮 + 面试记录卡片 + Ctrl+H 快捷键（三个入口，.open 类切换滑出/收起）
+  // ★ 打开侧栏时会立刻强制刷新一次系统B历史，确保用户刚识别出的轮次立刻出现在侧栏里（不等 2 秒轮询）
+  //   关闭侧栏：① × 按钮 ② 再点一次顶栏/面试记录卡片 ③ 再按一次 Ctrl+H ④ 点击旧系统B历史卡片 都能关
+  /** 开关侧栏辅助函数：force=true 强制打开，force=false 强制关闭，undefined/不传=toggle。打开时自动刷新系统B历史。 */
+  const toggleHistorySidebar = async (force) => {
+    if (!elements.historySidebar) return;
+    const willOpen = (typeof force === 'boolean') ? force : !elements.historySidebar.classList.contains('open');
+    elements.historySidebar.classList.toggle('open', willOpen);
+    if (willOpen) {
+      // 打开时立刻拉一次系统B历史（不等轮询），保证"最新的一轮"能马上看到；失败兜底系统A
+      try { await refreshHistoryFromSystemB(); } catch (_) { /* ignore */ }
+    }
+  };
+  // 入口1：顶栏 📋 历史按钮
+  if (elements.openHistoryBtn) {
+    elements.openHistoryBtn.addEventListener('click', () => toggleHistorySidebar());
+  }
+  // 入口2：主窗口「📋 面试记录」卡片（语义就是"查看历史记录"，所以点击强制打开侧栏）
+  if (elements.copilotHistoryRow) {
+    elements.copilotHistoryRow.addEventListener('click', () => toggleHistorySidebar(true));
+  }
+  // 入口3：本地快捷键 Ctrl+H（渲染层 document 监听）—— 注意避让已注册的全局 Ctrl+Shift+H（快速隐藏主窗口）
+  //   判断条件：ctrl 按下 AND H 键 AND Shift 没按下
+  if (typeof document !== 'undefined') {
+    document.addEventListener('keydown', (ev) => {
+      const isCtrl = !!(ev.ctrlKey || ev.metaKey);
+      const key = (ev.key || '').toLowerCase();
+      const isHotkey = isCtrl && key === 'h' && !ev.shiftKey && !ev.altKey;
+      if (!isHotkey) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleHistorySidebar();
+    }, { passive: false });
+  }
+  // 原有：侧栏头部 × 按钮关闭
   if (elements.closeHistoryBtn && elements.historySidebar) {
     elements.closeHistoryBtn.addEventListener('click', () => {
       elements.historySidebar.classList.remove('open');
@@ -1017,10 +1098,12 @@ function renderHistoryFromSystemB(sysbHistory) {
     `;
   }).join('');
 
-  // 绑定点击事件：点击一条 → 把提问+答案回写到主窗口输入框，方便复看
+  // 绑定点击事件：
+  //   - 原行为保留：把提问+答案回写到主窗口输入框，方便复看
+  //   - 新增：通过 roundId → interviewSessionFindByRound → 定位所属 session → 跳详情页并高亮该 round
   const items = elements.historyList.querySelectorAll('.history-item');
   items.forEach((itemEl) => {
-    itemEl.addEventListener('click', () => {
+    itemEl.addEventListener('click', async () => {
       const realId = itemEl.getAttribute('data-sysb-real-id');
       const rawMatch = list.find((h) => h && String(h.id) === String(realId));
       if (!rawMatch) return;
@@ -1035,6 +1118,23 @@ function renderHistoryFromSystemB(sysbHistory) {
       }
       // 关闭侧栏
       if (elements.historySidebar) elements.historySidebar.classList.remove('open');
+
+      // ★ 新增：定位该 round 属于哪一场 Session，并跳转详情页（到达与底部「查看全部面试记录→点一场」同一页面）
+      try {
+        const roundId = String((rawMatch && rawMatch.id) || '');
+        let res = null;
+        if (window.electronAPI && typeof window.electronAPI.interviewSessionFindByRound === 'function') {
+          res = await window.electronAPI.interviewSessionFindByRound(roundId);
+        } else if (window.ipcRenderer && typeof window.ipcRenderer.invoke === 'function') {
+          res = await window.ipcRenderer.invoke('interview-session-find-by-round', roundId);
+        }
+        if (res && res.ok && res.sessionId && typeof viewRouter === 'object' && viewRouter && typeof viewRouter.go === 'function') {
+          // go(detail, sessionId, roundId) ：同一详情页，附加 round 锚点高亮
+          viewRouter.go('detail', String(res.sessionId), roundId || undefined);
+        }
+      } catch (e) {
+        console.warn('[history][sysb] 跳转到面试记录详情失败（非致命）:', e && e.message);
+      }
     });
   });
 }
@@ -2454,4 +2554,813 @@ async function startInterview() {
     console.log('[realtime]','✓ 音频捕获已在运行中，直接开始面试');
   }
 }
+
+/* ==========================================================================
+ * ★ 面试记录 Session 三态视图（viewRouter：home / list / detail）
+ *   主窗口底部 3 按钮：📚查看全部面试记录 / ⏹结束本场 / 🆕开始新的一场
+ *   与侧栏历史卡片点击 → 跳同一详情页（#viewSessionDetail）并按 roundId 高亮
+ *   规则说明：
+ *     - 不做删除/导出（增值功能暂缓，用户明确要求不加）
+ *     - 不加快捷键（用户明确：不要快捷键）
+ *     - 公司/职位失焦防抖 1.5s：若非空且发生有效更改 → 自动 startNewSession（切到新场）
+ * ========================================================================== */
+
+/**
+ * 统一的面试 Session IPC 调用入口（优先 electronAPI，否则直连 ipcRenderer.invoke）。
+ * @param {'list'|'get'|'start'|'end'|'find'} op  操作
+ * @param {any} [payload]  参数
+ * @returns {Promise<any>}
+ */
+async function _callInterviewSession(op, payload) {
+  const m1 = window && window.electronAPI;
+  const m2 = window && window.ipcRenderer && typeof window.ipcRenderer.invoke === 'function';
+  // m3 兜底：copilot.js/fallback 兼容逻辑用 electronIpcRenderer（可能是 preload 外的手动赋值）
+  const m3 = (typeof electronIpcRenderer !== 'undefined') && electronIpcRenderer && typeof electronIpcRenderer.invoke === 'function';
+  switch (op) {
+    case 'list':
+      if (m1 && typeof m1.interviewSessionList === 'function') return m1.interviewSessionList(payload);
+      if (m2) return window.ipcRenderer.invoke('interview-session-list', payload);
+      if (m3) return electronIpcRenderer.invoke('interview-session-list', payload);
+      break;
+    case 'get':
+      if (m1 && typeof m1.interviewSessionGet === 'function') return m1.interviewSessionGet(payload);
+      if (m2) return window.ipcRenderer.invoke('interview-session-get', payload);
+      if (m3) return electronIpcRenderer.invoke('interview-session-get', payload);
+      break;
+    case 'start':
+      if (m1 && typeof m1.interviewSessionStartNew === 'function') return m1.interviewSessionStartNew(payload);
+      if (m2) return window.ipcRenderer.invoke('interview-session-start-new', payload);
+      if (m3) return electronIpcRenderer.invoke('interview-session-start-new', payload);
+      break;
+    case 'end':
+      if (m1 && typeof m1.interviewSessionEndActive === 'function') return m1.interviewSessionEndActive();
+      if (m2) return window.ipcRenderer.invoke('interview-session-end-active');
+      if (m3) return electronIpcRenderer.invoke('interview-session-end-active');
+      break;
+    case 'find':
+      if (m1 && typeof m1.interviewSessionFindByRound === 'function') return m1.interviewSessionFindByRound(payload);
+      if (m2) return window.ipcRenderer.invoke('interview-session-find-by-round', payload);
+      if (m3) return electronIpcRenderer.invoke('interview-session-find-by-round', payload);
+      break;
+  }
+  return { ok: false, error: 'no_channel', msg: '面试记录 IPC 通道未就绪' };
+}
+
+/**
+ * 显示底部 toast 反馈（⏹/🆕/📚 点击/错误反馈）。
+ * @param {string} text  内容
+ * @param {'ok'|'warn'|'error'} [type] 样式
+ * @param {number} [ms]  自动隐藏毫秒，默认 2500
+ */
+function showToast(text, type, ms) {
+  try {
+    const t = elements.bottomToast;
+    if (!t) return;
+    t.classList.remove('hidden','toast-ok','toast-warn','toast-error');
+    if (type === 'warn') t.classList.add('toast-warn');
+    else if (type === 'error') t.classList.add('toast-error');
+    else t.classList.add('toast-ok');
+    t.textContent = String(text || '');
+    if (t.__toastTimer) { clearTimeout(t.__toastTimer); t.__toastTimer = null; }
+    const dur = Number(ms) || 2500;
+    t.__toastTimer = setTimeout(() => {
+      t.classList.add('hidden');
+      t.__toastTimer = null;
+    }, dur);
+  } catch (_) { /* ignore */ }
+}
+
+/**
+ * 读当前主窗口填写的「目标公司 / 目标职位 / JD」快照。
+ * 用于开新场时作为 Session 的初始 config（localHttpServer.startNewSession 会把这些写入 session.config）。
+ * @returns {{targetCompany:string,targetPosition:string,jobDescription:string}}
+ */
+function readCompanyPositionSnapshot() {
+  return {
+    targetCompany: (elements.targetCompany ? String(elements.targetCompany.value || '').trim() : ''),
+    targetPosition: (elements.targetPosition ? String(elements.targetPosition.value || '').trim() : ''),
+    jobDescription: (elements.jobDescription ? String(elements.jobDescription.value || '') : ''),
+  };
+}
+
+/**
+ * MS 粒度时间戳 → 本地化短时间字符串（列表/详情 meta 展示用）。
+ * @param {number|string|null} ts
+ * @returns {string}
+ */
+function formatTime(ts) {
+  const n = Number(ts);
+  if (!n || !isFinite(n)) return '';
+  const d = new Date(n);
+  if (isNaN(d.getTime())) return '';
+  const pad = (x) => (x < 10 ? '0' + x : String(x));
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * 计算一场面试的持续时长（endedAt - startedAt，单位秒 → 友好字符串）。
+ * @param {number} startedAt
+ * @param {number} [endedAt]
+ * @returns {string}
+ */
+function formatDuration(startedAt, endedAt) {
+  const s = Number(startedAt) || 0;
+  const e = Number(endedAt) || Date.now();
+  if (!s || e < s) return '';
+  const sec = Math.floor((e - s) / 1000);
+  if (sec <= 0) return '';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const sc = sec % 60;
+  if (h > 0) return `${h}小时${m}分${sc}秒`;
+  if (m > 0) return `${m}分${sc}秒`;
+  return `${sc}秒`;
+}
+
+/**
+ * viewRouter：home / sessions-list / session-detail 三态切换。
+ * 设计：
+ *   - 默认 state.view = 'home'
+ *   - go('home')                       → 显示首页，隐藏其他
+ *   - go('list')                       → 显示列表 + 调用 renderSessionsList()
+ *   - go('detail', sessionId, roundId) → 详情页 + 渲染 + roundId 锚点高亮
+ */
+const viewRouter = {
+  /** 当前路由：home / list / detail */
+  state: { view: 'home', detailSessionId: null, highlightRoundId: null },
+
+  /** 初始化：默认显示首页，不做任何会话 IPC（避免启动首屏等待） */
+  init() {
+    this.state = { view: 'home', detailSessionId: null, highlightRoundId: null };
+    this._applyDom();
+  },
+
+  /** 路由切换入口（渲染层唯一调用点） */
+  async go(view, payload, subPayload) {
+    const v = String(view || 'home');
+    switch (v) {
+      case 'home':
+        this.state.view = 'home';
+        this.state.detailSessionId = null;
+        this.state.highlightRoundId = null;
+        this._applyDom();
+        break;
+      case 'list':
+        this.state.view = 'list';
+        this._applyDom();
+        await renderSessionsList();
+        break;
+      case 'detail':
+        this.state.view = 'detail';
+        this.state.detailSessionId = String(payload || '');
+        this.state.highlightRoundId = subPayload ? String(subPayload) : null;
+        this._applyDom();
+        await renderSessionDetail(this.state.detailSessionId, this.state.highlightRoundId);
+        break;
+      default:
+        this.state.view = 'home';
+        this._applyDom();
+    }
+  },
+
+  /** 纯 DOM 切换：显示目标 panel / 隐藏其他；无数据请求 */
+  _applyDom() {
+    const panels = [elements.viewHome, elements.viewSessionsList, elements.viewSessionDetail];
+    panels.forEach((p) => {
+      if (!p) return;
+      if (!p.classList.contains('view-panel')) p.classList.add('view-panel');
+      p.classList.add('hidden');
+    });
+    switch (this.state.view) {
+      case 'list':
+        elements.viewSessionsList && elements.viewSessionsList.classList.remove('hidden');
+        break;
+      case 'detail':
+        elements.viewSessionDetail && elements.viewSessionDetail.classList.remove('hidden');
+        break;
+      case 'home':
+      default:
+        elements.viewHome && elements.viewHome.classList.remove('hidden');
+    }
+  }
+};
+
+/**
+ * 渲染「全部面试记录」列表（含 search + 总数提示 + 空态）。
+ * 空态 → 给出"还没有面试记录"的友好占位；否则渲染卡片；每条点击 → go('detail', session.id)。
+ */
+async function renderSessionsList() {
+  const listEl = elements.sessionsListContainer;
+  const emptyEl = elements.sessionsEmptyHint;
+  const totalHint = elements.sessionTotalHint;
+  const searchEl = elements.sessionSearchInput;
+  if (!listEl || !emptyEl) return;
+
+  const keyword = searchEl ? String(searchEl.value || '').trim() : '';
+  listEl.innerHTML = '';
+  emptyEl.classList.add('hidden');
+  totalHint && (totalHint.textContent = '加载中…');
+
+  let res = null;
+  try {
+    res = await _callInterviewSession('list', { keyword, limit: 200, offset: 0 });
+  } catch (e) {
+    console.warn('[session][list] IPC 异常:', e && e.message);
+    showToast('读取面试记录失败：' + (e && e.message || '网络异常'), 'error');
+  }
+  // 【排障日志】如果返回结构异常，在 DevTools Console 里明确打印一次（方便定位"明明有文件却说 0 场"）
+  try {
+    const okFlag = !!(res && res.ok !== false && Array.isArray(res.sessions));
+    const count = (res && Array.isArray(res.sessions)) ? res.sessions.length : -1;
+    if (!okFlag) {
+      console.warn('[session][list] ⚠️ 未拿到 sessions 数组：res=', res);
+    } else {
+      console.log(`[session][list] ✅ 拿到面试记录：total=${Number(res.total || 0)} currentPageCount=${count}`);
+    }
+  } catch (_) { /* ignore */ }
+  if (!res || res.ok === false || !Array.isArray(res.sessions)) {
+    totalHint && (totalHint.textContent = '共 0 场');
+    emptyEl.classList.remove('hidden');
+    return;
+  }
+  const arr = res.sessions;
+  totalHint && (totalHint.textContent = `共 ${Number(res.total || arr.length)} 场` + (keyword ? `（关键词：${keyword}）` : ''));
+  if (arr.length === 0) {
+    emptyEl.classList.remove('hidden');
+    return;
+  }
+
+  listEl.innerHTML = arr.map((s, i) => {
+    const id = String(s.sessionId || s.id || `s-${i}`);
+    const company = String(s.targetCompany || '未知公司').trim() || '未知公司';
+    const position = String(s.targetPosition || '未知职位').trim() || '未知职位';
+    const title = `${company} · ${position}`;
+    const active = (s.status === 'active');
+    const roundsCount = Number(s.roundsCount || 0);
+    const qCount = Number(s.questionCount || 0);
+    const startedAt = Number(s.startedAt || 0);
+    const endedAt   = Number(s.endedAt || 0);
+    const startedStr = formatTime(startedAt);
+    const durationStr = active
+      ? ('进行中 · ' + (formatDuration(startedAt, Date.now()) || '<1 秒'))
+      : (endedAt ? ('已结束 · ' + (formatDuration(startedAt, endedAt) || '0 秒')) : '已结束');
+    // 列表"前一段对话"摘要：优先用 snippet；否则用最后一轮的问题
+    let desc = String(s.snippet || '').trim();
+    if (!desc && Array.isArray(s.lastRounds) && s.lastRounds.length) {
+      const lr = s.lastRounds[s.lastRounds.length - 1];
+      const q = String((lr && lr.questionText) || '').trim();
+      const a = String((lr && lr.answerText) || '').trim();
+      desc = q || a || '';
+    }
+    return `
+      <button class="session-card" type="button" data-session-id="${escapeAttr(id)}">
+        <div class="sc-row1">
+          <div class="sc-title">${escapeHtml(title)}</div>
+          <span class="sc-status ${active ? 'active' : 'closed'}">${active ? '● 进行中' : '● 已结束'}</span>
+        </div>
+        <div class="sc-meta">
+          ${startedStr ? `<span>🕒 ${escapeHtml(startedStr)}</span>` : ''}
+          <span>💬 ${roundsCount} 轮</span>
+          ${qCount ? `<span>❓ ${qCount} 题</span>` : ''}
+          <span>${escapeHtml(durationStr)}</span>
+        </div>
+        ${desc ? `<div class="sc-desc">${escapeHtml(desc)}</div>` : ''}
+      </button>
+    `;
+  }).join('');
+
+  // 绑定每条卡片点击 → go('detail', id)
+  listEl.querySelectorAll('.session-card').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const sid = btn.getAttribute('data-session-id');
+      sid && viewRouter.go('detail', sid);
+    });
+  });
+}
+
+/**
+ * 渲染面试详情页：标题 + 会话元信息 + rounds 对话气泡。
+ * @param {string} sessionId
+ * @param {string} [highlightRoundId] 需要高亮的 round（侧栏跳转传入）
+ */
+async function renderSessionDetail(sessionId, highlightRoundId) {
+  const titleEl = elements.sessionDetailTitle;
+  const metaEl = elements.sessionDetailMeta;
+  const chatEl = elements.sessionDetailChat;
+  const emptyEl = elements.sessionDetailEmpty;
+  if (!titleEl || !chatEl || !emptyEl) return;
+  chatEl.innerHTML = '';
+  emptyEl.classList.add('hidden');
+  titleEl.textContent = '加载中…';
+  metaEl && (metaEl.textContent = '');
+
+  let res = null;
+  try {
+    res = await _callInterviewSession('get', String(sessionId || ''));
+  } catch (e) {
+    console.warn('[session][detail] IPC 异常:', e && e.message);
+  }
+  if (!res || !res.ok || !res.session) {
+    titleEl.textContent = '面试详情';
+    metaEl && (metaEl.textContent = '');
+    chatEl.innerHTML = '';
+    emptyEl.classList.remove('hidden');
+    emptyEl.textContent = (res && res.msg) ? ('读取失败：' + res.msg) : '该场面试不存在或无法读取。';
+    showToast('读取失败：' + ((res && res.msg) || '未知错误'), 'error');
+    return;
+  }
+  const s = res.session;
+  const company = String((s.config && s.config.targetCompany) || s.targetCompany || '未知公司').trim() || '未知公司';
+  const position = String((s.config && s.config.targetPosition) || s.targetPosition || '未知职位').trim() || '未知职位';
+  const rounds = Array.isArray(s.rounds) ? s.rounds : [];
+  const active = (s.status === 'active');
+  const startedAt = Number(s.startedAt) || 0;
+  const endedAt   = Number(s.endedAt)   || 0;
+
+  titleEl.textContent = `${company} · ${position}`;
+
+  // meta ：状态 / 开始 / 结束 / 轮数 / 时长
+  if (metaEl) {
+    const pills = [];
+    pills.push(`<span class="pill ${active ? 'status-active' : 'status-closed'}">${active ? '● 进行中' : '● 已结束'}</span>`);
+    startedAt && pills.push(`<span class="pill">🕒 开始 ${escapeHtml(formatTime(startedAt))}</span>`);
+    endedAt   && pills.push(`<span class="pill">⌛ 结束 ${escapeHtml(formatTime(endedAt))}</span>`);
+    pills.push(`<span class="pill">💬 ${rounds.length} 轮</span>`);
+    const dur = formatDuration(startedAt, active ? Date.now() : endedAt);
+    dur && pills.push(`<span class="pill">⏱ 时长 ${escapeHtml(dur)}</span>`);
+    metaEl.innerHTML = pills.join('');
+  }
+
+  if (rounds.length === 0) {
+    emptyEl.classList.remove('hidden');
+    emptyEl.textContent = '该场面试还没有任何对话轮次。';
+    return;
+  }
+
+  // 渲染每一轮：round-index 小徽标 + createdAt + 面试官(Q) + AI(A) 气泡
+  chatEl.innerHTML = rounds.map((r, i) => {
+    const id = String(r.id || `r-${i}`);
+    const needHighlight = highlightRoundId && String(highlightRoundId) === id;
+    const idx = i + 1;
+    const createdAt = Number(r.createdAt || 0);
+    const qFull = String(r.questionText || '').trim();      // 完整面试官原文（含问题之外的描述）
+    const qCore = String(r.detectedQuestion || r.questionText || '').trim();
+    const a     = String(r.answerText || '').trim();
+    const status = String(r.status || '');
+    const source = String(r.source || '');
+    const sourceMap = {
+      'asr-panel': '🎙ASR', 'manual': '✍️ 手动', 'screenshot': '📸 截图',
+      'h5': '📱 H5', 'screen-solve': '🖥解题',
+    };
+    const statusMap = { asked: '答题中', answered: '已回答', error: '失败' };
+    const footArr = [];
+    source && footArr.push('来源：' + (sourceMap[source] || source));
+    status && footArr.push('状态：' + (statusMap[status] || status));
+    Number(r.durationMs) > 0 && footArr.push('答题耗时：' + (Math.round(r.durationMs / 100) / 10) + 's');
+    createdAt && footArr.push(formatTime(createdAt));
+    // Q 气泡：显示完整原文（用户阶段4 明确：对话框需要显示识别出的"全部文字"，而不是仅问题）；检测出的问题在脚注里提示一下
+    const questionBody = qFull || (qCore ? (qCore + '（注：仅识别到问题核心）') : '（无识别文本）');
+    const coreHint = (qFull && qCore && qFull !== qCore && qFull.indexOf(qCore) < 0)
+      ? `<div style="margin-top:6px; font-size:0.75rem; color:var(--text-tertiary)">🔍 识别出的核心问题：${escapeHtml(qCore)}</div>`
+      : '';
+    return `
+      <section class="round-block ${needHighlight ? 'round-highlight' : ''}" id="round-${escapeAttr(id)}" data-round-id="${escapeAttr(id)}">
+        <div class="round-head">
+          <span class="round-index">第 ${idx} 轮</span>
+          <span>roundId: ${escapeHtml(id)}</span>
+        </div>
+        <div class="speech-bubble question">
+          <span class="speech-role">👤 面试官</span>
+          ${escapeHtml(questionBody)}
+          ${coreHint}
+        </div>
+        ${a ? `<div class="speech-bubble answer"><span class="speech-role">🤖 AI 助手</span>${escapeHtml(a)}</div>` : ''}
+        ${footArr.length ? `<div class="round-meta-foot">${footArr.map((x)=>`<span>${escapeHtml(x)}</span>`).join('')}</div>` : ''}
+      </section>
+    `;
+  }).join('');
+
+  // 如果有 highlightRoundId：滚到对应 block + 动画 1.6s 已在 CSS round-highlight
+  if (highlightRoundId) {
+    requestAnimationFrame(() => {
+      try {
+        const el = chatEl.querySelector(`#round-${CSS.escape ? CSS.escape(String(highlightRoundId)) : String(highlightRoundId).replace(/(["\\])/g,'\\\\$1')}`);
+        if (el && typeof el.scrollIntoView === 'function') {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      } catch (_) { /* scrollIntoView 小概率抛错（极长 id），忽略 */ }
+    });
+  } else {
+    // 默认滚到底（和主窗口正序内存最近一轮在下一致：详情最近一轮在下，对齐用户记忆）
+    requestAnimationFrame(() => { chatEl.scrollTop = chatEl.scrollHeight; });
+  }
+}
+
+// ============================================================================
+// 给模拟面试（mockResumePanels.js）暴露的语音作答控制：
+// window.HireMeCore.startMockInterviewVoiceAnswer(callbacks, opts)
+// 只负责：麦克风 → 百度实时 ASR（缺实时能力则降级为 1.5s REST 识别一次）
+// callbacks: {onInterim(text), onFinal(text), onError(msg), onStateChange(state)}
+// state: 'idle'|'starting'|'mic'|'connecting'|'listening'|'stopped'
+// 返回: { stop():Promise<void>, isRunning():boolean }
+// ============================================================================
+(function exposeMockInterviewVoice() {
+  // 小工具：把 Float32Array（16kHz 单声道）按百度实时 ASR 要求喂给 WS；这里统一不做二次重采样，依赖 createPcmRecorder 已经 16k。
+  function toFloat32(samplesLike) {
+    if (samplesLike instanceof Float32Array) return samplesLike;
+    if (Array.isArray(samplesLike)) return new Float32Array(samplesLike);
+    if (samplesLike && typeof samplesLike.length === 'number') {
+      const out = new Float32Array(samplesLike.length);
+      for (let i = 0; i < samplesLike.length; i++) out[i] = Number(samplesLike[i]) || 0;
+      return out;
+    }
+    return new Float32Array(0);
+  }
+
+  async function startMockInterviewVoiceAnswer(callbacks, opts) {
+    const cb = Object.assign({ onInterim: () => {}, onFinal: () => {}, onError: () => {}, onStateChange: () => {} }, callbacks || {});
+    const state = { running: false };
+    const setState = (s) => { cb.onStateChange(s); };
+    setState('starting');
+
+    // 1) 取媒体流（麦克风）
+    let stream = null;
+    let recorder = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: 16000,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+    } catch (e) {
+      cb.onError(`麦克风授权失败：${e.message || e}`);
+      setState('stopped');
+      return { stop: async () => {}, isRunning: () => false };
+    }
+
+    try {
+      // 2) 建录音器（复用 renderer.js 全局 createPcmRecorder）
+      recorder = createPcmRecorder({ stream });
+      await recorder.start();
+      state.running = true;
+      setState('mic');
+    } catch (e) {
+      try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+      cb.onError(`录音器启动失败：${e.message || e}`);
+      setState('stopped');
+      return { stop: async () => {}, isRunning: () => false };
+    }
+
+    // 3) 读取配置并决定走实时 WS 还是 REST
+    let cfg = null;
+    try {
+      cfg = (typeof ipcRenderer !== 'undefined' && ipcRenderer.invoke)
+        ? (await ipcRenderer.invoke('get-config')) || {}
+        : {};
+    } catch (_) { cfg = {}; }
+
+    const apiKey = cfg.baiduApiKey || '';
+    const secretKey = cfg.baiduSecretKey || '';
+    const appId = cfg.baiduAppId || '';
+    const recogMode = cfg.recognitionMode || 'websocket';
+
+    let rtSvc = null; // RealtimeSpeechService（全局存在的类）
+    let useRest = (recogMode !== 'websocket') || !window.RealtimeSpeechService || typeof RealtimeSpeechService !== 'function';
+    let wsPump = null;   // setInterval 句柄
+    let restPump = null;
+    let closedByUser = false;
+    let wsWentOk = false;
+    let wsWentClosed = false;
+
+    // stop 函数（对外 & 对内共用）
+    const stopFn = async () => {
+      closedByUser = true;
+      state.running = false;
+      try { if (wsPump) { clearInterval(wsPump); wsPump = null; } } catch (_) {}
+      try { if (restPump) { clearInterval(restPump); restPump = null; } } catch (_) {}
+      try { if (rtSvc && rtSvc.finish) rtSvc.finish(); } catch (_) {}
+      try { if (rtSvc && rtSvc.close) rtSvc.close(); } catch (_) {}
+      try { if (recorder && recorder.stop) recorder.stop(); } catch (_) {}
+      try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+      setState('stopped');
+    };
+
+    // 4) WebSocket 模式：百度实时 ASR
+    if (!useRest && apiKey && secretKey && appId) {
+      try {
+        setState('connecting');
+        const tokenRes = (typeof ipcRenderer !== 'undefined' && ipcRenderer.invoke)
+          ? (await ipcRenderer.invoke('get-baidu-access-token', { apiKey, secretKey }))
+          : { success: false, error: 'ipc 不可用' };
+        if (!tokenRes || !tokenRes.success) {
+          throw new Error((tokenRes && tokenRes.error) || '获取百度 access_token 失败');
+        }
+        rtSvc = new RealtimeSpeechService();
+        rtSvc.setBoost(Number(cfg.audioBoost) || 2);
+        rtSvc.on('open', () => { wsWentOk = true; setState('listening'); });
+        rtSvc.on('interim', (d) => {
+          const t = (d && typeof d === 'object') ? d.text : String(d || '');
+          cb.onInterim(t);
+        });
+        rtSvc.on('final', (d) => {
+          const t = (d && typeof d === 'object') ? d.text : String(d || '');
+          cb.onFinal(t);
+        });
+        rtSvc.on('error', (e) => {
+          cb.onError(`ASR 错误：${(e && e.message) || e}`);
+        });
+        rtSvc.on('close', (info) => {
+          wsWentClosed = true;
+          // WS 没成功过：切 REST 兜底继续识别
+          if (!wsWentOk && !closedByUser && !useRest) {
+            useRest = true;
+            try { if (wsPump) { clearInterval(wsPump); wsPump = null; } } catch (_) {}
+            cb.onError('实时 ASR 未接通，已自动降级为每 1.5s 识别一次。');
+            startRestPump();
+          }
+        });
+        rtSvc.connect({ accessToken: tokenRes.token, appId, appKey: apiKey });
+
+        // 100ms 循环：从 recorder 取样本 -> sendAudio；静音时发静音帧，防百度 -3101
+        let firstAudioLogged = false;
+        wsPump = setInterval(() => {
+          if (!state.running || closedByUser) return;
+          try {
+            const raw = recorder.takeAll ? recorder.takeAll() : new Float32Array(0);
+            const samples = toFloat32(raw);
+            if (!firstAudioLogged && samples.length) { firstAudioLogged = true; }
+            if (!samples.length) {
+              const silence = new Float32Array(1600); // 100ms 静音
+              try { rtSvc.sendAudio(silence); } catch (_) {}
+            } else {
+              try { rtSvc.sendAudio(samples); } catch (_) {}
+            }
+          } catch (_) {}
+        }, 100);
+
+        // 10s 超时：若 WS 还没 open，降级 REST
+        setTimeout(() => {
+          if (!wsWentOk && !wsWentClosed && !closedByUser && !useRest) {
+            useRest = true;
+            try { rtSvc && rtSvc.close && rtSvc.close(); } catch (_) {}
+            try { if (wsPump) { clearInterval(wsPump); wsPump = null; } } catch (_) {}
+            cb.onError('实时 ASR 10s 未连接，已降级为 1.5s 识别模式。');
+            startRestPump();
+          }
+        }, 10000);
+      } catch (e) {
+        useRest = true;
+        cb.onError(`实时 ASR 启动失败：${e.message || e}，降级为 1.5s 识别模式。`);
+      }
+    } else {
+      // 没配密钥或强制模式 → 直接降级 REST
+      if (!apiKey || !secretKey) {
+        cb.onError('请先在设置页配置百度 ASR：API Key + Secret Key（可不配 AppID，REST 模式不用）。否则无法语音作答。');
+      }
+    }
+
+    // REST 兜底（每 1.5s 累积录音，编码 WAV → baidu-recognize IPC）
+    function startRestPump() {
+      if (restPump) return;
+      setState('listening');
+      const MIN_BYTES = 16000 * 0.4; // 最少 0.4s
+      restPump = setInterval(async () => {
+        if (!state.running || closedByUser) return;
+        try {
+          const samples = toFloat32(recorder.takeAll ? recorder.takeAll() : []);
+          if (samples.length < MIN_BYTES) return;
+          const wav = encodeWav(samples, 16000);
+          if (!wav) return;
+          if (!ipcRenderer || !ipcRenderer.invoke) return;
+          const result = await ipcRenderer.invoke('baidu-recognize', {
+            audioData: wav, apiKey, secretKey, appId, rate: 16000, channel: 1
+          });
+          if (result && result.ok && result.text) {
+            // REST 只有 final，为了让用户看到识别过程，先给一个 interim 再 final
+            cb.onInterim(result.text);
+            setTimeout(() => cb.onFinal(result.text), 120);
+          }
+        } catch (e) {
+          cb.onError(`REST 识别异常：${e.message || e}`);
+        }
+      }, 1500);
+    }
+
+    // 如果强制 REST 但密钥存在，则立即启动 REST pump
+    if (useRest && !restPump && apiKey && secretKey) startRestPump();
+
+    return {
+      stop: stopFn,
+      isRunning: () => !!state.running
+    };
+  }
+
+  // 挂载到全局（mockResumePanels 中通过 window.HireMeCore 访问）
+  if (!window.HireMeCore) window.HireMeCore = {};
+  window.HireMeCore.startMockInterviewVoiceAnswer = startMockInterviewVoiceAnswer;
+})();
+
+/**
+ * 监听主进程广播「浮动答题面板已被关闭，本场面试已结束」→ 显示两按钮横幅。
+ *   优先走 electronAPI.onOverlayClosedPostSession（preload 桥），
+ *   失败直连 window.ipcRenderer.on('overlay:closed-post-session')。
+ */
+function bindOverlayClosedPostSessionListener() {
+  const handler = (payload) => {
+    try {
+      showEndSessionBanner(payload || {});
+    } catch (e) {
+      console.warn('[session][end-banner] showEndSessionBanner 异常:', e && e.message);
+    }
+  };
+  if (window.electronAPI && typeof window.electronAPI.onOverlayClosedPostSession === 'function') {
+    try {
+      const off = window.electronAPI.onOverlayClosedPostSession(handler);
+      if (typeof off === 'function') window.__unbindESB = off;
+      return;
+    } catch (e) {
+      console.warn('[session][esb-listener] preload 桥异常，回退直连 ipcRenderer:', e && e.message);
+    }
+  }
+  if (window.ipcRenderer && typeof window.ipcRenderer.on === 'function') {
+    window.ipcRenderer.on('overlay:closed-post-session', (_evt, payload) => handler(payload));
+  }
+}
+
+/**
+ * 显示「本场面试已结束」两按钮横幅：关闭浮动面板后，主窗口中央弹提示。
+ *   🔍 查看本场面试记录 → viewRouter.go('detail', sessionId)
+ *   🆕 开启新的面试      → 隐藏横幅 + startNewSession（带当前公司/职位快照）
+ *   × 关闭横幅           → 仅 hide，不做任何业务动作（用户稍后自己手动切）
+ * @param {{sessionId?:string, roundsCount?:number, startedAt?:number, endedAt?:number, company?:string, position?:string, endResError?:string, endResMsg?:string}} payload
+ */
+function showEndSessionBanner(payload) {
+  const ban = elements.endSessionBanner;
+  if (!ban) return;
+  const titleEl = elements.endSessionBannerTitle;
+  const subEl = elements.endSessionBannerSub;
+  const rounds = Number(payload && payload.roundsCount) || 0;
+  const company = String((payload && payload.company) || '未知公司').trim() || '未知公司';
+  const position = String((payload && payload.position) || '未知职位').trim() || '未知职位';
+  titleEl && (titleEl.textContent = `${company} · ${position} 已结束`);
+  const durStr = formatDuration(Number(payload && payload.startedAt) || 0, Number(payload && payload.endedAt) || Date.now());
+  const subBits = [];
+  subBits.push(`本场共 ${rounds} 轮对话`);
+  durStr && subBits.push(`时长 ${durStr}`);
+  const err = String((payload && payload.endResError) || '').trim();
+  if (err) {
+    const msg = String((payload && payload.endResMsg) || '').trim() || '';
+    subBits.push(`注：${err}${msg ? (' — ' + msg) : ''}`);
+  }
+  subEl && (subEl.textContent = subBits.join(' · '));
+
+  // 记录当前 sessionId / 元信息，按钮点击时使用
+  ban.dataset.lastSessionId = String((payload && payload.sessionId) || '');
+  ban.dataset.roundsCount   = String(rounds);
+
+  // banner 是 viewHome 内的 fixed 中央模态，不管当前 viewRouter 在 list/detail，先切回 home 再显示
+  if (typeof viewRouter === 'object' && viewRouter && typeof viewRouter.go === 'function') {
+    viewRouter.go('home');
+  }
+  ban.classList.remove('hidden');
+}
+/** 隐藏本场面试已结束横幅（× / 点击任一 action 按钮后都会调） */
+function hideEndSessionBanner() {
+  const ban = elements.endSessionBanner;
+  ban && ban.classList.add('hidden');
+}
+
+/**
+ * 绑定面试 Session 的所有 UI 事件。
+ *   - Copilot 卡片区「📚 查看全部面试记录」按钮：go('list')
+ *   - 结束横幅 ESB：× 关闭 / 🔍查看本场 / 🆕开启新面试
+ *   - 列表页：返回 / 搜索回车 / 刷新按钮
+ *   - 详情页：返回（统一回到列表页，符合用户心智）
+ *   - 公司/职位：失焦 + 1.5s 防抖 → 非空且变化 → 自动 startNewSession（用户未要求删除，保留）
+ */
+function bindSessionUIActions() {
+  // -------- Copilot 卡片区：📚 查看全部面试记录（已从底部挪到开始面试辅助按钮正下方） --------
+  if (elements.btnViewAllSessions) {
+    elements.btnViewAllSessions.addEventListener('click', () => viewRouter.go('list'));
+  }
+
+  // -------- 结束横幅 ESB：× / 查看本场 / 开启新面试 --------
+  if (elements.esbClose) {
+    elements.esbClose.addEventListener('click', () => hideEndSessionBanner());
+  }
+  if (elements.esbViewDetailBtn) {
+    elements.esbViewDetailBtn.addEventListener('click', () => {
+      const ban = elements.endSessionBanner;
+      const sid = ban ? String(ban.dataset.lastSessionId || '') : '';
+      if (!sid) {
+        // 小概率异常：无 sessionId → 兜底跳列表页让用户挑一场
+        showToast('未能识别本场面试 ID，已跳到全部记录列表', 'warn');
+        hideEndSessionBanner();
+        viewRouter.go('list');
+        return;
+      }
+      hideEndSessionBanner();
+      viewRouter.go('detail', sid);
+    });
+  }
+  if (elements.esbNewSessionBtn) {
+    elements.esbNewSessionBtn.addEventListener('click', async () => {
+      hideEndSessionBanner();
+      try {
+        const cfg = readCompanyPositionSnapshot();
+        const r = await _callInterviewSession('start', cfg);
+        if (r && r.ok) {
+          const company = String((r.session && ((r.session.config && r.session.config.targetCompany) || r.session.targetCompany)) || '未知公司').trim() || '未知公司';
+          const position = String((r.session && ((r.session.config && r.session.config.targetPosition) || r.session.targetPosition)) || '未知职位').trim() || '未知职位';
+          showToast(`🆕 已开启新一场：${company} · ${position}`, 'ok');
+        } else {
+          showToast('开新场失败：' + ((r && r.msg) || '未知原因'), 'error');
+        }
+      } catch (e) {
+        console.warn('[session][esb-new] 异常:', e && e.message);
+        showToast('开新场失败：' + (e && e.message || '异常'), 'error');
+      }
+    });
+  }
+
+  // -------- 列表页：返回 / 搜索回车 / 刷新 --------
+  if (elements.btnListBackHome) {
+    elements.btnListBackHome.addEventListener('click', () => viewRouter.go('home'));
+  }
+  if (elements.btnReloadSessionList) {
+    elements.btnReloadSessionList.addEventListener('click', () => renderSessionsList());
+  }
+  if (elements.sessionSearchInput) {
+    let t = null;
+    elements.sessionSearchInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        // 防抖 200ms：避免连续回车刷多次
+        t && clearTimeout(t);
+        t = setTimeout(() => renderSessionsList(), 200);
+      }
+    });
+    // 清空搜索词 → 立即重绘（空关键词 = 展示全部）
+    elements.sessionSearchInput.addEventListener('input', () => {
+      if (!String(elements.sessionSearchInput.value || '').trim()) {
+        t && clearTimeout(t); t = null; renderSessionsList();
+      }
+    });
+  }
+
+  // -------- 详情页：返回按钮 --------
+  if (elements.btnDetailBack) {
+    elements.btnDetailBack.addEventListener('click', () => {
+      // 统一回到列表页（符合：同一详情页，从 home 侧栏进 vs 从列表进，返回都回列表 → 最符合直觉）
+      viewRouter.go('list');
+    });
+  }
+
+  // -------- 公司/职位：失焦 → 1.5s 防抖 → 非空且变化 → 自动开新场 --------
+  const companyEl = elements.targetCompany;
+  const positionEl = elements.targetPosition;
+  if (companyEl || positionEl) {
+    // 记录上一次"已用于自动开新场"的快照，避免重复触发
+    let lastTriggeredSnapshot = { company: '', position: '' };
+    let debounceTimer = null;
+    /** 检测并启动新场：防抖函数体 */
+    const tryAutoStart = () => {
+      debounceTimer = null;
+      const cfg = readCompanyPositionSnapshot();
+      const c = cfg.targetCompany;
+      const p = cfg.targetPosition;
+      // 空值不开（未填），等用户填完再说
+      if (!c && !p) return;
+      // 与上次已触发快照完全一致 → 不重复开
+      if (c === lastTriggeredSnapshot.company && p === lastTriggeredSnapshot.position) return;
+      lastTriggeredSnapshot = { company: c, position: p };
+      (async () => {
+        try {
+          const r = await _callInterviewSession('start', cfg);
+          if (r && r.ok) {
+            showToast(`🆕 检测到新公司/新职位：已自动开启新一场`, 'ok');
+          } else if (r && r.error === 'no_change') {
+            // localHttpServer.startNewSession 内部如果判断同一场没变化，会返回 no_change（保留未来扩展，当前不打断）
+          } else {
+            showToast('自动开新场失败：' + ((r && r.msg) || '未知原因'), 'warn');
+          }
+        } catch (e) {
+          console.warn('[session][auto-new] 异常:', e && e.message);
+        }
+      })();
+    };
+    /** 失焦统一入口：1.5s 防抖（快速改公司+职位时只在最后一起触发） */
+    const onBlur = () => {
+      debounceTimer && clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(tryAutoStart, 1500);
+    };
+    companyEl  && companyEl.addEventListener('blur',  onBlur);
+    positionEl && positionEl.addEventListener('blur', onBlur);
+  }
+}
+
 
