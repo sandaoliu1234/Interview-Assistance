@@ -64,14 +64,213 @@ try {
 }
 
 // ===== 简历解析：DOCX/PDF/TXT（优先尝试项目已有库，缺失则回退纯文本，不 crash）=====
+// 注意（2026-08-19 实测 Win10 + Electron + pdfjs-dist 5.x 场景）：
+//   - mammoth: 1.x 是纯 CJS，require('mammoth') 即可拿到带 extractRawText 的对象
+//   - pdfjs-dist 5.x: main 指向 build/pdf.mjs（纯 ESM）；Electron 主进程里 require(pdf.mjs) 会抛 ERR_REQUIRE_ESM：
+//     "require() of ES Module xxx/pdf.mjs not supported. Instead change the require of xxx/pdf.mjs to a dynamic import()"
+//     所以在 Electron 下必须**避免**先试 pdfjs-dist 的 require；改为先走纯 CJS 的 pdf-parse（项目已安装 v2.x），再尝试
+//     pdfjs-dist 的动态 import()（因为 CJS 里能 await import() ESM），最后才是同步 require 兜底
+//   - pdf-parse: 项目已安装 2.x，导出结构是对象（含具名 PDFParse 类），使用方式为：
+//       const parser = new PDFParse(Uint8Array, {max:0});
+//       const info = await parser.getInfo();      // -> {total,info,...}
+//       const result = await parser.getText();   // -> {pages:[{text,num}], text:'全文', total}
+//       await parser.destroy();
+//     它是 CommonJS，Electron/Node 都能 100% 稳定加载，所以作为默认首选
+//   - 失败原因记录到 resumeParserReasons，后续 _parseResumeFromBuffer 会把详细原因拼给用户，不再笼统报"解析库未安装"
 let mammoth = null;
-try { mammoth = require('mammoth'); } catch (_) { mammoth = null; }
-let pdfjsLib = null;
+let mammothReason = '';
 try {
-  // 2.x/3.x/4.x 兼容：优先默认导出，其次 getDocument
-  pdfjsLib = require('pdfjs-dist');
-  if (pdfjsLib && typeof pdfjsLib.getDocument !== 'function' && pdfjsLib.default) pdfjsLib = pdfjsLib.default;
-} catch (_) { pdfjsLib = null; }
+  mammoth = require('mammoth');
+  if (!mammoth || typeof mammoth.extractRawText !== 'function') {
+    mammothReason = `mammoth 已安装但 extractRawText 不可用（typeof=${typeof (mammoth && mammoth.extractRawText)}）`;
+    mammoth = null;
+  }
+} catch (e) { mammoth = null; mammothReason = e.message || 'require(mammoth) 抛出未知异常'; }
+
+// 统一的 PDF 解析句柄（内部字段：
+//   kind: 'pdf-parse' | 'pdfjs'
+//   source: 'pdf-parse' | 'pdfjs-dist/legacy' | 'pdfjs-dist'
+//   ready: Promise<void>  用于延迟初始化（如动态 import 走异步加载）时外部 await 等它就绪；同步加载则为 resolved
+//   parseFn: async (buffer) => {text, pages?, total?}   统一输出结构，调用方不再关心库差异
+//   legacyGetDocument: function?  若走 pdfjs，则保留 getDocument 给未来扩展（渲染等）
+const resumeParserReasons = [];
+
+/**
+ * 首选加载：pdf-parse（纯 CommonJS，Electron/Node 均稳定）。
+ * 返回 {handles, reason, source}；handles 为 null 表示加载失败。
+ */
+function _tryLoadPdfParse() {
+  let handles = null; let reason = '';
+  try {
+    const mod = require('pdf-parse');
+    // 2.x 版本：具名导出 PDFParse；同时兼容 1.x（函数导出）与 CJS 包装的 .default
+    const PDFParse = (mod && typeof mod.PDFParse === 'function') ? mod.PDFParse
+      : (mod && typeof mod.default === 'function') ? mod.default
+      : (typeof mod === 'function') ? mod
+      : null;
+    if (!PDFParse) {
+      const t = typeof mod;
+      const keyc = (mod && typeof mod === 'object') ? Object.keys(mod).length : 0;
+      reason = `pdf-parse 已加载但导出结构不符合预期（typeof=${t}, keys=${keyc}，未找到 PDFParse/default 函数）`;
+    } else {
+      // 包装成统一 parseFn：输入 Node Buffer（我们内部都用 Buffer），内部转 Uint8Array（pdf-parse 2.x 严格要求）
+      const parseFn = async (buf) => {
+        const parser = new PDFParse(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), { max: 0 });
+        try {
+          // info / getText 都单独 await 一下保证异常时能释放 destroy
+          const info = await parser.getInfo();
+          const out = await parser.getText();
+          const pages = Array.isArray(out && out.pages) ? out.pages : [];
+          const total = (info && typeof info.total === 'number') ? info.total
+            : (Array.isArray(out && out.pages) ? out.pages.length : (out && typeof out.total === 'number' ? out.total : 0));
+          // 优先用 out.text（已经是拼接好的全文，每页之间自带分隔），否则逐页 text 拼接
+          const text = typeof (out && out.text) === 'string' ? out.text
+            : pages.map((p) => (p && typeof p.text === 'string') ? p.text : '').join('\n\n');
+          return { text, total, pages };
+        } finally {
+          try { await parser.destroy(); } catch (_) { /* ignore destroy errors */ }
+        }
+      };
+      handles = { kind: 'pdf-parse', source: 'pdf-parse', ready: Promise.resolve(), parseFn };
+    }
+  } catch (e) {
+    if (e && (e.code === 'MODULE_NOT_FOUND' || /cannot find module/i.test(e.message || ''))) {
+      reason = 'pdf-parse 未安装（已加入 package.json，请确认 npm install 成功）';
+    } else {
+      reason = e.message || 'require(pdf-parse) 抛出未知异常';
+    }
+  }
+  return { handles, source: (handles ? 'pdf-parse' : ''), reason };
+}
+
+/**
+ * 异步加载：pdfjs-dist/legacy/build/pdf.mjs（用动态 import，兼容 Electron/Electron 打包后 ESM 模块）。
+ * 返回结构同 _tryLoadPdfParse（handles.ready 为真正的异步 Promise，调用方在 parsePDF 入口要 await）。
+ */
+function _tryLoadPdfjsLegacyAsync() {
+  let handles = null; let reason = '';
+  // 用 Promise 包一层"延迟到真正使用时再 import"的 ready；catch 到 reason 里
+  const ready = (async () => {
+    try {
+      // 解析阶段无法 require .mjs（Electron 抛 ERR_REQUIRE_ESM），CJS 中用 await import() 则完全支持
+      const mod = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      let lib = mod;
+      if (lib && typeof lib.getDocument !== 'function' && lib.default) lib = lib.default;
+      if (!lib || typeof lib.getDocument !== 'function') {
+        const t = typeof lib;
+        const keyc = lib ? Object.keys(lib).length : 0;
+        reason = `pdfjs-dist/legacy 动态 import 成功但 getDocument 不可用（typeof=${t}, keys=${keyc}）`;
+        handles = null;
+        return;
+      }
+      const parseFn = async (buf) => {
+        const task = lib.getDocument({ data: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), disableFontFace: true, useSystemFonts: true });
+        const doc = await task.promise;
+        const total = doc.numPages || 0;
+        const pages = [];
+        for (let i = 1; i <= total; i++) {
+          const page = await doc.getPage(i);
+          const content = await page.getTextContent();
+          const lines = (content && Array.isArray(content.items))
+            ? content.items.map((it) => (it && typeof it.str === 'string') ? it.str : '').join(' ')
+            : '';
+          pages.push({ num: i, text: lines });
+        }
+        const text = pages.map((p) => p.text).join('\n\n');
+        return { text, total, pages };
+      };
+      handles = { kind: 'pdfjs', source: 'pdfjs-dist/legacy', ready: Promise.resolve(), parseFn, legacyGetDocument: lib.getDocument };
+    } catch (e) {
+      // 动态 import 失败（路径不存在/模块损坏等）：记入 reason，handles 保持 null
+      reason = e.message || 'import(pdfjs-dist/legacy/build/pdf.mjs) 抛出未知异常';
+      handles = null;
+    }
+  })();
+  // 因为上面的 IIFE 会 mutate handles/reason（同一轮事件循环里 await import 会让出线程），这里要把
+  // 结果指针包进 ready 成功后的对象里，让调用方 await ready 后拿真正的 {kind,source,parseFn,...}
+  const awaitable = {
+    ready: ready.then(() => handles),
+    source: 'pdfjs-dist/legacy',
+    reason: () => reason, // 失败后读取最新 reason
+  };
+  // 特殊标记：_awaitable = true，加载调度段会 await awaitable.ready 再决定是否 accept
+  return { _awaitable: true, awaitable, source: 'pdfjs-dist/legacy' };
+}
+
+/**
+ * 最后兜底：同步 require('pdfjs-dist')（仅对旧版本 2.x/3.x 有效；若抛错就记入 reasons）。
+ */
+function _tryLoadPdfjsMainSync() {
+  let handles = null; let reason = '';
+  try {
+    let lib = require('pdfjs-dist');
+    if (lib && typeof lib.getDocument !== 'function' && lib.default) lib = lib.default;
+    if (!lib || typeof lib.getDocument !== 'function') {
+      const t = typeof lib;
+      const keyc = lib ? Object.keys(lib).length : 0;
+      reason = `pdfjs-dist 主入口同步 require 成功但 getDocument 不可用（typeof=${t}, keys=${keyc}）`;
+    } else {
+      const parseFn = async (buf) => {
+        const task = lib.getDocument({ data: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), disableFontFace: true, useSystemFonts: true });
+        const doc = await task.promise;
+        const total = doc.numPages || 0;
+        const parts = [];
+        for (let i = 1; i <= total; i++) {
+          const page = await doc.getPage(i);
+          const c = await page.getTextContent();
+          const lines = (c && Array.isArray(c.items)) ? c.items.map((it) => it.str || '').join(' ') : '';
+          parts.push(lines);
+        }
+        return { text: parts.join('\n\n'), total, pages: parts.map((text, i) => ({ num: i + 1, text })) };
+      };
+      handles = { kind: 'pdfjs', source: 'pdfjs-dist', ready: Promise.resolve(), parseFn, legacyGetDocument: lib.getDocument };
+    }
+  } catch (e) {
+    reason = e.message || 'require(pdfjs-dist) 抛出未知异常';
+  }
+  return { handles, source: (handles ? 'pdfjs-dist' : ''), reason };
+}
+
+// 全局 PDF 解析句柄（由 _loadPdfParsers 填入）
+let pdfParserHandle = null; // 结构同上面的 handles
+(async function _loadPdfParsers() {
+  // A. 首选：pdf-parse（同步加载，Electron 100% 稳定，用户现在已在 package.json 安装了 v2.4.5）
+  const pparse = _tryLoadPdfParse();
+  if (pparse.handles) { pdfParserHandle = pparse.handles; return; }
+  resumeParserReasons.push(`[pdf-parse] ${pparse.reason}`);
+
+  // B. 次选：pdfjs-dist/legacy（动态 import ESM，异步，解决 Electron 中 ERR_REQUIRE_ESM 问题）
+  const legacy = _tryLoadPdfjsLegacyAsync();
+  if (legacy._awaitable) {
+    const h = await legacy.awaitable.ready;
+    if (h) { pdfParserHandle = h; return; }
+    resumeParserReasons.push(`[pdfjs-dist/legacy] ${legacy.awaitable.reason()}`);
+  }
+
+  // C. 最后兜底：pdfjs-dist 主入口同步 require（2.x/3.x 老版本或某些 CJS 打包版才会走到）
+  const main = _tryLoadPdfjsMainSync();
+  if (main.handles) { pdfParserHandle = main.handles; return; }
+  resumeParserReasons.push(`[pdfjs-dist] ${main.reason}`);
+})();
+
+// 启动日志自检：打印 mammoth / PDF 解析库当前状态
+// 注意 pdfParserHandle 可能是异步加载的，所以用 Promise.resolve().then 等一次微任务，再打印
+(function _reportParserStatus() {
+  const show = () => {
+    const parts = [];
+    parts.push(`mammoth: ${mammoth ? 'OK(extractRawText)' : 'FAIL - ' + (mammothReason || 'unknown')}`);
+    if (pdfParserHandle) {
+      parts.push(`pdf: OK(${pdfParserHandle.source}, kind=${pdfParserHandle.kind})`);
+    } else {
+      // pdfParserHandle 仍为 null：说明 A/B/C 三条都挂了，拼完整原因
+      parts.push(`pdf: FAIL - ${resumeParserReasons.join('；')}`);
+    }
+    console.log('[localHttpServer] 简历解析库自检：' + parts.join('；'));
+  };
+  // 给异步的 legacy import 一次机会；即使 A 段同步命中，这里也只是多一个 then，开销可忽略
+  Promise.resolve().then(show).catch(() => show());
+})();
+
 // DOCX 生成：导出优化后的简历
 let docxLib = null;
 let fsLib = null;
@@ -550,6 +749,34 @@ class LocalHttpServer {
     return `${company} - ${position} - ${when}`;
   }
 
+  /**
+   * 推断一条 session（摘要 或 详情对象）属于『真实面试 / 模拟面试』中的哪一种。
+   * 兼容：老 session（历史遗留数据，创建时未写 category）必须能正确反推，不能让真实面试
+   *       跑到模拟面试 Tab 下（默认按 copilot 兜底，保证不误伤）。
+   * 规则优先级（从高到低）：
+   *   1) 顶层 row.category === 'copilot' / 'mock' 且合法 → 直接采用（新格式）
+   *   2) meta.mockInterview 存在 → 模拟面试（模拟面试创建时写入 session.meta.mockInterview）
+   *   3) _mockInterviewCache 存在 → 模拟面试（内存冗余副本，meta 被意外覆盖时也能识别）
+   *   4) config / snapshotCfg._mockInterview 存在 → 模拟面试
+   *   5) 其他所有情况 → copilot（真实面试，默认兜底，宁可多算真实也不把真实错放模拟下）
+   * @param {Object} row summary 行对象 或 session 详情对象
+   * @returns {'copilot'|'mock'}
+   */
+  _inferSessionCategory(row) {
+    const r = (row && typeof row === 'object') ? row : {};
+    // 1) 新格式：顶层 category 合法 → 直接用
+    if (r.category === 'copilot' || r.category === 'mock') return r.category;
+    // 2) meta.mockInterview → 模拟面试
+    if (r.meta && typeof r.meta === 'object' && r.meta.mockInterview) return 'mock';
+    // 3) 内存冗余标记 → 模拟面试
+    if (r._mockInterviewCache && typeof r._mockInterviewCache === 'object') return 'mock';
+    // 4) 顶层快照 config._mockInterview → 模拟面试
+    if (r.config && typeof r.config === 'object' && r.config._mockInterview) return 'mock';
+    if (r._cfg && typeof r._cfg === 'object' && r._cfg._mockInterview) return 'mock';
+    // 5) 默认：真实面试（安全兜底，避免真实面试被错误归档到模拟面试）
+    return 'copilot';
+  }
+
   // ============================================================
   // 5.2.X Session 层辅助 3bis：把一条"session 摘要（_index.jsonl 的一行）/详情对象（.json 的顶层）"归一化为 UI 卡片可直接消费的结构。
   //   背景：历史摘要 flush 写的是 roundCount / answeredCount，而 UI（renderSessionsList）读 roundsCount / questionCount / snippet / lastRounds / sessionId。
@@ -635,6 +862,10 @@ class LocalHttpServer {
         });
       } catch (_) { out.title = '面试会话'; }
     }
+    // 8) ★ 面试类型 category 归一化（真实 copilot / 模拟 mock）
+    //   即使输入是旧 summary（没有 category），也用 _inferSessionCategory 反推出来，
+    //   保证前端渲染 session 卡片时能直接读 s.category，无需再做兼容推断。
+    out.category = this._inferSessionCategory(s);
     void opts;
     return out;
   }
@@ -777,6 +1008,8 @@ class LocalHttpServer {
       const summary = {
         id:           norm.id,
         sessionId:    norm.sessionId,     // 别名，方便未来消费
+        // ★ 面试类型标签（copilot 真实面试 / mock 模拟面试）：列表按此互斥过滤
+        category:     norm.category || this._inferSessionCategory(norm),
         title:        norm.title,
         targetCompany: norm.targetCompany,
         targetPosition: norm.targetPosition,
@@ -813,6 +1046,9 @@ class LocalHttpServer {
     const now = Date.now();
     const session = {
       id: this._nextSessionId(),
+      // ★ 面试类型：'copilot' = 真实面试（Copilot 模式 ASR 识别面试官+AI答题），'mock' = 模拟面试（用户在浮窗作答）
+      //   判断依据：snapshotCfg._mockInterview 是否由模拟面试路由 _routeApiMockInterviewSession 注入
+      category: (cfg && cfg._mockInterview) ? 'mock' : 'copilot',
       title: '',   // 下面 build 一次
       targetCompany: String(cfg.targetCompany || '').trim(),
       targetPosition: String(cfg.targetPosition || '').trim(),
@@ -926,7 +1162,16 @@ class LocalHttpServer {
   //   params: { keyword?, limit?, offset? }
   //   keyword 匹配：title/公司/职位；如果搜不到再 lazy 扫摘要对应 session 的 rounds 文本（questionText/answerText）
   // ============================================================
-  listSessions({ keyword = '', limit = 50, offset = 0 } = {}) {
+  /**
+   * 查询面试记录列表（支持按面试类型互斥过滤）。
+   * @param {Object}  opts
+   * @param {string}  [opts.keyword=''] 搜索关键词（公司/职位/标题/问答文本 模糊匹配）
+   * @param {number}  [opts.limit=50]   分页单页条数（1~200）
+   * @param {number}  [opts.offset=0]   分页偏移（>=0）
+   * @param {string}  [opts.category=''] 类型过滤：'copilot'=仅真实面试 / 'mock'=仅模拟面试 / 空字符串=全部
+   * @returns {{ok:true, total:number, sessions:Object[], keyword:string, limit:number, offset:number, category:string}}
+   */
+  listSessions({ keyword = '', limit = 50, offset = 0, category = '' } = {}) {
     // 强制把索引文件最新状态合并到 cache（避免另一进程写入？本项目单进程，一般不用；但保险起见在 list 时再补一次最多 SESSION_LIST_MAX_IN_MEM 条）
     try {
       if (!fs.existsSync(this._sessionIndexPath)) { /* 空 */ }
@@ -974,6 +1219,11 @@ class LocalHttpServer {
         }
       }
       all = filtered;
+    }
+    // ★ 分类互斥过滤：copilot 只看真实面试；mock 只看模拟面试；空=全部
+    const cat = String(category || '').trim().toLowerCase();
+    if (cat === 'copilot' || cat === 'mock') {
+      all = all.filter((row) => this._inferSessionCategory(row) === cat);
     }
     // ★ 关键：返回前统一对每条摘要做"UI 字段归一化"（旧 JSONL 里只有 roundCount/answeredCount 没有 roundsCount/questionCount/snippet/lastRounds 的，懒扫详情补全）。
     //   限制懒扫最多 30 场：用户传 limit 200 时，只对分页范围内 + 最多前 30 扫详情。
@@ -1787,6 +2037,8 @@ class LocalHttpServer {
     if (pathname === '/api/mock-interview/session'      && req.method === 'POST') return this._routeApiMockInterviewSession(req, res, { _reqStartTs, _remoteIp, _method });
     if (pathname === '/api/mock-interview/next-question' && req.method === 'POST') return this._routeApiMockInterviewNextQ(req, res, { _reqStartTs, _remoteIp, _method });
     if (pathname === '/api/mock-interview/submit-answer' && req.method === 'POST') return this._routeApiMockInterviewSubmitAnswer(req, res, { _reqStartTs, _remoteIp, _method });
+    // ---- 浮动面板专用轻量路由：只登记答案/推进题目，不做单题点评、不触发追问（总点评留到 final-review 一次生成） ----
+    if (pathname === '/api/mock-interview/register-answer' && req.method === 'POST') return this._routeApiMockInterviewRegisterAnswer(req, res, { _reqStartTs, _remoteIp, _method });
     if (pathname === '/api/mock-interview/submit-followup' && req.method === 'POST') return this._routeApiMockInterviewSubmitFollowup(req, res, { _reqStartTs, _remoteIp, _method });
     if (pathname === '/api/mock-interview/final-review'  && req.method === 'POST') return this._routeApiMockInterviewFinalReview(req, res, { _reqStartTs, _remoteIp, _method });
 
@@ -1794,6 +2046,7 @@ class LocalHttpServer {
     if (pathname === '/api/resume-opt/run'               && req.method === 'POST') return this._routeApiResumeOptRun(req, res, { _reqStartTs, _remoteIp, _method });
     if (pathname === '/api/resume-opt/parse-file'        && req.method === 'POST') return this._routeApiResumeOptParseFile(req, res, { _reqStartTs, _remoteIp, _method });
     if (pathname === '/api/resume-opt/export-docx'       && req.method === 'POST') return this._routeApiResumeOptExportDocx(req, res, { _reqStartTs, _remoteIp, _method });
+    if (pathname === '/api/resume-opt/export-md'         && req.method === 'POST') return this._routeApiResumeOptExportMd(req, res, { _reqStartTs, _remoteIp, _method });
     // ---- 新增：简历优化三阶段独立路由（渲染层串行调用，实现"出一张卡、渲染一张卡"的真实进度反馈） ----
     if (pathname === '/api/resume-opt/ats'               && req.method === 'POST') return this._routeApiResumeOptATS(req, res, { _reqStartTs, _remoteIp, _method });
     if (pathname === '/api/resume-opt/keywords'          && req.method === 'POST') return this._routeApiResumeOptKeywords(req, res, { _reqStartTs, _remoteIp, _method });
@@ -2792,14 +3045,28 @@ class LocalHttpServer {
       };
       const r = this.startNewSession(snapshotCfg);
       // 再把 meta 写入（startNewSession 里只支持原字段，这里扩展 mockInterview 专属部分）
-      try {
-        const s = this._activeSessionObj;
-        if (s) {
-          s.meta = s.meta || {};
+      //   —— 关键修复：meta 赋值【必须放在最外层、在 try 之前】，保证即便 flush 磁盘 / s.meta 访问出错，内存中的 mockInterview 上下文仍然存在。
+      //      否则如果 _flushActiveSessionToDisk 在 catch 里被吞，会造成 next-question 的 _getActiveMockCtx() 读取 mi=null 并返回『没有进行中的模拟面试』错误。
+      let injectOk = false;
+      const s = this._activeSessionObj;
+      if (s) {
+        try {
+          if (!s.meta || typeof s.meta !== 'object') s.meta = {};
           s.meta.mockInterview = snapshotCfg._mockInterview;
-          this._flushActiveSessionToDisk(`新建模拟面试 session=${s && s.id}`);
+          // 内存冗余副本：meta 字段万一被后续逻辑覆盖 / 删除，也能通过 session._mockInterviewCache 找回
+          s._mockInterviewCache = snapshotCfg._mockInterview;
+          injectOk = true;
+        } catch (metaErr) {
+          console.error('[mock-interview][HTTP] session meta 写入异常（尝试内存兜底）：', metaErr && metaErr.message);
+          try { s._mockInterviewCache = snapshotCfg._mockInterview; injectOk = true; } catch (_) { injectOk = false; }
         }
-      } catch (_) { /* 忽略 meta 写入失败 */ }
+        try { this._flushActiveSessionToDisk(`新建模拟面试 session=${s && s.id}`); }
+        catch (flushErr) { console.warn('[mock-interview][HTTP] session flush 写磁盘失败（不影响内存运行）：', flushErr && flushErr.message); }
+      }
+      if (!injectOk) {
+        // 真正致命：连内存兜底都失败（极罕见：_activeSessionObj 缺失） → 返回 500，前端能明确看到"创建会话失败"而非"没有进行中的模拟面试"
+        return this._json(res, 500, { ok: false, error: 'internal', msg: '模拟面试会话上下文初始化失败，请重试' }, reqDebug);
+      }
       this._json(res, 200, { ok: true, session: r }, reqDebug);
     } catch (e) {
       console.error('[mock-interview][HTTP] session 异常：', e.message);
@@ -2808,23 +3075,50 @@ class LocalHttpServer {
   }
 
   // 取 active session 中的 mockInterview 配置（若无则返回 null）
+  //   —— 三级兜底：优先 meta.mockInterview（正式存储）→ 其次 s._mockInterviewCache（内存冗余，防止 flush 磁盘失败写丢）→ 最后从 session 顶层字段反向组装（极端兜底，保证至少能进入出题流程）
   _getActiveMockCtx() {
     const s = this._activeSessionObj;
     if (!s) return null;
-    const mi = (s.meta && s.meta.mockInterview) || null;
-    if (!mi) return null;
+    let mi = (s.meta && s.meta.mockInterview) || null;
+    if (!mi && typeof s._mockInterviewCache === 'object' && s._mockInterviewCache !== null) {
+      // 二级兜底：meta 写入时 flush 抛异常被吞的场景，内存缓存仍在
+      mi = s._mockInterviewCache;
+      // 顺便回填 meta，避免下一次 flush 后 meta 中仍没有 mockInterview
+      try {
+        if (!s.meta || typeof s.meta !== 'object') s.meta = {};
+        if (!s.meta.mockInterview) s.meta.mockInterview = mi;
+      } catch (_) { /* ignore 回填失败，至少这次调用拿到 mi 就够了 */ }
+    }
+    if (!mi) {
+      // 三级兜底：mi 完全缺失（极罕见） → 从 session 顶层字段反向组装一份最小可用 mi，避免 next-question 返回『没有进行中的模拟面试』
+      //   注意：反向组装出来的 mi.currentIndex=0, history=[], 等于新的一场，可能会丢掉之前的 meta，但比"拿不到题目"强得多
+      if (!s.interviewType && !s.targetPosition) return null; // 连基本字段都没有 → 说明这 session 本来就不是模拟面试模式，直接返回 null
+      mi = {
+        mode: 'mockInterview',
+        industry: (s.targetCompany || '').trim(),
+        answerMode: 'text',
+        language: 'zh',
+        totalQuestions: 5,
+        maxFollowups: 0,
+        currentIndex: 0,
+        history: [],
+        createdAt: s.startedAt || Date.now(),
+        __reconstructed: true  // 标记：本 mi 是反向组装的，便于后续排查
+      };
+    }
     return {
       session: s,
       mi,
-      type: s.interviewType || mi.industry ? (s.interviewType || 'behavior') : 'behavior',
-      targetPosition: s.targetPosition || '',
-      industry: mi.industry || s.targetCompany || '',
+      // type 取值顺序：session.interviewType（正式）> mi 中的综合映射兜底 > 最终落 'behavior'
+      type: String(s.interviewType || '').trim() || (mi && mi.industry ? 'behavior' : 'behavior') || 'behavior',
+      targetPosition: String(s.targetPosition || (mi && typeof mi.positionLabel === 'string' ? mi.positionLabel : '')).trim(),
+      industry: String((mi && mi.industry) || s.targetCompany || '').trim(),
       jdText: s.jdSnapshot || '',
       resumeText: s.resumeSnapshot || '',
-      answerMode: mi.answerMode || 'text',
-      language: mi.language || 'zh',
-      totalQuestions: Number(mi.totalQuestions) || 5,
-      maxFollowups: Number.isFinite(mi.maxFollowups) ? mi.maxFollowups : 2
+      answerMode: (mi && ['voice','text'].includes(mi.answerMode)) ? mi.answerMode : 'text',
+      language: (mi && ['zh','en'].includes(mi.language)) ? mi.language : 'zh',
+      totalQuestions: Math.max(1, Math.min(15, Number(mi && mi.totalQuestions) || 5)),
+      maxFollowups: Number.isFinite(mi && mi.maxFollowups) ? mi.maxFollowups : 0
     };
   }
 
@@ -2834,15 +3128,44 @@ class LocalHttpServer {
   //   返回：{ok, done:boolean, questionIndex, totalQuestions, question, focus, expected}
   // ============================================================
   async _routeApiMockInterviewNextQ(req, res, reqDebug) {
+    const t0 = Date.now();
+    // ===== DEBUG 日志：进入路由就打印（用户日志里没有 HTTP-IN next-question 记录，要确认请求是否真到达此处） =====
     try {
-      if (!mockInterviewAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '模拟面试服务不可用' }, reqDebug);
+      const s = this._activeSessionObj;
+      const miRaw = (s && s.meta && s.meta.mockInterview) || (s && s._mockInterviewCache) || null;
+      console.log(`[mock-interview][DEBUG][next-q] ? 收到 next-question 请求：activeSession=${s && s.id || '(null)'} | agents=${mockInterviewAgents ? 'OK' : 'NULL'} | miExists=${miRaw ? 'YES' : 'NO'} | miKeys=${miRaw ? JSON.stringify(Object.keys(miRaw)) : ''} | currentIndex=${Number(miRaw && miRaw.currentIndex) || 0} | totalQuestions=${Number(miRaw && miRaw.totalQuestions) || 0}`);
+    } catch (_) { /* ignore debug 日志异常 */ }
+    try {
+      if (!mockInterviewAgents) {
+        console.error('[mock-interview][DEBUG][next-q] ✗ mockInterviewAgents === null（初始化时加载失败），返回 500');
+        return this._json(res, 500, { ok: false, error: 'service', msg: '模拟面试服务不可用（mockInterviewAgents 加载失败，请查看启动日志）' }, reqDebug);
+      }
       const body = await this._readJsonBody(req).catch(() => ({}));
       const ctx = this._getActiveMockCtx();
-      if (!ctx) return this._json(res, 400, { ok: false, error: 'invalid', msg: '没有进行中的模拟面试（请先点击『开始模拟面试』）' }, reqDebug);
+      if (!ctx) {
+        // 关键：此时 activeSessionObj 可能还存在但 mi 字段丢了 → 把各兜底层级的结果全打出来，便于定位"为什么 mi=null"
+        try {
+          const s2 = this._activeSessionObj;
+          const diags = {
+            sessionExists: !!s2,
+            sessionId: (s2 && s2.id) || '',
+            hasMeta: !!((s2 && s2.meta) && typeof s2.meta === 'object'),
+            metaMockInterviewExists: !!((s2 && s2.meta) && s2.meta.mockInterview),
+            metaMockInterviewKeys: (s2 && s2.meta && s2.meta.mockInterview) ? JSON.stringify(Object.keys(s2.meta.mockInterview)) : '',
+            cacheMockInterviewExists: !!((s2 && s2._mockInterviewCache) && typeof s2._mockInterviewCache === 'object'),
+            cacheMockInterviewKeys: (s2 && s2._mockInterviewCache) ? JSON.stringify(Object.keys(s2._mockInterviewCache)) : '',
+            interviewType: (s2 && s2.interviewType) || '',
+            targetPosition: (s2 && s2.targetPosition) || ''
+          };
+          console.error(`[mock-interview][DEBUG][next-q] ✗ _getActiveMockCtx=null（400 将返回），诊断快照：${JSON.stringify(diags)}`);
+        } catch (_) { /* ignore */ }
+        return this._json(res, 400, { ok: false, error: 'invalid', msg: '没有进行中的模拟面试（请先点击『开始模拟面试』）' }, reqDebug);
+      }
       const cfg = this._getMergedUserConfig(body.config);
       const done = ctx.mi.currentIndex >= ctx.totalQuestions;
       if (done) {
         // 达到总题数：给出结束提示，不继续出题
+        console.log(`[mock-interview][DEBUG][next-q] ✓ 已达总题数（currentIndex=${ctx.mi.currentIndex} >= totalQuestions=${ctx.totalQuestions}），返回 done=true`);
         return this._json(res, 200, {
           ok: true,
           done: true,
@@ -2852,18 +3175,38 @@ class LocalHttpServer {
         }, reqDebug);
       }
       const questionIndex = ctx.mi.currentIndex + 1; // 第 N 题（1-based）
-      const q = await mockInterviewAgents.generateQuestion({
-        type: ctx.type,
-        targetPosition: ctx.targetPosition,
-        industry: ctx.industry,
-        jdText: ctx.jdText,
-        resumeText: ctx.resumeText,
-        language: ctx.language,
-        questionIndex,
-        totalQuestions: ctx.totalQuestions,
-        history: ctx.mi.history || [],
-        config: cfg
-      });
+      // 出题前打印参数摘要（避免大段 JD/简历刷屏，只打印长度）
+      console.log(`[mock-interview][DEBUG][next-q] ▶ 开始生成第 ${questionIndex}/${ctx.totalQuestions} 题：type=${ctx.type} | language=${ctx.language} | pos=${ctx.targetPosition || '(空)'} | industry=${ctx.industry || '(空)'} | jdLen=${(ctx.jdText || '').length} | resumeLen=${(ctx.resumeText || '').length} | historyLen=${(ctx.mi.history || []).length} | mi.__reconstructed=${ctx.mi.__reconstructed ? 'YES(反向组装，需关注)' : 'NO(正式 meta)'}`);
+      const tGen0 = Date.now();
+      let q;
+      try {
+        q = await mockInterviewAgents.generateQuestion({
+          type: ctx.type,
+          targetPosition: ctx.targetPosition,
+          industry: ctx.industry,
+          jdText: ctx.jdText,
+          resumeText: ctx.resumeText,
+          language: ctx.language,
+          questionIndex,
+          totalQuestions: ctx.totalQuestions,
+          history: ctx.mi.history || [],
+          config: cfg
+        });
+      } catch (genErr) {
+        // ★★ 关键：generateQuestion 内部异常（LLM Key、baseURL、模型、格式解析错等）—— 这里一定打完整堆栈，否则只能看到 message 无法定位
+        console.error(`[mock-interview][DEBUG][next-q] ✗ generateQuestion 抛错（用时 ${Date.now() - tGen0}ms）：message=${genErr && genErr.message}\n  完整堆栈：\n${genErr && genErr.stack || '无堆栈信息'}`);
+        // 如果 cause 里有真实 HTTP 响应体，也打出来（很多 SDK 把详细错误藏在 err.cause / err.response / err.body 里）
+        try {
+          const extras = {};
+          if (genErr && typeof genErr.response === 'object') extras.response = { status: genErr.response.status, headers: Object.keys(genErr.response.headers || {}), bodySnippet: String(genErr.response.data || genErr.response.body || '').slice(0, 500) };
+          if (genErr && typeof genErr.cause === 'object') extras.cause = { message: genErr.cause.message, name: genErr.cause.name, stackHead: String(genErr.cause.stack || '').slice(0, 400) };
+          if (genErr && (genErr.body || genErr.rawBody)) extras.rawBody = String(genErr.body || genErr.rawBody || '').slice(0, 500);
+          if (Object.keys(extras).length > 0) console.error(`[mock-interview][DEBUG][next-q] ✗ generateQuestion 异常附加信息：${JSON.stringify(extras)}`);
+        } catch (_) { /* ignore */ }
+        throw genErr; // 重新抛 → 被外层 L3130 catch 捕获并返回 500
+      }
+      const qLen = JSON.stringify(q || {}).length;
+      console.log(`[mock-interview][DEBUG][next-q] ✓ 第 ${questionIndex}/${ctx.totalQuestions} 题生成成功，用时 ${Date.now() - tGen0}ms，题目对象大小=${qLen} chars，questionPreview=${JSON.stringify(q && q.question || '').slice(0, 120)}`);
       // 把当前题挂到 session.meta.mockInterview.currentQuestion 上（提交答案时做校验）
       try {
         ctx.mi.currentQuestion = {
@@ -2874,7 +3217,8 @@ class LocalHttpServer {
           createdAt: Date.now()
         };
         this._flushActiveSessionToDisk(`模拟面试下一题 session=${ctx.session.id}`);
-      } catch (_) { /* ignore */ }
+      } catch (flushErr) { console.warn(`[mock-interview][DEBUG][next-q] flush 写磁盘失败（不影响返回）：${flushErr && flushErr.message}`); }
+      console.log(`[mock-interview][DEBUG][next-q] ⇢ 200 OK 返回：用时总 ${Date.now() - t0}ms`);
       this._json(res, 200, {
         ok: true,
         done: false,
@@ -2885,8 +3229,52 @@ class LocalHttpServer {
         expected: q.expected
       }, reqDebug);
     } catch (e) {
-      console.error('[mock-interview][HTTP] next-question 异常：', e.message);
-      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '生成题目失败' }, reqDebug);
+      // 外层兜底：再打一遍完整堆栈，保证万无一失
+      console.error(`[mock-interview][HTTP] next-question 总异常（用时 ${Date.now() - t0}ms）：message=${e && e.message}\n  完整堆栈：\n${e && e.stack || 'no-stack'}`);
+      // ★★ 翻译英文/技术错误为中文友好提示，让浮窗能直接给用户显示具体原因，而不是"生成题目失败"
+      //    覆盖：401/403 鉴权、404/ENOTFOUND 域名、ECONNREFUSED 端口、内容为空、baseUrl 带反引号等常见错误
+      const rawMsg = String(e && e.message || '').toLowerCase();
+      const rawStack = String(e && e.stack || '').toLowerCase();
+      const combined = rawMsg + '\n' + rawStack;
+      let friendlyMsg = '';
+      // 1) 401：未授权（API Key 错误 / 为空 / 环境变量未生效）
+      if (/status\s*code\s*401|401\s*unauthorized|invalid.*api.*key|invalid.*key|apikey.*invalid/i.test(combined)) {
+        friendlyMsg = '【鉴权失败·401】通义 / 百炼 API Key 无效或为空。\n请检查：① 主窗口 → 设置 → 通义 API Key 是否填写正确；② 若使用 .env 文件，请确认 IA_TONGYI_API_KEY 两侧没有反引号/引号；③ 在百炼控制台（bailian.console.aliyun.com）确认该 API Key 已启用且对应工作空间已添加白名单。';
+      }
+      // 2) 403：禁止访问（权限不足 / 模型无权限 / 余额不足）
+      else if (/status\s*code\s*403|403\s*forbidden|access.*denied|quota.*exceed|insufficient.*balance|余额不足|欠费/i.test(combined)) {
+        friendlyMsg = '【访问被拒·403】通义 / 百炼服务拒绝请求。\n请检查：① 该 API Key 对应账号是否有余额；② 所选模型（如 qvq-plus）是否已开通；③ 私有工作空间是否把该 Key 加入了成员。';
+      }
+      // 3) 404 / 域名解析失败 / 找不到主机：baseUrl 写错或包含反引号
+      else if (/status\s*code\s*404|404\s*not\s*found|enotfound|getaddrinfo|eai_again|dns\s*error|host.*not\s*found/i.test(combined)) {
+        friendlyMsg = '【域名错误·404/ENOTFOUND】通义 baseUrl 非法（域名解析失败）。\n最常见原因：.env 中的 IA_TONGYI_BASE_URL 两侧加了反引号/双引号（如 `"`https://...`"`），请手动修正 .env 为：IA_TONGYI_BASE_URL=https://llm-xxx.cn-beijing.maas.aliyuncs.com/api/v1（两侧不要加任何引号）。';
+      }
+      // 4) 连接被拒绝：端口错 / 服务没启动（少见，但可能用户写错了端口段）
+      else if (/econnrefused|connection.*refused/i.test(combined)) {
+        friendlyMsg = '【连接失败·ECONNREFUSED】baseUrl 端口或协议错误。\n请检查 IA_TONGYI_BASE_URL 是否以 https:// 开头，且不要写错端口段（百炼私有空间一般不需要端口号）。';
+      }
+      // 5) 超时：网络问题
+      else if (/timeout|etimedout|network.*error/i.test(combined)) {
+        friendlyMsg = '【网络超时】请求通义/百炼服务超时。\n请检查：① 电脑网络是否通畅；② 是否需要代理（若在公司内网，可能需要配置 HTTPS 代理）；③ 百炼服务是否可用。';
+      }
+      // 6) 返回空内容：模型选择错误 / 兼容端点调用方式错误（qvq-plus 需要流式调用）—— 若清理后生效，该错误通常会消失
+      else if (/返回空内容|content.*empty|空内容|answerlen\s*=\s*0|no.*content/i.test(combined)) {
+        friendlyMsg = '【模型返回空】LLM 返回了题目文本为空。\n常见原因：① tongyiBaseUrl 仍带反引号（请查看终端 ConfigManager.env 警告日志）；② 模型名写错；③ 私有工作空间走了错误端点（需要 /compatible-mode/v1）。请先修正 .env 后重试。';
+      }
+      // 7) 默认：如果 friendlyMsg 仍为空，给出原始 message + 提示查看终端日志
+      if (!friendlyMsg) {
+        friendlyMsg = '生成题目失败：' + String(e && e.message || '未知错误') + '。\n请查看终端日志中 [callTongyi] / [mock-interview] 前缀的错误信息，特别是 [ConfigManager.env] 中是否有 ⚠️ 警告提示你修正 .env。';
+      }
+      // 附加：若终端有 ConfigManager.env 警告（用户可能没注意），在错误末尾补充一句
+      try {
+        const cfg = (typeof this.loadConfigFn === 'function') ? (this.loadConfigFn() || {}) : {};
+        const bu = String(cfg.tongyiBaseUrl || '');
+        if (bu && !/^https?:\/\//i.test(bu)) {
+          friendlyMsg += '（检测到 tongyiBaseUrl 清理后仍没有 http(s):// 前缀 → 这是 .env 写法错误的直接证据，请立即修正 .env！）';
+        }
+      } catch (_) { /* ignore：附加诊断失败不影响主错误返回 */ }
+      // 把友好化后的中文 msg 返回给前端，浮窗显示给用户
+      this._json(res, 500, { ok: false, error: 'internal', msg: friendlyMsg, rawError: String(e && e.message || '') }, reqDebug);
     }
   }
 
@@ -2961,6 +3349,68 @@ class LocalHttpServer {
     } catch (e) {
       console.error('[mock-interview][HTTP] submit-answer 异常：', e.message);
       this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '提交回答失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // c-2) POST /api/mock-interview/register-answer（浮动面板专用："无单题点评"模式）
+  //   语义：仅登记答案，不调用 AI 做单题点评、不触发追问（保证所有题答完后统一 final-review）
+  //   参数：{answer, sessionId?}
+  //   返回：{ok, currentIndex, totalQuestions, hasNext, done}
+  //         - hasNext=false 且 done=true → 调用方直接触发 final-review
+  // ============================================================
+  async _routeApiMockInterviewRegisterAnswer(req, res, reqDebug) {
+    try {
+      if (!mockInterviewAgents) return this._json(res, 500, { ok: false, error: 'service', msg: '模拟面试服务不可用' }, reqDebug);
+      // 1. 读取 body + 基础校验：回答不能为空、必须有进行中的面试、必须有当前待作答题目
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      const answer = String(body.answer || '').trim();
+      if (!answer) return this._json(res, 400, { ok: false, error: 'invalid', msg: '回答不能为空' }, reqDebug);
+      const ctx = this._getActiveMockCtx();
+      if (!ctx) return this._json(res, 400, { ok: false, error: 'invalid', msg: '没有进行中的模拟面试' }, reqDebug);
+      const currentQ = ctx.mi.currentQuestion;
+      if (!currentQ) return this._json(res, 400, { ok: false, error: 'invalid', msg: '当前没有待作答题目（请先『下一题』）' }, reqDebug);
+
+      // 2. 写入 history 项：score/highlights/improvements/summary 留空，final-review 时会统一回填/重算
+      //    浮动面板模式下不启用追问（maxFollowups 语义上被忽略），每题只保留一轮 (question + answer)
+      const item = {
+        question: currentQ.question,
+        focus: currentQ.focus,
+        expected: currentQ.expected,
+        answer,
+        followups: [],
+        score: null,
+        highlights: null,
+        improvements: null,
+        summary: null,
+        questionIndex: currentQ.index,
+        answeredAt: Date.now()
+      };
+      ctx.mi.history = Array.isArray(ctx.mi.history) ? ctx.mi.history : [];
+      ctx.mi.history.push(item);
+
+      // 3. 推进游标：本题视为完成（不再走追问分支）→ currentIndex++，清空 currentQuestion
+      ctx.mi.currentIndex = Number(ctx.mi.currentIndex) + 1;
+      ctx.mi.currentQuestion = null;
+      ctx.mi.pendingFollowup = null;
+      this._flushActiveSessionToDisk(`模拟面试[floatwin]登记答案 session=${ctx.session.id} q#${currentQ.index}`);
+
+      // 4. 返回 hasNext / done：让浮窗决定"出下一题"还是"直接进入总点评"
+      const ci = Number(ctx.mi.currentIndex) || 0;
+      const total = Number(ctx.totalQuestions) || 0;
+      const hasNext = ci < total;
+      const done = !hasNext;
+      this._json(res, 200, {
+        ok: true,
+        currentIndex: ci,
+        totalQuestions: total,
+        hasNext,
+        done,
+        historyItem: item
+      }, reqDebug);
+    } catch (e) {
+      console.error('[mock-interview][HTTP] register-answer 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '登记答案失败' }, reqDebug);
     }
   }
 
@@ -3101,31 +3551,96 @@ class LocalHttpServer {
       if (ext === 'txt' || ext === 'md' || ext === 'log') {
         return { ok: true, text: buf.toString('utf8'), parser: 'utf8', sizeKB };
       }
-      if (ext === 'docx' && mammoth && mammoth.extractRawText) {
-        const r = await mammoth.extractRawText({ buffer: buf });
-        return { ok: true, text: (r && typeof r.value === 'string') ? r.value : '', parser: 'mammoth', sizeKB };
-      }
-      if (ext === 'pdf' && pdfjsLib && typeof pdfjsLib.getDocument === 'function') {
-        // 用 data 方式（Uint8Array）
-        const task = pdfjsLib.getDocument({ data: new Uint8Array(buf), disableFontFace: true, useSystemFonts: true });
-        const doc = await task.promise;
-        const total = doc.numPages || 0;
-        const parts = [];
-        for (let i = 1; i <= total; i++) {
-          const page = await doc.getPage(i);
-          const content = await page.getTextContent();
-          if (content && Array.isArray(content.items)) {
-            const lines = content.items.map(it => it.str || '').join(' ');
-            parts.push(lines);
-          }
+      if (ext === 'docx' || ext === 'doc') {
+        // DOC/DOCX：强制使用 mammoth（CJS 兼容）；失败时给出具体原因（如 mammoth 未安装 / extractRawText 不可用）
+        if (mammoth && mammoth.extractRawText) {
+          const r = await mammoth.extractRawText({ buffer: buf });
+          return { ok: true, text: (r && typeof r.value === 'string') ? r.value : '', parser: 'mammoth', sizeKB };
         }
-        return { ok: true, text: parts.join('\n\n'), parser: 'pdfjs', pages: total, sizeKB };
+        const hint = mammothReason ? `（原因：${mammothReason}）` : '（原因：mammoth 未安装或 require 失败）';
+        return {
+          ok: false,
+          text: buf.toString('utf8'),
+          error: 'parser-missing',
+          msg: `${ext} 解析失败：mammoth 不可用${hint}，已回退纯 UTF-8 读取（对二进制文件通常不可读，建议确认 npm install 成功并重试）。`,
+          parser: 'fallback-utf8',
+          sizeKB
+        };
       }
-      // 兜底：按 utf8 读取（至少保留可读部分）
-      return { ok: false, text: buf.toString('utf8'), error: 'parser-missing', msg: ext + ' 解析库未安装（mammoth/pdfjs），已回退纯 UTF-8 读取，结果可能不可用。', parser: 'fallback-utf8', sizeKB };
+      if (ext === 'pdf') {
+        // PDF：统一使用顶层 pdfParserHandle.parseFn（kind=pdf-parse/pdfjs，source 指明来自哪条加载链路）
+        // 为兼容异步加载（动态 import pdfjs-dist/legacy），这里先等 handle.ready：
+        //   - 若 handle 已经同步 ready（A/c 段）：Promise.resolve() 立即过
+        //   - 若 handle 仍在 legacy import 初始化中（B 段）：则 await 一次最多 6s，确保不会因初始化早于请求导致"解析通道不存在"
+        //   - 若 handle 仍为 null（三条链路全挂）：走下方 parser-missing 详细报错
+        if (!pdfParserHandle) {
+          // 没拿到全局句柄时，最多再等 3 秒（避免 legacy import 异步正在初始化但请求抢先到了）
+          try {
+            await Promise.race([
+              new Promise((res) => setTimeout(() => res(false), 3000)),
+              (async () => {
+                const deadline = Date.now() + 3000;
+                while (!pdfParserHandle && Date.now() < deadline) {
+                  // 每 80ms 检查一次句柄是否已被加载器填入
+                  await new Promise((res) => setTimeout(res, 80));
+                }
+                return !!pdfParserHandle;
+              })()
+            ]);
+          } catch (_) { /* ignore wait errors */ }
+        }
+        if (pdfParserHandle && typeof pdfParserHandle.parseFn === 'function') {
+          // ready 若仍 pending 则等一下（B 段 legacy 动态 import 还在 import 中）
+          if (pdfParserHandle.ready && typeof pdfParserHandle.ready.then === 'function') {
+            try { await Promise.race([pdfParserHandle.ready, new Promise((res, rej) => setTimeout(() => rej(new Error('PDF 解析库初始化超时（6s）')), 6000))]); } catch (_) { /* ready 抛错不阻断 parse 本身，交给 parseFn 跑 */ }
+          }
+          const out = await pdfParserHandle.parseFn(buf);
+          const text = typeof (out && out.text) === 'string' ? out.text : '';
+          const pages = Array.isArray(out && out.pages) ? out.pages : [];
+          const total = (out && typeof out.total === 'number') ? out.total : pages.length;
+          return {
+            ok: true,
+            text,
+            parser: `pdf:${pdfParserHandle.source || 'unknown'}:${pdfParserHandle.kind || 'unknown'}`,
+            pages: total,
+            sizeKB
+          };
+        }
+        // 走到这里说明三条加载链路（pdf-parse → pdfjs-dist/legacy 动态 import → pdfjs-dist 主入口同步 require）都没拿到可用句柄
+        const reasons = (resumeParserReasons && resumeParserReasons.length)
+          ? `\n详细原因（按尝试顺序）：\n  · ${resumeParserReasons.join('\n  · ')}`
+          : '';
+        const suggestion = `\n建议：当前版本已把 pdf-parse 作为默认首选（已写入 package.json），请执行 npm install 保证依赖齐全；再重启应用。若仍失败：`
+          + `\n  a) 确认 pdf-parse 版本在 package.json 中为最新；`
+          + `\n  b) 若是 Electron 打包版，请确认 node_modules/pdf-parse 已被 asar 包含。`;
+        return {
+          ok: false,
+          text: buf.toString('utf8'),
+          error: 'parser-missing',
+          msg: `PDF 解析失败：当前三条 PDF 解析通道（pdf-parse → pdfjs-dist/legacy 动态 import → pdfjs-dist 主入口）均不可用。${reasons}${suggestion}`,
+          parser: 'fallback-utf8',
+          sizeKB
+        };
+      }
+      // 其他扩展名（如 .doc 二进制）：兜底按 utf8 读，提示格式不支持
+      return {
+        ok: false,
+        text: buf.toString('utf8'),
+        error: 'unsupported-ext',
+        msg: `不支持的扩展名：${ext}，目前支持 DOCX / PDF / TXT / MD，已回退纯 UTF-8 读取（可能不可用）。`,
+        parser: 'fallback-utf8',
+        sizeKB
+      };
     } catch (e) {
-      // 兜底也给 utf8，避免 UI 卡死
-      return { ok: false, text: buf.toString('utf8'), error: 'parser-error', msg: e.message || '解析失败', parser: 'fallback-utf8', sizeKB };
+      // 解析过程异常（如加密 PDF / 损坏文件）：同样返回 utf8 兜底 + 真实错误信息，避免笼统"解析失败"
+      return {
+        ok: false,
+        text: buf.toString('utf8'),
+        error: 'parser-error',
+        msg: `${ext} 解析异常：${e.message || '未知错误'}，已回退纯 UTF-8。若为加密/扫描 PDF / 图像 PDF，请先 OCR 或转成可复制文本的 PDF（简历图像建议先粘贴文本）。`,
+        parser: 'fallback-utf8',
+        sizeKB
+      };
     }
   }
 
@@ -3207,6 +3722,51 @@ class LocalHttpServer {
     } catch (e) {
       console.error('[resume-opt][HTTP] export-docx 异常：', e.message);
       this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '导出失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // c2) POST /api/resume-opt/export-md
+  //   参数：{content:'优化后全文', savePath:'D:/xxx.md', addFrontMatter?:boolean}
+  //   说明：渲染层先通过 Electron dialog.showSaveDialog 拿到 savePath，再调用本接口落盘；
+  //         可选自动附加 YAML front-matter（标题/时间戳/来源），默认关闭以保证文件内容"所见即所得"。
+  // ============================================================
+  async _routeApiResumeOptExportMd(req, res, reqDebug) {
+    try {
+      const body = await this._readJsonBody(req).catch(() => ({}));
+      // 兼容 content / text / mdContent 三种字段名，避免未来调用方传参漂移
+      const rawContent = String(body.content || body.text || body.mdContent || '');
+      const content = body.normalizeEol !== false
+        ? rawContent.replace(/\r\n|\r(?!\n)/g, '\n') // 归一化为 \n（md 规范）
+        : rawContent;
+      let savePath = String(body.savePath || '').trim();
+      if (!content) return this._json(res, 400, { ok: false, error: 'invalid', msg: '导出内容为空' }, reqDebug);
+      if (!savePath) return this._json(res, 400, { ok: false, error: 'invalid', msg: '缺少 savePath' }, reqDebug);
+      if (!fsLib || !fsLib.writeFileSync) return this._json(res, 500, { ok: false, error: 'service', msg: 'fs 不可用' }, reqDebug);
+
+      // 自动补扩展名：用户选路径时没写 .md/.markdown 的话，默认加 .md（保持与 showSaveDialog filters 一致）
+      const lower = savePath.toLowerCase();
+      if (!lower.endsWith('.md') && !lower.endsWith('.markdown') && !lower.endsWith('.txt')) {
+        savePath += '.md';
+      }
+
+      // 可选附加 front-matter：默认关闭，用户通过 body.addFrontMatter=true 开启
+      let finalText = content;
+      if (body.addFrontMatter === true) {
+        const title = String(body.title || '优化后简历').replace(/"/g, '\\"');
+        const now = new Date();
+        const pad2 = (n) => String(n).padStart(2, '0');
+        const date = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+        const fm = `---\ntitle: "${title}"\ndate: "${date}"\ngenerated_by: HireMe Resume Optimizer\n---\n\n`;
+        finalText = fm + content;
+      }
+
+      const buf = Buffer.from(finalText, 'utf8');
+      fsLib.writeFileSync(savePath, buf);
+      this._json(res, 200, { ok: true, savePath, bytes: buf.length }, reqDebug);
+    } catch (e) {
+      console.error('[resume-opt][HTTP] export-md 异常：', e.message);
+      this._json(res, 500, { ok: false, error: 'internal', msg: e.message || '导出 Markdown 失败' }, reqDebug);
     }
   }
 

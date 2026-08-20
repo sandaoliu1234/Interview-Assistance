@@ -24,6 +24,7 @@
     "koffi": "^2.9.0",
     "mammoth": "^1.11.0",
     "node-fetch": "^2.7.0",
+    "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^5.5.207",
     "qrcode": "^1.5.3",
     "ws": "^8.19.0"

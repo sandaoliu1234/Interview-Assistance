@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- 浮窗独立 CSP：允许 inline 样式 / inline 脚本 / data: blob:（媒体/WAV blob 会用到）
+       ★ 端口通配修复：CSP 里 http://127.0.0.1（不带端口）只匹配默认端口 80，
+         而本地 HTTP 服务跑在 28765~28774 动态端口上，必须写成 http://127.0.0.1:* 才能放行，
+         否则浮窗 fetch('/api/...') 会被 Chromium 以 "violates CSP" 为由拦截（虽然 IPC 代理可兜底，但直连更快更稳）。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: http://127.0.0.1:* http://localhost:*; img-src 'self' data: https:;" />
+  <title>模拟面试 · 进行中</title>
+  <!-- 复用主窗口 HireMe 深色主题：变量（--bg/--card/--primary 等）+ 基础 reset / 按钮组件 -->
+  <link rel="stylesheet" href="styles.css" />
+  <!-- 浮窗专属样式（保持 HireMe 风格，扩展进度条 / 状态徽章 / 倒计时 / 报告样式） -->
+  <style>
+    /* ========= 浮窗整体：比主窗口略宽，保证题目 + 大段回答文本的可读性 ========= */
+    html, body { margin: 0; padding: 0; height: 100%; background: var(--bg, #0b0e14); color: var(--text, #e5e8ee); font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    body { display: flex; flex-direction: column; min-height: 100vh; }
+
+    /* ========= 顶部信息栏：左侧面试类型标签，右侧作答方式（锁死后显示为徽章） + 进度 + 题数 ========= */
+    .mi-header {
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+      padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.06); background: linear-gradient(180deg, rgba(72,104,255,0.06), transparent);
+    }
+    .mi-header-left  { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .mi-header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .mi-title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+    .mi-badge {
+      display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 500; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); color: var(--text-muted, #a5abbd);
+    }
+    .mi-badge.mode-voice { background: rgba(120, 89, 255, 0.14); color: #c3b5ff; border-color: rgba(120, 89, 255, 0.35); }
+    .mi-badge.mode-text  { background: rgba(40, 196, 143, 0.14); color: #9af1d1; border-color: rgba(40, 196, 143, 0.35); }
+    .mi-progress { font-size: 13px; color: var(--text-muted, #a5abbd); min-width: 70px; text-align: right; }
+
+    /* ========= 滚动主体：题目 → 作答 → 操作栏 → 最终点评（纵向滚动） ========= */
+    .mi-scroll { flex: 1 1 auto; overflow-y: auto; padding: 16px 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+
+    /* ========= 题目卡片 ========= */
+    .mi-question-card {
+      background: var(--card, #141826); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 16px 16px 18px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+    }
+    .mi-question-label { font-size: 12px; color: var(--text-muted, #a5abbd); margin-bottom: 6px; letter-spacing: 0.4px; text-transform: uppercase; }
+    .mi-question-text  { font-size: 15px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+    .mi-question-tag   { display: inline-block; margin-top: 8px; font-size: 11px; padding: 2px 8px; border-radius: 6px; background: rgba(72, 104, 255, 0.15); color: #a9b8ff; }
+
+    /* ========= 作答卡片（textarea + 文字模式显示提交按钮） ========= */
+    .mi-answer-card {
+      background: var(--card, #141826); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 14px 14px 12px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .mi-answer-label { font-size: 13px; color: var(--text-muted, #a5abbd); display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .mi-answer-editor { width: 100%; min-height: 200px; max-height: 360px; resize: vertical; box-sizing: border-box; font-size: 14px; line-height: 1.7; }
+    .mi-answer-editor[readonly] { background: rgba(255,255,255,0.025); color: #e1e5ee; cursor: default; }
+
+    /* ========= 语音模式专属：录音状态指示 + 10s 静默倒计时 ========= */
+    .mi-voice-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .mi-voice-pill {
+      display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; height: 28px;
+      border-radius: 999px; font-size: 12px; font-weight: 500;
+      background: rgba(120, 89, 255, 0.16); color: #d9d0ff; border: 1px solid rgba(120, 89, 255, 0.32);
+    }
+    .mi-voice-pill .rec-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #ff5470;
+      box-shadow: 0 0 0 0 rgba(255, 84, 112, 0.6); animation: mi-pulse 1.4s infinite;
+    }
+    @keyframes mi-pulse {
+      0%   { box-shadow: 0 0 0 0   rgba(255,84,112,0.55); }
+      70%  { box-shadow: 0 0 0 10px rgba(255,84,112,0.0); }
+      100% { box-shadow: 0 0 0 0   rgba(255,84,112,0.0); }
+    }
+    .mi-silence-bar {
+      flex: 1 1 220px; min-width: 180px; height: 8px; background: rgba(255,255,255,0.05); border-radius: 999px; overflow: hidden; position: relative;
+    }
+    .mi-silence-bar > span {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+      background: linear-gradient(90deg, #28c48f 0%, #ffb347 60%, #ff5470 100%);
+      transition: width 0.25s linear;
+    }
+    .mi-silence-num { font-size: 12px; color: var(--text-muted, #a5abbd); min-width: 86px; text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* ========= 操作栏：文字模式显示"提交回答"，两模式都显示"结束面试" ========= */
+    .mi-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+    .mi-actions .start-interview-btn { margin: 0; }  /* 复用主窗口 CTA 风格 */
+    .mi-submit-btn { display: none; } /* 默认隐藏；文字模式通过 JS 加 .mode-text-show-submit 时显示 */
+    body[data-mode="text"] .mi-submit-btn { display: inline-flex; }
+
+    /* ========= 最终点评卡片（所有题答完后渲染） ========= */
+    .mi-final-card {
+      background: linear-gradient(180deg, rgba(72, 104, 255, 0.06), rgba(120, 89, 255, 0.02));
+      border: 1px solid rgba(120, 89, 255, 0.22); border-radius: 14px; padding: 18px 18px 20px;
+      box-shadow: 0 6px 26px rgba(120, 89, 255, 0.12);
+    }
+    .mi-final-card h3 { margin: 0 0 10px; font-size: 16px; }
+    .mi-final-meta { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+    .mi-review-markdown { font-size: 14px; line-height: 1.75; }
+    .mi-review-markdown h1, .mi-review-markdown h2, .mi-review-markdown h3 { margin: 16px 0 10px; line-height: 1.35; }
+    .mi-review-markdown p  { margin: 8px 0; }
+    .mi-review-markdown ul, .mi-review-markdown ol { padding-left: 22px; margin: 8px 0; }
+    .mi-review-markdown li { margin: 4px 0; }
+    .mi-review-markdown code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 5px; font-size: 12.5px; }
+    .mi-review-markdown blockquote { border-left: 3px solid rgba(120, 89, 255, 0.5); margin: 10px 0; padding: 4px 0 4px 14px; color: #cfd3e4; }
+    .mi-review-markdown strong { color: #ffffff; }
+
+    /* ========= 通用：loading 状态 ========= */
+    .mi-loading { display: inline-flex; align-items: center; gap: 8px; color: var(--text-muted, #a5abbd); font-size: 13px; }
+    .mi-spinner {
+      width: 14px; height: 14px; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.15); border-top-color: #7285ff;
+      animation: mi-spin 0.9s linear infinite;
+    }
+    @keyframes mi-spin { to { transform: rotate(360deg); } }
+
+    /* ========= Toast（浮窗内嵌独立 toast，不依赖主窗口 renderer.js 的全局 toast） ========= */
+    .mi-toast-container {
+      position: fixed; left: 50%; top: 16px; transform: translateX(-50%); z-index: 9999;
+      display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none;
+    }
+    .mi-toast {
+      max-width: 560px; padding: 8px 14px; border-radius: 10px; font-size: 13px; color: #ffffff;
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.35); pointer-events: auto;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .mi-toast.level-info    { background: rgba(36, 45, 72, 0.92); }
+    .mi-toast.level-success { background: rgba(26, 90, 66, 0.92); }
+    .mi-toast.level-warn    { background: rgba(124, 82, 30, 0.92); }
+    .mi-toast.level-error   { background: rgba(120, 40, 52, 0.92); }
+  </style>
+</head>
+<body data-mode="text">
+  <!-- =================== 顶部信息栏 =================== -->
+  <header class="mi-header">
+    <div class="mi-header-left">
+      <div class="mi-title" id="miTitle">模拟面试</div>
+      <span class="mi-badge" id="miTypeBadge">类型：综合</span>
+      <span class="mi-badge" id="miLangBadge">中文</span>
+      <!-- 作答方式徽章：锁死模式，只展示不可切换；语音 / 文字两种高亮配色 -->
+      <span class="mi-badge" id="miModeBadge">模式：文字</span>
+    </div>
+    <div class="mi-header-right">
+      <div class="mi-progress" id="miProgress">第 0 / 0 题</div>
+    </div>
+  </header>
+
+  <!-- =================== 滚动主体 =================== -->
+  <main class="mi-scroll" id="miScrollBody">
+    <!-- ---- 题目 ---- -->
+    <section class="mi-question-card">
+      <div class="mi-question-label">面试官问题</div>
+      <div class="mi-question-text" id="miQuestionText">
+        <span class="mi-loading"><span class="mi-spinner"></span> 正在生成第 1 题…</span>
+      </div>
+      <span class="mi-question-tag" id="miQuestionTag" style="display:none"></span>
+    </section>
+
+    <!-- ---- 作答 ---- -->
+    <section class="mi-answer-card">
+      <div class="mi-answer-label">
+        <span id="miAnswerLabel">你的回答</span>
+        <!-- 语音模式专属：录音状态 + 静默倒计时（仅 data-mode=voice 时 JS 显示） -->
+        <span class="mi-voice-status-slot" id="miVoiceStatusSlot" style="display:none"></span>
+      </div>
+
+      <!-- 语音模式：整行录音状态（呼吸灯 + 静默进度条 + 秒数） -->
+      <div class="mi-voice-row" id="miVoiceRow" style="display:none">
+        <div class="mi-voice-pill"><span class="rec-dot"></span><span id="miVoicePillText">麦克风监听中…</span></div>
+        <div class="mi-silence-bar" title="10 秒无有效语音将自动提交本题"><span id="miSilenceFill"></span></div>
+        <div class="mi-silence-num" id="miSilenceNum">静默 0.0s / 10s</div>
+      </div>
+
+      <!-- 作答区：文字模式可编辑；语音模式 readonly（用户不能修改，识别结果自动填入） -->
+      <textarea id="miAnswerEditor" class="copilot-textarea mi-answer-editor" placeholder="在此输入你的回答…"></textarea>
+
+      <!-- 操作栏：文字模式显示"提交回答"；两模式都显示"结束面试" -->
+      <div class="mi-actions">
+        <button id="miSubmitBtn"  class="mi-submit-btn start-interview-btn"   type="button">&#10003; 提交回答</button>
+        <button id="miEndBtn"     class="abtn abtn-book"                    type="button">&#9201; 结束面试并生成报告</button>
+      </div>
+    </section>
+
+    <!-- ---- 最终点评（默认隐藏；所有题答完后渲染 markdown） ---- -->
+    <section class="mi-final-card hidden" id="miFinalCard">
+      <div class="mi-final-meta">
+        <span class="mi-badge" id="miFinalAvgScore">平均分：0.0</span>
+        <span class="mi-badge" id="miFinalTotal">答 0 / 0 题</span>
+      </div>
+      <h3 id="miFinalTitle">🎯 最终总点评 / 复盘报告</h3>
+      <div class="mi-review-markdown" id="miFinalReviewBody"></div>
+    </section>
+  </main>
+
+  <!-- Toast 容器（浮窗自己的 toast 层，避免依赖主窗口） -->
+  <div class="mi-toast-container" id="miToastContainer" aria-live="polite"></div>
+
+  <!-- 渲染脚本（独立 BrowserWindow；preload.js 已暴露 electronAPI） -->
+  <script src="src/renderer/mockInterviewFloatRenderer.js"></script>
+</body>
+</html>

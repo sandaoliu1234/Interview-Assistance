@@ -13,6 +13,29 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// ------------------------------------------------------------
+// ★ preload 执行探针（排障专用）：立刻通过 ipc 单向通知主进程"preload.js 已执行"
+//   说明：用于判断『为什么 hasElectronAPI=false？是 preload 根本没执行 vs 执行了但挂载失败』
+//   主进程在 main.js 中 ipcMain.once('preload-executed', ...) 注册一次性监听器打印详细状态
+// ------------------------------------------------------------
+try {
+  const probe = {
+    ts: Date.now(),
+    hasContextBridge: !!contextBridge,
+    hasIpcRenderer: !!ipcRenderer,
+    typeofWindow: typeof window,
+    typeofProcess: typeof process,
+    processType: (typeof process !== 'undefined' && process && process.type) ? String(process.type) : '(unknown)',
+    contextIsolated: (typeof process !== 'undefined' && process && typeof process.contextIsolated === 'boolean') ? process.contextIsolated : null,
+    electronAPIBefore: typeof window !== 'undefined' ? !!window.electronAPI : null,
+    preloadScriptLocation: (typeof __filename !== 'undefined') ? String(__filename) : '(unknown)'
+  };
+  ipcRenderer.send('preload-executed', probe);
+} catch (_probeErr) {
+  // 探针本身绝对不能影响 preload 剩余逻辑
+  try { console.warn('[preload] 执行探针发送失败（非致命）：', _probeErr && _probeErr.message); } catch (_) {}
+}
+
 /**
  * 统一的异步调用封装（对应主进程 ipcMain.handle）。
  * @param {string} channel 通道名
@@ -86,6 +109,14 @@ const _apiImpl = {
   //    结构对齐 /api/overlay/status 的 flat JSON：{ ok:true, asrText, answerText, questionImage, isRecording, lastAnswerAt, history:[], historyVersion }
   //    为什么需要单独 IPC？overlay.html 用 loadFile(file://) 加载，fetch('/api/overlay/status') 相对路径会解析到 file:///api/...，永远拿不到 HTTP 响应
   fetchOverlayState: () => invoke('overlay-full-status'),
+
+  // ===== 模拟面试浮动面板（mockInterviewFloatWindow）=====
+  //   语义：主窗口点击『开始模拟面试』→ openMockInterviewFloatWin(params) 打开浮窗；整个面试在浮窗内完成。
+  openMockInterviewFloatWin: (params) => invoke('open-mock-interview-floatwin', params || {}), // 创建/显示浮窗，并下发 params
+  closeMockInterviewFloatWin: () => invoke('close-mock-interview-floatwin'),                    // 关闭浮窗
+  mockInterviewFloatStatus: () => invoke('mock-interview-floatwin-status'),                     // 查询浮窗状态（exists/bounds）
+  // 事件：主进程 did-finish-load 后，把『启动参数』推给浮窗渲染层（含 answerMode、总题数、serverInfo 等）
+  onMockInterviewStartParams: (cb) => on('mock-interview:start-params', cb),
 
   // ===== 独立答题面板 → ASR / 答案事件订阅 =====
   onAsrInterim: (cb) => on('asr:interim', cb),                // 临时识别文本
@@ -180,6 +211,20 @@ const _apiImpl = {
   startLocalServer: (port) => invoke('start-local-server', port),    // 启动本地服务（指定端口，可空）
   stopLocalServer: () => invoke('stop-local-server'),          // 停止本地服务
   getServerStatus: () => invoke('get-server-status'),          // 查当前连接状态 (idle/listening/connected/disconnected) + IPs/port/token
+  /**
+   * ★ 补：获取本地 HTTP 服务扁平状态（推荐，用于所有 HTTP 客户端）
+   *   返回 { ok, port, token, baseUrl, isRunning }，层级稳定无嵌套，serverInfo 直接可用
+   */
+  getHttpInfo: () => invoke('get-server-http-info'),
+  /**
+   * ★ 补：HTTP 代理通道（主进程 Node.js 代发请求，绕开 Chromium 同源/CSP 对 file:// 页面 fetch http:// 的拦截）
+   *   请求：{ url, method, headers, body, timeoutMs } → 返回 { ok, status, data, rawText, errorMsg, elapsedMs }
+   */
+  httpProxy: (req) => invoke('mock-interview:http-proxy', req || {}),
+  /**
+   * ★ 补：模拟面试浮窗启动完成后，单向通知主进程取消补发定时器（无需回值）
+   */
+  notifyStartedAck: () => { try { ipcRenderer.send('mock-interview:started-ack'); return true; } catch (_) { return false; } },
   disconnectMiniapp: () => invoke('disconnect-miniapp'),       // 主动断开当前小程序连接
 
   // ===== 事件订阅（主进程主动推送） =====
@@ -192,13 +237,26 @@ const _apiImpl = {
   onCheckRecovery: (cb) => on('check-recovery', cb)
 };
 
-// ① 标准方式：contextBridge.exposeInMainWorld（仅 contextIsolation=true 时生效，Electron 安全推荐路径）
-contextBridge.exposeInMainWorld('electronAPI', _apiImpl);
+// ① 标准方式：contextBridge.exposeInMainWorld（仅 contextIsolation=true 时可用）
+// ★★★ 关键修复：必须 try/catch 保护！
+//   原因：当 BrowserWindow 配置 contextIsolation=false（本应用主窗口/浮窗均为 false）时，
+//   contextBridge.exposeInMainWorld 会直接抛出
+//   "Error: contextBridge API can only be used when contextIsolation is enabled"，
+//   这个未捕获异常会导致：
+//     1) Electron 报 "Unable to load preload script"（preload 被判定加载失败）
+//     2) 异常之后的代码【全部不再执行】——包括下方 ② 的 window.electronAPI 兜底挂载！
+//   这正是此前所有窗口 hasElectronAPI=false 的真正根因（渲染层只能走 require('electron') 兜底路径）。
+try {
+  contextBridge.exposeInMainWorld('electronAPI', _apiImpl);
+} catch (_bridgeErr) {
+  // contextIsolation=false 时 contextBridge 不可用是预期内的，走 ② window 直挂兜底，不算错误
+  try { console.warn('[preload] contextBridge 挂载跳过（contextIsolation=false 时不支持，改走 window 直挂兜底）：', _bridgeErr && _bridgeErr.message); } catch (_) {}
+}
 
 // ② 兜底方式：直接挂 window（仅 contextIsolation=false 时生效）
-// 说明：contextIsolation=true 时，preload 的 window 与渲染层 window 是隔离的，此处赋值无效；
-// contextIsolation=false 时，contextBridge 不挂对象，此处手动挂载，确保渲染层 window.electronAPI 必定存在。
-// 双保险避免了「contextIsolation 开关不一致 → overlay-renderer 走 stub 返回 not electron」的错误。
+// 说明：contextIsolation=false 时，preload 与渲染层共享同一个 JS 上下文（main world），
+// 此处赋值渲染层 window.electronAPI 立即可见。现在 ① 已被 try/catch 保护，
+// 这里的兜底挂载终于能可靠执行到（此前被 ① 的未捕获异常短路，永远跑不到）。
 try {
   if (typeof window !== 'undefined' && !window.electronAPI) {
     window.electronAPI = _apiImpl;

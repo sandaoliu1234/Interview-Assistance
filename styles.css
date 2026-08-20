@@ -1870,6 +1870,52 @@ body.stealth-active #logBtn { display: none; }
 }
 .session-search input:focus { border-color: var(--border-active); box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
 
+/* ========== ★ 面试记录：真实面试 / 模拟面试 分类 Tab（互斥）========== */
+.session-category-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 12px;
+  flex: 0 0 auto;
+}
+.sc-tab {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+  color: var(--text-secondary);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s ease;
+  white-space: nowrap;
+}
+.sc-tab:hover {
+  border-color: var(--border-active);
+  color: var(--text-primary);
+  background: rgba(59,130,246,.06);
+}
+.sc-tab.active {
+  border-color: transparent;
+  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(59,130,246,.35);
+}
+
+/* ========== 卡片上的类型小徽章（💼 真实 / 🎯 模拟） ========== */
+.sc-cat {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.sc-cat-copilot { background: rgba(16,185,129,.12); color: #34d399; border-color: rgba(16,185,129,.25); }
+.sc-cat-mock    { background: rgba(245,158,11,.14); color: #fbbf24; border-color: rgba(245,158,11,.28); }
+
 .session-list-toolbar {
   display: flex;
   align-items: center;

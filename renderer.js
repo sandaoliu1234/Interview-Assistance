@@ -384,6 +384,8 @@ const elements = {
   sessionSearchInput: document.getElementById('sessionSearchInput'),
   sessionTotalHint: document.getElementById('sessionTotalHint'),
   btnReloadSessionList: document.getElementById('btnReloadSessionList'),
+  // ★ 面试类型分类 Tab（真实 copilot / 模拟 mock）
+  sessionCategoryTabs: document.getElementById('sessionCategoryTabs'),
   // 面试记录：详情页
   btnDetailBack: document.getElementById('btnDetailBack'),
   sessionDetailTitle: document.getElementById('sessionDetailTitle'),
@@ -391,6 +393,43 @@ const elements = {
   sessionDetailChat:  document.getElementById('sessionDetailChat'),
   sessionDetailEmpty: document.getElementById('sessionDetailEmpty')
 };
+
+// ============================================================
+// ★ 面试记录：真实/模拟 分类 Tab 状态（互斥）
+//   categoryFilter 允许值：'copilot' | 'mock'
+//   不允许为空（方案 A 强制互斥分开展示）
+// ============================================================
+const SessionListUI = {
+  /** 当前选中的面试类型过滤器：'copilot'=真实 / 'mock'=模拟 */
+  categoryFilter: 'copilot',
+};
+
+/**
+ * 切换面试类型 Tab 并重新拉取列表。
+ * @param {'copilot'|'mock'} category   目标分类
+ * @param {object}         [opts]       可选参数
+ * @param {boolean}        [opts.skipFetch=false]  true 时仅更新 UI，不重新拉列表
+ */
+function setSessionCategory(category, opts = {}) {
+  // 1. 防御：仅接受 'copilot' 或 'mock'（方案 A 强制互斥）
+  const cat = (category === 'mock') ? 'mock' : 'copilot';
+  SessionListUI.categoryFilter = cat;
+
+  // 2. 同步 DOM：所有 sc-tab 去除 active，匹配的加上
+  if (elements.sessionCategoryTabs) {
+    const tabs = elements.sessionCategoryTabs.querySelectorAll('.sc-tab');
+    tabs.forEach((tab) => {
+      if (tab.dataset.category === cat) tab.classList.add('active');
+      else tab.classList.remove('active');
+    });
+  }
+
+  // 3. 搜索关键字保持不变，仅按新分类重刷列表
+  if (!(opts && opts.skipFetch)) {
+    const kw = (elements.sessionSearchInput && elements.sessionSearchInput.value) || '';
+    renderSessionsList(kw);
+  }
+}
 
 // 初始化（唯一入口）
 async function init() {
@@ -2756,6 +2795,10 @@ async function renderSessionsList() {
   const searchEl = elements.sessionSearchInput;
   if (!listEl || !emptyEl) return;
 
+  // ★ 当前选中的面试类型：'copilot'=真实面试 / 'mock'=模拟面试（方案 A 强制互斥）
+  const categoryFilter = (SessionListUI.categoryFilter === 'mock') ? 'mock' : 'copilot';
+  const categoryLabel  = (categoryFilter === 'mock') ? '🎯 模拟面试' : '💼 真实面试';
+
   const keyword = searchEl ? String(searchEl.value || '').trim() : '';
   listEl.innerHTML = '';
   emptyEl.classList.add('hidden');
@@ -2763,7 +2806,13 @@ async function renderSessionsList() {
 
   let res = null;
   try {
-    res = await _callInterviewSession('list', { keyword, limit: 200, offset: 0 });
+    // ★ IPC 透传 category 过滤参数（真实/模拟互斥）
+    res = await _callInterviewSession('list', {
+      keyword,
+      limit: 200,
+      offset: 0,
+      category: categoryFilter,
+    });
   } catch (e) {
     console.warn('[session][list] IPC 异常:', e && e.message);
     showToast('读取面试记录失败：' + (e && e.message || '网络异常'), 'error');
@@ -2775,18 +2824,27 @@ async function renderSessionsList() {
     if (!okFlag) {
       console.warn('[session][list] ⚠️ 未拿到 sessions 数组：res=', res);
     } else {
-      console.log(`[session][list] ✅ 拿到面试记录：total=${Number(res.total || 0)} currentPageCount=${count}`);
+      console.log(`[session][list] ✅ 拿到面试记录：category=${categoryFilter} total=${Number(res.total || 0)} currentPageCount=${count}`);
     }
   } catch (_) { /* ignore */ }
   if (!res || res.ok === false || !Array.isArray(res.sessions)) {
-    totalHint && (totalHint.textContent = '共 0 场');
+    totalHint && (totalHint.textContent = `共 0 场 · ${categoryLabel}`);
     emptyEl.classList.remove('hidden');
+    // ★ 空态文案按分类区分（互斥展示）
+    emptyEl.innerHTML = `📭 <br>当前分类（${categoryLabel}）暂无面试记录。<br>${categoryFilter === 'mock' ? '回到「模拟面试」面板，点击「开始模拟面试」生成记录。' : '开启 Copilot 模式进行真实面试后，记录会出现在这里。'}`;
     return;
   }
   const arr = res.sessions;
-  totalHint && (totalHint.textContent = `共 ${Number(res.total || arr.length)} 场` + (keyword ? `（关键词：${keyword}）` : ''));
+  // ★ 共 N 场 · 类型标签（真实/模拟）
+  totalHint && (totalHint.textContent = `共 ${Number(res.total || arr.length)} 场 · ${categoryLabel}` + (keyword ? `（关键词：${keyword}）` : ''));
   if (arr.length === 0) {
     emptyEl.classList.remove('hidden');
+    // ★ 搜索无结果 / 当前分类无数据 文案
+    if (keyword) {
+      emptyEl.innerHTML = `🔍 <br>关键词「${escapeHtml(keyword)}」在${categoryLabel}中没有匹配结果。`;
+    } else {
+      emptyEl.innerHTML = `📭 <br>${categoryLabel}暂无记录。<br>${categoryFilter === 'mock' ? '从「模拟面试」面板开始一场模拟面试试试吧。' : '开启 Copilot 模式进行真实面试后再回来查看。'}`;
+    }
     return;
   }
 
@@ -2804,6 +2862,15 @@ async function renderSessionsList() {
     const durationStr = active
       ? ('进行中 · ' + (formatDuration(startedAt, Date.now()) || '<1 秒'))
       : (endedAt ? ('已结束 · ' + (formatDuration(startedAt, endedAt) || '0 秒')) : '已结束');
+
+    // ★ 卡片上的面试类型徽章：与后端推断保持一致（兜底 meta.mockInterview 等老数据）
+    const cat = (s.category === 'mock'
+      || (s.meta && typeof s.meta === 'object' && s.meta.mockInterview)
+      || (s.config && typeof s.config === 'object' && s.config._mockInterview)) ? 'mock' : 'copilot';
+    const catBadge = (cat === 'mock')
+      ? '<span class="sc-cat sc-cat-mock">🎯 模拟</span>'
+      : '<span class="sc-cat sc-cat-copilot">💼 真实</span>';
+
     // 列表"前一段对话"摘要：优先用 snippet；否则用最后一轮的问题
     let desc = String(s.snippet || '').trim();
     if (!desc && Array.isArray(s.lastRounds) && s.lastRounds.length) {
@@ -2816,6 +2883,7 @@ async function renderSessionsList() {
       <button class="session-card" type="button" data-session-id="${escapeAttr(id)}">
         <div class="sc-row1">
           <div class="sc-title">${escapeHtml(title)}</div>
+          ${catBadge}
           <span class="sc-status ${active ? 'active' : 'closed'}">${active ? '● 进行中' : '● 已结束'}</span>
         </div>
         <div class="sc-meta">
@@ -3311,6 +3379,55 @@ function bindSessionUIActions() {
       }
     });
   }
+
+  // ★ 列表页：真实面试 / 模拟面试 分类 Tab 点击切换（互斥）
+  if (elements.sessionCategoryTabs) {
+    elements.sessionCategoryTabs.addEventListener('click', (ev) => {
+      // 事件委托：命中 .sc-tab 按钮才响应
+      const tab = ev.target && ev.target.closest && ev.target.closest('.sc-tab');
+      if (!tab) return;
+      const cat = String(tab.dataset.category || '').toLowerCase();
+      if (cat === 'copilot' || cat === 'mock') {
+        setSessionCategory(cat);
+      }
+    });
+  }
+
+  // ★ 自定义事件：hireme:open-session-detail
+  //   两种使用场景（二选一或同时传，以 sessionId 优先）：
+  //   ① 有 sessionId：进入"面试记录页"并打开某一条详情（典型：某场已结束面试点击"查看本场"）
+  //   ② 只有 category：进入"面试记录页"并切到对应分类 Tab（典型：点击"查看所有模拟面试记录"）
+  //   detail = { sessionId?, category?, source? }  category 支持 'copilot' | 'mock'
+  window.addEventListener('hireme:open-session-detail', (ev) => {
+    const detail = (ev && ev.detail && typeof ev.detail === 'object') ? ev.detail : {};
+    const sid = String(detail.sessionId || detail.id || '').trim();
+    const cat = String(detail.category || '').toLowerCase();
+    const hasCat = (cat === 'mock' || cat === 'copilot');
+    // 两个都没传：无事可做
+    if (!sid && !hasCat) return;
+
+    // 场景 1：指定了 sessionId → 最终跳详情
+    if (sid) {
+      const switchFn = () => { viewRouter.go('detail', sid); };
+      if (hasCat && SessionListUI.categoryFilter !== cat) {
+        // 先切 Tab（会重新拉该分类的列表），再在下一帧跳详情，确保分类正确后再渲染详情返回
+        setSessionCategory(cat);
+        setTimeout(switchFn, 0);
+      } else {
+        switchFn();
+      }
+      return;
+    }
+
+    // 场景 2：只有 category → 切 Tab + 跳到面试记录列表页（"查看所有模拟面试记录"场景）
+    const gotoListFn = () => { viewRouter.go('list'); };
+    if (hasCat && SessionListUI.categoryFilter !== cat) {
+      setSessionCategory(cat);
+      setTimeout(gotoListFn, 0);
+    } else {
+      gotoListFn();
+    }
+  });
 
   // -------- 详情页：返回按钮 --------
   if (elements.btnDetailBack) {

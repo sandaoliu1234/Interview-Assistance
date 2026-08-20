@@ -60,20 +60,24 @@ class SystemAudioCapture extends EventEmitter {
   }
 
   /**
-   * 开始采集系统音频（WASAPI Loopback）
+   * 开始采集音频（WASAPI Loopback 系统声音 或 麦克风输入）
    * @param {Object} options 采集选项
+   * @param {string}  options.inputSource 输入源：'system'（默认，WASAPI Loopback 回录系统声音，Copilot 模式用）
+   *                                     或 'mic'（麦克风采集，模拟面试浮窗用——用户对着麦克风回答问题）。
+   *                                     ★ 'mic' 模式走 native.startMicrophone()，事件管线（data/metadata 轮询）与 loopback 完全一致。
    * @param {number} options.sampleRate 采样率（默认 16000，百度 ASR 要求）
    * @param {number} options.chunkDurationMs 每块时长（ms，默认 128）
-   * @param {boolean} options.mute 是否静音系统输出（默认 false）
+   * @param {boolean} options.mute 是否静音系统输出（默认 false，仅 loopback 模式有意义）
    * @param {boolean} options.stereo 是否立体声（默认 false，单声道）
    * @param {boolean} options.emitSilence 是否发射静音块（默认 true）
-   * @param {string}  options.deviceId 可选。要回录的"音频输出端点"（扬声器/耳机/HDMI）的 Endpoint ID。
-   *                                   不传时，自动取 Windows 当前默认播放设备（由 getDefaultOutputDevice() 返回）。
+   * @param {string}  options.deviceId 可选。目标端点的 Endpoint ID：
+   *                                   - system 模式：音频输出端点（扬声器/耳机/HDMI），不传时取默认播放设备；
+   *                                   - mic 模式：麦克风输入端点，不传时取 getDefaultInputDevice() 默认麦克风。
    *                                   ⚠️ 经验：显式传比不传更可靠——有些 Realtek/HDMI 声卡下，不传时
    *                                   native 会抓 eRender 枚举里的第一个端点，而不是用户真正在出声的
    *                                   "默认播放设备"，导致 peak 永远 0、ASR 报 -3005。
-   * @param {string[]|null} options.includeProcesses 仅采集白名单进程产生的音频（默认 null=不限制）
-   * @param {string[]|null} options.excludeProcesses 排除黑名单进程产生的音频（默认 null=不限制）
+   * @param {string[]|null} options.includeProcesses 仅采集白名单进程产生的音频（默认 null=不限制，仅 loopback 模式有意义）
+   * @param {string[]|null} options.excludeProcesses 排除黑名单进程产生的音频（默认 null=不限制，仅 loopback 模式有意义）
    * @returns {Promise<void>}
    */
   async start(options = {}) {
@@ -95,45 +99,54 @@ class SystemAudioCapture extends EventEmitter {
       this._nativeMod = mod;
     }
 
-    // 确定目标 deviceId：显式指定 > 默认输出设备 > 空（交由 native 兜底）
+    // ★ 输入源判定：'mic' 走麦克风采集（模拟面试），其余（含默认）走系统声音回环（Copilot）
+    const useMic = String(options.inputSource || '').trim().toLowerCase() === 'mic';
+
+    // 确定目标 deviceId：显式指定 > 默认设备（mic→默认输入 / system→默认输出） > 空（交由 native 兜底）
     let targetDeviceId = String(options.deviceId || '').trim();
     let targetDeviceName = '';
-    let outputDevices = [];
+    let candidateDevices = []; // 候选设备列表（按输入源取输入/输出端点，用于日志核对与告警）
     try {
       const mod = this._nativeMod;
       // 枚举所有 WASAPI 端点（输出 + 输入）
       const allDevs = (mod && typeof mod.listDevices === 'function') ? mod.listDevices() : null;
       if (Array.isArray(allDevs)) {
-        // 输出设备（扬声器/HDMI/蓝牙耳机/便携屏声卡等）
-        outputDevices = allDevs.filter((d) => d && d.isOutput === true);
-        // 如果用户没显式指定 deviceId，取 Windows 默认播放设备
-        if (!targetDeviceId && typeof mod.getDefaultOutputDevice === 'function') {
-          try {
-            targetDeviceId = String(mod.getDefaultOutputDevice() || '').trim();
-          } catch (e) {
-            console.warn('[systemAudioCapture] getDefaultOutputDevice 异常（仍继续，交由 native 兜底）:', e && e.message);
+        // 按输入源筛选候选：mic 模式取输入端点（isOutput=false），system 模式取输出端点（isOutput=true）
+        candidateDevices = allDevs.filter((d) => d && d.isOutput === !useMic);
+        // 如果用户没显式指定 deviceId，取对应的 Windows 默认设备
+        if (!targetDeviceId) {
+          const getDefault = useMic ? mod.getDefaultInputDevice : mod.getDefaultOutputDevice;
+          if (typeof getDefault === 'function') {
+            try {
+              targetDeviceId = String(getDefault.call(mod) || '').trim();
+            } catch (e) {
+              console.warn(`[systemAudioCapture] getDefault${useMic ? 'Input' : 'Output'}Device 异常（仍继续，交由 native 兜底）:`, e && e.message);
+            }
           }
         }
         // 把 id 翻译成人类可读的名字，便于日志核对
-        const hit = outputDevices.find((d) => d && String(d.id) === targetDeviceId);
+        const hit = candidateDevices.find((d) => d && String(d.id) === targetDeviceId);
         if (hit) targetDeviceName = String(hit.name || (hit.manufacturer ? `${hit.manufacturer} (${hit.id.slice(0, 20)}…)` : ''));
       }
     } catch (e) {
       console.warn('[systemAudioCapture] 枚举音频设备异常（仍继续，交由 native 兜底）:', e && e.message);
     }
 
-    // 启动 WASAPI Loopback 采集（显式带 deviceId）
+    // 构造传给 native 的启动参数（mic 模式去掉 loopback 专属字段：mute/includeProcesses/excludeProcesses）
     const params = {
       sampleRate: options.sampleRate || 16000,
       chunkDurationMs: options.chunkDurationMs || 128,
-      mute: options.mute ?? false,
       stereo: options.stereo ?? false,
       emitSilence: options.emitSilence ?? true,
-      includeProcesses: options.includeProcesses || null,
-      excludeProcesses: options.excludeProcesses || null,
-      // 关键修复：显式传默认输出设备 id，避免 native 内部挑错端点导致 peak 恒为 0
+      // 关键修复：显式传默认设备 id，避免 native 内部挑错端点导致 peak 恒为 0
       deviceId: targetDeviceId || undefined,
     };
+    if (!useMic) {
+      // loopback 专属参数（麦克风采集无"静音系统输出 / 进程过滤"概念）
+      params.mute = options.mute ?? false;
+      params.includeProcesses = options.includeProcesses || null;
+      params.excludeProcesses = options.excludeProcesses || null;
+    }
 
     // ====== 调试信息：把"目标设备对象的完整字段"以及"传给 native 的全部参数"打出来 ======
     // 用来确认：① listDevices 是否返回了采样率 / 位深 / isFloat 等格式信息；
@@ -146,14 +159,14 @@ class SystemAudioCapture extends EventEmitter {
         const tgt = allDevs2.find((d) => d && (String(d.id) === targetDeviceId));
         if (tgt) {
           targetDeviceDump = JSON.stringify(tgt, (k, v) => (typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v), 2);
-        } else if (Array.isArray(outputDevices) && outputDevices[0]) {
-          // 如果 targetDeviceId 没命中（例如 native 自己兜底了一个），就把第 1 个输出设备的字段打出来。
-          targetDeviceDump = JSON.stringify(outputDevices[0], (k, v) => (typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v), 2);
+        } else if (Array.isArray(candidateDevices) && candidateDevices[0]) {
+          // 如果 targetDeviceId 没命中（例如 native 自己兜底了一个），就把第 1 个候选设备的字段打出来。
+          targetDeviceDump = JSON.stringify(candidateDevices[0], (k, v) => (typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v), 2);
         }
       }
     } catch (_) { targetDeviceDump = null; }
     const paramsDump = JSON.stringify(params, null, 2);
-    console.log('[systemAudioCapture][debug] startSystemAudio 参数:\n' + paramsDump);
+    console.log(`[systemAudioCapture][debug] ${useMic ? 'startMicrophone' : 'startSystemAudio'} 参数:\n` + paramsDump);
     if (targetDeviceDump) {
       console.log('[systemAudioCapture][debug] 目标设备 listDevices() 完整字段（用于核对默认采样率/位深/是否isFloat）:\n' + targetDeviceDump);
     } else {
@@ -161,30 +174,38 @@ class SystemAudioCapture extends EventEmitter {
     }
 
     try {
-      this.native.startSystemAudio(params);
+      // ★ 按输入源调用不同的 native 启动方法（两者共享同一 processEvents 事件管线）
+      if (useMic) {
+        this.native.startMicrophone(params);
+      } else {
+        this.native.startSystemAudio(params);
+      }
       this.running = true;
+      // 记录本次采集的输入源（停止/诊断日志用）
+      this._inputSource = useMic ? 'mic' : 'system';
       // 启动后把调试计数器重置，保证每"次"启动都是干净的
       this._debugFrameIdx = 0;
       this._debugPeakMaxRaw = 0;
       // 启动 10ms 轮询，拉取原生事件队列
       this._startPolling();
-      // 日志打"设备名 + ID + 同机器上所有输出设备列表"，用户肉眼一眼就能核对是否抓错了设备
+      // 日志打"设备名 + ID + 同机器上所有候选设备列表"，用户肉眼一眼就能核对是否抓错了设备
       const devNameLine = targetDeviceName ? `设备名="${targetDeviceName}"` : (targetDeviceId ? `deviceId="${targetDeviceId}"` : '(未指定，native 兜底)');
-      console.log('[systemAudioCapture] WASAPI 采集已启动:', devNameLine);
-      if (Array.isArray(outputDevices) && outputDevices.length > 0) {
-        // 只把输出设备列出来（麦克风之类的输入设备与 Loopback 无关，不列）
-        const lines = outputDevices.map((d) => {
-          const defTag = (d && d.isDefault) ? ' [默认输出]' : '';
+      console.log(`[systemAudioCapture] ${useMic ? '麦克风' : 'WASAPI 回环'}采集已启动:`, devNameLine);
+      if (Array.isArray(candidateDevices) && candidateDevices.length > 0) {
+        // 只列出与当前输入源相关的设备（mic 模式列输入设备，system 模式列输出设备）
+        const kindLabel = useMic ? '音频输入设备（麦克风）' : '音频输出设备';
+        const lines = candidateDevices.map((d) => {
+          const defTag = (d && d.isDefault) ? (useMic ? ' [默认输入]' : ' [默认输出]') : '';
           const curTag = (targetDeviceId && d && String(d.id) === targetDeviceId) ? ' ⭐ 正在采集' : '';
           return `    - ${escapeLog(d && d.name) || '(无名称)'}${defTag}${curTag}  id=${escapeLog(String((d && d.id) || '').slice(0, 40))}`;
         });
-        console.log(`[systemAudioCapture] 本机可用的"音频输出设备"（共 ${outputDevices.length} 个）：\n${lines.join('\n')}`);
-        if (targetDeviceId && !outputDevices.some((d) => d && String(d.id) === targetDeviceId)) {
-          console.warn('[systemAudioCapture] ⚠️ 传入的 deviceId 在 outputDevices 列表中找不到，请检查是否换了耳机/HDMI/便携屏后没切默认设备');
+        console.log(`[systemAudioCapture] 本机可用的"${kindLabel}"（共 ${candidateDevices.length} 个）：\n${lines.join('\n')}`);
+        if (targetDeviceId && !candidateDevices.some((d) => d && String(d.id) === targetDeviceId)) {
+          console.warn(`[systemAudioCapture] ⚠️ 传入的 deviceId 在${useMic ? '输入' : '输出'}设备列表中找不到，请检查是否换了耳机/HDMI/便携屏后没切默认设备`);
         }
       }
     } catch (e) {
-      throw new Error(`WASAPI 采集启动失败: ${e.message}`);
+      throw new Error(`${useMic ? '麦克风' : 'WASAPI 回环'}采集启动失败: ${e.message}`);
     }
   }
 
@@ -199,10 +220,10 @@ class SystemAudioCapture extends EventEmitter {
     this._stopPolling();
     // 最后一次拉取残留事件
     this._processEvents();
-    // 调用原生 stop
+    // 调用原生 stop（mic / system 两种模式共用同一个 stop）
     try { this.native.stop(); } catch (e) { /* 忽略 */ }
     this.running = false;
-    console.log('[systemAudioCapture] WASAPI 采集已停止');
+    console.log(`[systemAudioCapture] ${this._inputSource === 'mic' ? '麦克风' : 'WASAPI 回环'}采集已停止`);
   }
 
   /**

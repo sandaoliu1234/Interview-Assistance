@@ -417,7 +417,7 @@
         </button>
       </div>
       <div class="start-row start-row-secondary">
-        <button class="abtn abtn-book" id="mockViewHistoryBtn" type="button" title="查看模拟面试记录">&#128214; 模拟面试记录</button>
+        <button class="abtn abtn-book" id="mockViewHistoryBtn" type="button" title="查看所有模拟面试记录">&#128214; 查看所有模拟面试记录</button>
       </div>
 
       <!-- 模拟面试进行中（题目 + 输入框）面板：默认隐藏；开始后显示 -->
@@ -523,6 +523,7 @@
         <div class="resume-result-head">
           <div class="resume-result-title">&#9989; 分析完成</div>
           <div class="resume-result-actions">
+            <button id="resumeOptExportMdBtn" class="tool-btn" type="button">&#128221; 导出优化版 Markdown</button>
             <button id="resumeOptExportDocxBtn" class="tool-btn primary" type="button">&#128229; 导出优化版 DOCX</button>
             <button id="resumeOptCopyBtn" class="tool-btn" type="button">&#128203; 复制优化版内容</button>
           </div>
@@ -587,7 +588,12 @@
     <section class="view-panel hidden" id="viewSessionsList" data-view="sessions-list">
       <header class="session-view-header">
         <button class="back-btn" id="btnListBackHome" type="button" title="返回首页">← 返回首页</button>
-        <h2 class="session-view-title">📚 全部面试记录</h2>
+        <h2 class="session-view-title">📚 面试记录</h2>
+        <!-- ★ 面试类型 Tab（真实面试 Copilot / 模拟面试 互斥） -->
+        <div class="session-category-tabs" id="sessionCategoryTabs">
+          <button class="sc-tab active" data-category="copilot" type="button">💼 真实面试</button>
+          <button class="sc-tab" data-category="mock" type="button">🎯 模拟面试</button>
+        </div>
         <div class="session-search">
           <input type="search" id="sessionSearchInput" placeholder="搜索公司/职位…（回车执行）">
         </div>

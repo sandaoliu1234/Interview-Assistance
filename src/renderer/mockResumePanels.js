@@ -98,6 +98,190 @@
   }
 
   // ------------------------------------------------------------
+  // 0.1 Electron IPC 双通道封装（解决『window.electronAPI 部分字段缺失』导致的功能完全不可用）
+  //   - 通道 A：window.electronAPI.<camelName>(...)   // preload.js contextBridge / 兜底赋值
+  //   - 通道 B：ipcRenderer.invoke('<kebab-channel>',  // nodeIntegration=true 时一定可用（主窗口 webPreferences 配置了）
+  //   - 设计：永远先尝试通道 A，字段不存在 / 抛错 / 返回 falsy 时，自动走通道 B；B 也不可用才抛错
+  // ------------------------------------------------------------
+  /**
+   * 打开模拟面试浮动面板
+   * @param {object} params 启动参数（answerMode / totalQuestions / serverInfo 等）
+   * @returns {Promise<{success:boolean, status?:object}>}
+   */
+  async function ipc_openMockFloatWin(params) {
+    // 通道 A：preload bridge
+    if (window.electronAPI && typeof window.electronAPI.openMockInterviewFloatWin === 'function') {
+      try { return await window.electronAPI.openMockInterviewFloatWin(params || {}); }
+      catch (e) { console.warn('[ipc-fallback] electronAPI.openMockInterviewFloatWin 异常，退回 ipcRenderer.invoke：', e.message); }
+    }
+    // 通道 B：ipcRenderer 直连（主窗口 nodeIntegration=true，一定能拿到）
+    const ipc = getIPC();
+    if (!ipc) throw new Error('Electron IPC 不可用：请在 Electron 窗口环境中使用该功能。');
+    return ipc.invoke('open-mock-interview-floatwin', params || {});
+  }
+  /**
+   * 查询模拟面试浮动面板是否存在 + bounds
+   * @returns {Promise<{exists:boolean, bounds:object|null}>}
+   */
+  async function ipc_getMockFloatStatus() {
+    if (window.electronAPI && typeof window.electronAPI.mockInterviewFloatStatus === 'function') {
+      try { return await window.electronAPI.mockInterviewFloatStatus(); }
+      catch (e) { console.warn('[ipc-fallback] electronAPI.mockInterviewFloatStatus 异常，退回 ipcRenderer.invoke：', e.message); }
+    }
+    const ipc = getIPC();
+    if (!ipc) return { exists: false, bounds: null };
+    try { return await ipc.invoke('mock-interview-floatwin-status'); }
+    catch (_) { return { exists: false, bounds: null }; }
+  }
+  /**
+   * 获取本地 HTTP/WS 服务状态快照（含 port / token / baseUrl / ip 列表）
+   * @returns {Promise<object|null>}
+   */
+  async function ipc_getServerStatus() {
+    if (window.electronAPI && typeof window.electronAPI.getServerStatus === 'function') {
+      try { return await window.electronAPI.getServerStatus(); }
+      catch (e) { console.warn('[ipc-fallback] electronAPI.getServerStatus 异常，退回 ipcRenderer.invoke：', e.message); }
+    }
+    const ipc = getIPC();
+    if (!ipc) return null;
+    try { return await ipc.invoke('get-server-status'); }
+    catch (_) { return null; }
+  }
+  /**
+   * 获取 HTTP 客户端专用『扁平结构』基础信息：{ok, port, token, baseUrl, isRunning}
+   *   - 对应 main.js 的 get-server-http-info：若服务未启动会自动启动；返回值扁平，无嵌套，避免 status.status.port 层级错读
+   *   - 模拟面试 startParams.serverInfo 推荐用此函数（稳定、字段对齐、无需解包 status 层）
+   * @returns {Promise<{ok:boolean, port:number, token:string, baseUrl:string, isRunning:boolean, status?:object}|null>}
+   */
+  async function ipc_getHttpInfo() {
+    // 通道 A：preload bridge（若存在）—— preload.js _apiImpl 中含 getServerStatus，但没有 getHttpInfo；此处统一走双通道封装，缺失时自动回退
+    if (window.electronAPI && typeof window.electronAPI.getHttpInfo === 'function') {
+      try { return await window.electronAPI.getHttpInfo(); }
+      catch (e) { console.warn('[ipc-fallback] electronAPI.getHttpInfo 异常，退回 ipcRenderer.invoke：', e.message); }
+    }
+    const ipc = getIPC();
+    if (!ipc) return null;
+    try { return await ipc.invoke('get-server-http-info'); }
+    catch (_) { return null; }
+  }
+
+  /** 取文件扩展名（小写，不带点），用于解析器分派 & accept 匹配。 */
+  function getExt(filePathOrName) {
+    const s = String(filePathOrName || '').trim();
+    const idx = s.lastIndexOf('.');
+    if (idx < 0 || idx === s.length - 1) return '';
+    return s.slice(idx + 1).toLowerCase();
+  }
+  /** 把浏览器 File 对象（来自 <input type=file>）转成 dataURL / base64 字符串，供 /api/resume-opt/parse-file 的 fileBase64 参数使用。
+   *  返回值不带 data:xxx;base64, 前缀（只返回纯 base64 正文），服务端要求这种形式。 */
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      if (!file) { reject(new Error('文件为空')); return; }
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('读取文件失败'));
+      reader.onload = () => {
+        const result = String(reader.result || '');
+        // 去掉 data:application/pdf;base64, 这种前缀，保留纯 base64 正文
+        const comma = result.indexOf(',');
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  /** 简历优化面板：通用简历上传入口（IPC 对话框 优先生效；没有 IPC 时退回原生 <input> 系统选择）。
+   *  上传成功后，调用 /api/resume-opt/parse-file 接口解析 docx/pdf/txt，并把结果写入 resumeOptEditor，同步状态和字数。 */
+  async function pickResumeViaIPC() {
+    const ACCEPT_EXT = ['docx', 'pdf', 'txt', 'md', 'doc'];
+    const ipc = getIPC();
+    // ---- 路径 A：Electron IPC 打开系统选文件对话框 ----
+    if (ipc) {
+      try {
+        const r = await ipc.invoke('open-file-dialog', {
+          title: '选择简历文件（简历优化用）',
+          filters: [
+            { name: '简历文件', extensions: ACCEPT_EXT },
+            { name: '所有文件', extensions: ['*'] }
+          ]
+        });
+        if (!r || !r.success) return; // 用户取消对话框，静默不报错
+        try {
+          toast('正在解析简历文件…', 'info', 1800);
+          const ext = getExt(r.filePath) || 'txt';
+          const resp = await apiFetch('/api/resume-opt/parse-file', { ext, filePath: r.filePath });
+          writeResumeText(resp && resp.text ? resp.text : '',
+            resp && resp.ok
+              ? `已加载 · ${resp.parser || 'utf8'} · ${Math.round(Number(resp.sizeKB) || 0)}KB`
+              : `已回退 · ${resp && resp.msg ? resp.msg : 'utf8'}`);
+          if (resp && resp.ok) toast('简历解析成功', 'success', 3000);
+          else toast('解析：' + ((resp && resp.msg) || '已回退纯 UTF-8'), 'warn', 4200);
+          return;
+        } catch (e) {
+          toast('解析简历文件失败：' + (e.message || ''), 'error', 4200);
+          return;
+        }
+      } catch (e) {
+        // IPC 调不起（比如 dev-server 但代码误判 hasIPC），降级为路径 B
+        console.warn('[resumeOpt] IPC 上传不可用，退回原生 input 模式：', e.message);
+      }
+    }
+    // ---- 路径 B：无 IPC / 浏览器模式：触发 HTML 里已有的隐藏 <input id="resumeFileInput"> 打开系统选文件 ----
+    const hiddenInput = document.getElementById('resumeFileInput');
+    if (!hiddenInput) {
+      toast('当前环境缺少文件选择控件，请先手动粘贴文本或使用 Electron 模式。', 'warn', 4200);
+      return;
+    }
+    // 如果 <input> 已经被用户选过同一个路径再次点不上（浏览器限制 change 不触发），这里清空 value 保证每次都能弹
+    try { hiddenInput.value = ''; } catch (_) { /* ignore */ }
+    // 监听一次性 change：用户选完后自动解析
+    const resolveOnce = (file) => {
+      if (file) parseResumeFileInputToOptEditor(file);
+    };
+    const changeHandler = (e) => {
+      const files = e.target && e.target.files;
+      const f = files && files[0];
+      resolveOnce(f);
+      hiddenInput.removeEventListener('change', changeHandler);
+    };
+    hiddenInput.addEventListener('change', changeHandler);
+    try {
+      hiddenInput.click();
+    } catch (e) {
+      toast('无法弹出文件选择框：' + (e.message || ''), 'error', 3600);
+      hiddenInput.removeEventListener('change', changeHandler);
+    }
+  }
+  /** 简历优化面板：刷新右上角字数标签 + 状态卡片。
+   *  - 每次从 resumeOptEditor 真实 value 计算，避免被内部缓存蒙混
+   *  - 若传入 noteText（如"已加载"/"已清空"）会同时改 resumeOptStatus
+   */
+  function syncResumeOptCharCount(noteText) {
+    const ta = document.getElementById('resumeOptEditor');
+    const cc = document.getElementById('resumeOptCharCount');
+    const st = document.getElementById('resumeOptStatus');
+    const len = ta && ta.value ? ta.value.length : 0;
+    if (cc) cc.textContent = String(len);
+    if (st && typeof noteText === 'string' && noteText) st.textContent = noteText;
+  }
+  /** 简历优化面板：DOM 就绪后的一次性引导。
+   *  - 立即刷新一次字数（防止用户"先看到 0，粘贴后不变"的视觉不一致）
+   *  - 如果本地 cfg.resumeText 存在且编辑器为空，自动回填已保存简历（与 resumeOptUseSavedBtn 行为一致，但不弹成功 toast 避免打扰） */
+  async function bootResumeOptUI() {
+    // 先做一次计数兜底（即使编辑器完全空，也要保证字符数真实是 0，不是残留的脏值）
+    syncResumeOptCharCount();
+    const ta = document.getElementById('resumeOptEditor');
+    if (ta && ta.value) return; // 用户已粘贴或之前 boot 过，不再覆盖
+    try {
+      const ipc = getIPC();
+      const cfg = ipc ? (await ipc.invoke('get-config')) : null;
+      // 兼容两种字段名：resumeContent / resumeText（项目约束）
+      const saved = cfg && (cfg.resumeContent || cfg.resumeText);
+      if (saved) {
+        writeResumeText(saved, `已自动加载 · ${saved.length} 字`);
+      }
+    } catch (_) { /* boot 过程读取失败不影响用户手动粘贴 */ }
+  }
+
+  // ------------------------------------------------------------
   // 1. 通用 HTTP 客户端（带自动拉取 baseUrl/token）
   // ------------------------------------------------------------
   let _httpInfo = null; // 缓存：{baseUrl,token}
@@ -555,36 +739,96 @@
     card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  // 主：启动模拟面试 session 并自动出第 1 题
-  // 绑定的 DOM 按钮为 mockStartBtn（对应 index.html 的模拟面试 CTA）。
+  /** 面试类型 code → 中文显示标签映射（浮窗 miTypeBadge 用） */
+  function _interviewTypeLabel(typeCode) {
+    const map = { behavior: '行为面', technical: '技术面', programming: '编程面', comprehensive: '综合面' };
+    return map[typeCode] || String(typeCode || '综合');
+  }
+
+  // 主：启动模拟面试 —— 【新版浮动面板模式】
+  // 流程：collectForm → 校验 → /session 启动会话 → 构建 startParams →
+  //       electronAPI.openMockInterviewFloatWin(params) → 锁定主窗口表单 →
+  //       启动浮窗状态轮询（关闭后自动解锁）
+  // 主窗口内不再显示 mockRunCard（run-card 仅浮窗渲染）；
+  // 若浮窗已存在则不重复开新会话，仅提示用户"前往浮窗"。
   async function startMockInterview() {
     try {
-      // 启动前：清理上一场的语音缓存（避免跨会话串字）
-      try { await resetMockVoiceRecording(); } catch (_) { /* ignore */ }
       const btn = $('#mockStartBtn');
+      // ========== 前置：若浮窗已存在（进行中）→ 不再重复启动，仅 toast 引导用户前往 ==========
+      //   使用双通道封装（ipc_*）：优先 electronAPI bridge，失败自动退回 ipcRenderer.invoke，彻底避免"字段不存在"报错
+      const floatSt0 = await ipc_getMockFloatStatus();
+      if (floatSt0 && floatSt0.exists) {
+        // 浮窗已存在：把它重新 show+focus（main.js 内 openMockInterviewFloatWin 幂等，已存在只 show）
+        try { await ipc_openMockFloatWin({}); } catch (_) { /* ignore */ }
+        toast('模拟面试进行中，已切换到浮动面板窗口作答。', 'info', 2800);
+        return;
+      }
+      // ========== 启动前：清理主窗口上一场的语音缓存（跨会话串字兜底） ==========
+      try { await resetMockVoiceRecording(); } catch (_) { /* ignore */ }
       if (btn) { btn.disabled = true; btn.innerHTML = '<span>&#9889;</span> 正在启动模拟面试…'; }
+      // ========== 收集表单 + 校验 ==========
       const form = collectMockForm();
       const invalidMsg = validateMockForm(form);
       if (invalidMsg) { toast(invalidMsg, 'warn'); throw new Error(invalidMsg); }
-      // 启动 session
+      // ========== 1. 调 /session 启动会话（初始化 mi history / session 归档 / agents 上下文） ==========
       const sessionRes = await apiFetch('/api/mock-interview/session', form);
       MockState.totalQuestions = Number(form.totalQuestions) || 5;
       MockState.answeredCount = 0;
-      toast('模拟面试已启动，正在生成第 1 题…', 'info');
+      MockState.answerMode = form.answerMode; // 确保启动后与表单一致
+      toast('模拟面试会话已启动，正在打开浮动面板…', 'info', 2400);
 
-      // 出第 1 题
-      const qRes = await apiFetch('/api/mock-interview/next-question', {});
-      if (qRes.done) {
-        toast(qRes.message || '已完成题目', 'warn');
-      } else {
-        renderMockRunCard(qRes);
+      // ========== 2. 构建 serverInfo（传递给浮窗，让浮窗直接用 baseUrl+token 调用 HTTP，不再走 getServerStatus 兜底） ==========
+      //    - 用『ipc_getHttpInfo』（对应 main.js get-server-http-info）：若 server 未启动会自动启动 + 返回扁平 {ok,port,token,baseUrl}
+      //      （不再用 ipc_getServerStatus，其返回结构是嵌套 {ok, status:{port,token,...}}，容易发生 st.status.port 层级错读导致 port=0）
+      let serverInfo = { port: 0, token: '', baseUrl: '' };
+      try {
+        // ensureHTTP：先让主窗口的 _httpInfo 缓存被填充（如果失败会被下一行 ipc_getHttpInfo 再次尝试，双重保障）
+        await ensureHTTP().catch(() => null);
+        const info = await ipc_getHttpInfo();
+        if (info && info.ok && Number(info.port) > 0 && String(info.token || '').length > 0) {
+          serverInfo = {
+            port: Number(info.port) || 0,
+            token: String(info.token || ''),
+            baseUrl: String(info.baseUrl || `http://127.0.0.1:${Number(info.port) || 0}`)
+          };
+        }
+      } catch (e) {
+        console.warn('[mock-interview][start] ipc_getHttpInfo 失败（主进程会再注入一次真实值，非致命）：', e && e.message);
       }
+
+      // ========== 3. 组装浮窗启动参数（严格对齐 mockInterviewFloatRenderer.js bootMockInterviewFloat 期望） ==========
+      const startParams = {
+        answerMode: form.answerMode === 'voice' ? 'voice' : 'text',
+        totalQuestions: MockState.totalQuestions,
+        language: form.language === 'en' ? 'en' : 'zh',
+        interviewType: form.type,
+        typeLabel: _interviewTypeLabel(form.type),
+        positionLabel: form.targetPosition,
+        industryLabel: form.industry,
+        serverInfo
+      };
+
+      // ========== 4. 打开浮动面板：双通道 IPC（优先 electronAPI bridge，失败自动退回 ipcRenderer.invoke） ==========
+      //   不再有"electronAPI.xxx 不可用"的硬错误——只要主窗口在 Electron 中，nodeIntegration=true 一定能通过 ipcRenderer.invoke 成功
+      const openRes = await ipc_openMockFloatWin(startParams);
+      if (!openRes || !openRes.success) {
+        throw new Error((openRes && openRes.msg) || '浮动面板打开失败');
+      }
+
+      // ========== 5. 主窗口：隐藏主窗口 run-card（避免冲突）+ 锁定表单 + 启动轮询 ==========
+      hideMockRunCard();
+      setMockFormLocked(true);
+      startMockFloatWinStatusPoller();
+      toast(`已打开浮动面板（${form.answerMode === 'voice' ? '语音作答' : '文字作答'}，共 ${MockState.totalQuestions} 题，模式已锁定）。`, 'success', 4200);
     } catch (e) {
       toast('启动失败：' + (e.message || '未知错误'), 'error', 4200);
       console.error('[mock-interview] start 异常：', e);
+      // 失败：解锁表单，还原按钮文案
+      setMockFormLocked(false);
     } finally {
+      // finally 只还原按钮 disabled（文案由 setMockFormLocked 控制，避免"锁定时被 finally 覆盖回『开始模拟面试』"）
       const btn = $('#mockStartBtn');
-      if (btn) { btn.disabled = false; btn.innerHTML = '<span>&#9889;</span> 开始模拟面试<span class="mock-cta-arrow">&#10140;</span>'; }
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -691,15 +935,12 @@
   // 模拟面试记录：调主进程拿最近/进行中 session，然后切到"面试记录"tab 并打开对应详情
   async function openMockInterviewRecords() {
     try {
-      const ipc = getIPC();
-      if (!ipc) { toast('非 Electron 环境，无法跳转面试记录', 'error'); return; }
-      const info = await ipc.invoke('mock-interview-last-session');
-      // 通知外层 renderer 去切 tab（用自定义事件，避免耦合 renderer.js 里的函数名）
+      // 用户要求：点击按钮 → 打开面试记录页，并自动切到『🎯 模拟面试』分类 Tab（查看所有模拟面试记录）
+      // 派发自定义事件，外层 renderer.js 负责路由 + Tab 切换（保持此处与 renderer 内部解耦）
       window.dispatchEvent(new CustomEvent('hireme:open-session-detail', {
-        detail: { activeId: info.activeId, lastId: info.lastId, firstId: info.firstId, source: 'mockInterview' }
+        detail: { category: 'mock', source: 'mockInterview' }
       }));
-      toast(info && (info.activeId || info.lastId) ? '已切换到面试记录详情' : '暂无记录：完成一次模拟面试后会自动归档。',
-        (info && (info.activeId || info.lastId)) ? 'success' : 'warn', 3600);
+      toast('已切换到『🎯 模拟面试』记录列表。', 'success', 2800);
     } catch (e) {
       toast('打开模拟面试记录失败：' + (e.message || ''), 'error', 4200);
     }
@@ -925,6 +1166,62 @@
     }
   }
 
+  // 导出 Markdown：先弹 Electron 保存框拿 savePath，再调 HTTP 路由统一落盘；
+  //   - 非 Electron 模式：退回为浏览器 Blob 下载（用 <a download>）
+  async function exportOptimizedMarkdown() {
+    const ta = $('#resumeOptOutput');
+    const content = (ta && ta.value && ta.value.trim()) ? ta.value.trim() : ResumeState.lastOptimizedText;
+    if (!content) { toast('暂无优化后全文：请先执行『AI 分析与优化』。', 'warn'); return; }
+    const ipc = getIPC();
+
+    // ---- 路径 A：Electron 环境，走 save-file-dialog + HTTP export-md（优先，有真实系统文件权限）
+    if (ipc) {
+      try {
+        const save = await ipc.invoke('save-file-dialog', {
+          title: '导出优化后简历为 Markdown',
+          defaultPath: '优化后简历.md',
+          filters: [
+            { name: 'Markdown 文档', extensions: ['md', 'markdown'] },
+            { name: '纯文本', extensions: ['txt'] },
+            { name: '所有文件', extensions: ['*'] }
+          ]
+        });
+        if (!save || !save.success) return; // 用户取消
+        // 调 HTTP /api/resume-opt/export-md 统一写盘；默认不附加 front-matter，保证"所见即所得"
+        const r = await apiFetch('/api/resume-opt/export-md', {
+          content,
+          savePath: save.filePath,
+          addFrontMatter: false,
+          normalizeEol: true
+        });
+        toast(`已导出：${save.filePath}（${(r.bytes / 1024).toFixed(1)} KB）`, 'success', 5200);
+        return;
+      } catch (e) {
+        toast('导出 Markdown 失败：' + (e.message || ''), 'error', 5200);
+        return;
+      }
+    }
+
+    // ---- 路径 B：浏览器降级方案，用 Blob + <a download> 触发下载（Electron 模式一般用不到，兜底）
+    try {
+      const mime = 'text/markdown;charset=utf-8';
+      const blob = new Blob([content.replace(/\r\n|\r(?!\n)/g, '\n')], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '优化后简历.md';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        try { document.body.removeChild(a); } catch (_) { /* ignore */ }
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+      }, 0);
+      toast('浏览器模式：已触发下载', 'success', 3000);
+    } catch (e) {
+      toast('浏览器下载失败：' + (e.message || ''), 'error', 4200);
+    }
+  }
+
   // 复制优化版内容（浏览器 API）
   async function copyOptimizedText() {
     const ta = $('#resumeOptOutput');
@@ -940,6 +1237,106 @@
     } catch (e) {
       toast('复制失败：' + (e.message || ''), 'error');
     }
+  }
+
+  // ------------------------------------------------------------
+  // 3.9 模拟面试浮动面板：模式锁定 + 浮窗状态轮询
+  //      需求：开始模拟面试后，主窗口的作答方式按钮（文字/语音）不可切换；
+  //            浮窗关闭后，自动恢复按钮可用 + CTA 按钮文案。
+  // ------------------------------------------------------------
+  /** 浮窗状态轮询句柄（全局仅一个，避免多轮 setInterval 叠加） */
+  let _mockFloatPollTimer = null;
+
+  /**
+   * 锁/解锁『作答方式切换』控件 + 面试类型 + 题目数 + 语言 + CTA。
+   * - 开始面试（locked=true）：禁止用户在主窗口再改作答方式 / 类型 / 题数等
+   * - 浮窗关闭后（locked=false）：恢复可编辑，并把 mockStartBtn 文案还原
+   * @param {boolean} locked
+   */
+  function setMockFormLocked(locked) {
+    const lock = !!locked;
+    // 3.9.1 作答方式：mock-ans-mode 按钮组（核心锁：用户要求"开始面试后不能切换作答方式"）
+    $$('.mock-ans-mode').forEach(btn => {
+      btn.style.pointerEvents = lock ? 'none' : '';
+      btn.style.opacity = lock ? '0.55' : '';
+      if (lock) btn.setAttribute('title', '模拟面试进行中，作答方式已锁定');
+      else btn.removeAttribute('title');
+    });
+    // 3.9.2 面试类型卡片：进行中不可再改（避免"类型与实际会话不一致"）
+    $$('#mockInterviewTypeGrid .mock-type').forEach(btn => {
+      btn.style.pointerEvents = lock ? 'none' : '';
+      btn.style.opacity = lock ? '0.6' : '';
+    });
+    // 3.9.3 输入类控件：目标职位 / 行业 / JD / 简历 / 题数 / 语言
+    const inputIds = ['mockTargetPosition', 'mockTargetIndustry', 'mockJobDesc', 'mockResumeEditor', 'mockQuestionCount', 'mockLanguage'];
+    inputIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (lock) {
+        el.setAttribute('disabled', 'disabled');
+        el.style.opacity = '0.7';
+      } else {
+        // select/input/textarea 的 disabled 语义不同：textarea 只读更合适？
+        // 用户没明确要求"内容清空时不能改"，统一用 disabled；简历编辑器用 readonly 防止内容被误清空
+        if (id === 'mockResumeEditor') { el.removeAttribute('disabled'); el.removeAttribute('readonly'); }
+        else el.removeAttribute('disabled');
+        el.style.opacity = '';
+      }
+    });
+    const resumeTa = $('#mockResumeEditor');
+    if (resumeTa) {
+      if (lock) { resumeTa.setAttribute('readonly', 'readonly'); resumeTa.style.opacity = '0.7'; }
+      else { resumeTa.removeAttribute('readonly'); resumeTa.style.opacity = ''; }
+    }
+    // 3.9.4 CTA 按钮：开始面试进行中 → 改为"面试中…打开浮动面板"文案，disabled=false 但点击会切 focus 到浮窗（下方 startMockInterview 里处理）
+    const cta = $('#mockStartBtn');
+    if (cta) {
+      if (lock) {
+        cta.disabled = false;
+        cta.innerHTML = '<span>&#9889;</span> 模拟面试进行中（点击前往浮动面板）';
+      } else {
+        cta.disabled = false;
+        cta.innerHTML = '<span>&#9889;</span> 开始模拟面试<span class="mock-cta-arrow">&#10140;</span>';
+      }
+    }
+  }
+
+  /**
+   * 开启浮窗状态轮询（每 600ms 查一次 mockInterviewFloatStatus）：
+   *   - 浮窗存在：保持 setMockFormLocked(true)
+   *   - 浮窗不存在（用户点 × 关闭 / 生成报告后点关闭）：setMockFormLocked(false) + 清定时器 + hideMockRunCard
+   * 说明：不用主进程推事件（因为当前没有 overlay:closed 类似的通道给 mock-floatwin），
+   *      轮询 600ms 足够省电且响应及时；全局单例，保证不叠加。
+   */
+  function startMockFloatWinStatusPoller() {
+    if (_mockFloatPollTimer) { clearInterval(_mockFloatPollTimer); _mockFloatPollTimer = null; }
+    // ✅ 改用双通道封装 ipc_getMockFloatStatus()：不再依赖 window.electronAPI 的字段完整性；
+    //    即使 electronAPI 桥接缺字段，也能通过 ipcRenderer.invoke 直连（主窗口 nodeIntegration=true 一定可行）。
+    if (!hasIPC()) {
+      // 纯浏览器环境（dev-server）：没有 IPC，浮窗也开不了 → 解除表单锁定
+      setTimeout(() => setMockFormLocked(false), 200);
+      return;
+    }
+    _mockFloatPollTimer = setInterval(async () => {
+      try {
+        const st = await ipc_getMockFloatStatus();  // 双通道：优先 electronAPI，失败自动退回 ipcRenderer.invoke
+        const exists = !!(st && st.exists);
+        // 主窗口里 mockRunCard：浮窗模式下应该始终隐藏（避免"主窗口还显示旧面试进行中"的误导）
+        if (exists) {
+          // 浮窗还开着 → 锁定表单 + 隐藏主窗口 run-card（防止两个地方同时显示"进行中"冲突）
+          setMockFormLocked(true);
+          hideMockRunCard();
+        } else {
+          // 浮窗已关闭 → 解锁表单 + 停轮询
+          setMockFormLocked(false);
+          if (_mockFloatPollTimer) { clearInterval(_mockFloatPollTimer); _mockFloatPollTimer = null; }
+          toast('浮动面板已关闭，可重新配置表单开始下一场模拟面试。', 'info', 3200);
+        }
+      } catch (e) {
+        // 轮询失败不打紧：只打日志，不影响 UI
+        console.warn('[mock-interview][poll] status 轮询异常：', e && e.message);
+      }
+    }, 600);
   }
 
   // ------------------------------------------------------------
@@ -1071,8 +1468,10 @@
         try {
           const ipc = getIPC();
           const cfg = ipc ? (await ipc.invoke('get-config')) : null;
-          const src = (cfg && cfg.resumeText) ? cfg.resumeText : '';
+          // 兼容两种字段名：resumeContent / resumeText（项目约束）
+          const src = cfg && (cfg.resumeContent || cfg.resumeText) ? (cfg.resumeContent || cfg.resumeText) : '';
           writeResumeText(src, src ? `已加载（${src.length} 字）` : '尚未保存');
+          syncResumeOptCharCount();
           toast(src ? '已加载已保存简历' : '当前未保存简历，请粘贴或上传。', src ? 'success' : 'warn', 2600);
         } catch (e) {
           toast('读取已保存简历失败：' + (e.message || ''), 'error');
@@ -1081,20 +1480,36 @@
     }
     if ($('#resumeOptClearBtn')) {
       $('#resumeOptClearBtn').addEventListener('click', () => {
+        // 清空简历内容，同时：① 重置状态文本 ② 把字数显示清零 ③ 聚焦编辑器便于立刻粘贴
         writeResumeText('', '已清空');
+        syncResumeOptCharCount('已清空');
+        const ta = $('#resumeOptEditor');
+        if (ta) ta.focus();
+        toast('已清空简历内容', 'info', 2000);
       });
     }
 
-    // 4.8 简历优化：字数实时计数
+    // 4.8 简历优化：字数实时计数（同时兼容 input/change/paste/cut 四类触发：
+    //   - input：用户手工打字；- change：失焦后有改动（兜底）；- paste/cut：粘贴/剪切剪贴板内容
+    //   注意：IE 等古浏览器会因 addEventListener 不存在直接跳过，由 wrap 的 try 兜底）
     if ($('#resumeOptEditor')) {
-      $('#resumeOptEditor').addEventListener('input', (e) => {
-        const cc = $('#resumeOptCharCount');
-        if (cc) cc.textContent = String((e.target && e.target.value && e.target.value.length) || 0);
+      const countUpdater = () => syncResumeOptCharCount();
+      ['input', 'change', 'paste', 'cut', 'drop'].forEach(evt => {
+        try {
+          $('#resumeOptEditor').addEventListener(evt, () => {
+            // paste/cut/drop 等事件是异步写入，稍等一帧让 DOM value 真正写入后再计数
+            if (evt === 'input' || evt === 'change') countUpdater();
+            else setTimeout(countUpdater, 0);
+          });
+        } catch (_) { /* 单个事件绑定失败不影响其它事件 */ }
       });
+      // 初始化即刻把字数正确设置（避免粘贴前字数显示与真实内容不一致）
+      countUpdater();
     }
 
     // 4.9 简历优化：CTA + 导出 + 复制
     if ($('#resumeOptStartBtn')) $('#resumeOptStartBtn').addEventListener('click', runResumeOptimize);
+    if ($('#resumeOptExportMdBtn')) $('#resumeOptExportMdBtn').addEventListener('click', exportOptimizedMarkdown);
     if ($('#resumeOptExportDocxBtn')) $('#resumeOptExportDocxBtn').addEventListener('click', exportOptimizedDOCX);
     if ($('#resumeOptCopyBtn')) $('#resumeOptCopyBtn').addEventListener('click', copyOptimizedText);
   }
@@ -1155,6 +1570,7 @@
       writeResumeText(r && r.text ? r.text : '', r.ok
         ? `已加载 · ${r.parser || 'utf8'} · ${Math.round(Number(r.sizeKB) || 0)}KB`
         : `已回退 · ${r.msg || 'utf8'}`);
+      syncResumeOptCharCount();
       if (r.ok) toast('简历解析成功', 'success', 3000);
       else toast('解析：' + (r.msg || '已回退纯 UTF-8'), 'warn', 4200);
     } catch (e) {
@@ -1197,17 +1613,32 @@
     return submitMockAnswerOrFollowupAuto();
   }
 
-  // 初始化：DOM 就绪即绑定
+  /** 启动整个 mock+resume 面板：先绑定所有 DOM 事件，再做一次 UI 引导 boot（字数刷新 + 可选自动回填已保存简历） */
+  async function initMockAndResumeUI() {
+    try {
+      bindEvents();
+    } catch (e) {
+      console.error('[mockResumePanels] bindEvents 失败:', e.message);
+    }
+    try {
+      await bootResumeOptUI();
+    } catch (e) {
+      console.warn('[mockResumePanels] bootResumeOptUI 未完成:', e.message);
+    }
+  }
+
+  // 初始化：DOM 就绪即绑定 + 引导 boot（注意 DOMContentLoaded 只会触发一次，不会因为 copilot.js 又触发一次而重复绑定）
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bindEvents);
+    document.addEventListener('DOMContentLoaded', initMockAndResumeUI);
   } else {
-    bindEvents();
+    initMockAndResumeUI();
   }
 
   // 暴露少量 API 给外层（如未来想通过控制台调试）
   window.HireMeMockResume = {
     state: { MockState, ResumeState },
     startMockInterview, submitMockAnswer, submitMockFollowupAnswer, nextMockQuestion, finalMockReview,
-    runResumeOptimize, exportOptimizedDOCX
+    runResumeOptimize, exportOptimizedDOCX, exportOptimizedMarkdown,
+    pickResumeViaIPC, parseResumeFileInputToOptEditor, syncResumeOptCharCount, writeResumeText
   };
 })();

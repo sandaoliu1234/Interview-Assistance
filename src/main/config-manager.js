@@ -65,6 +65,25 @@ ConfigManager.prototype.loadConfig = function () {
       const _raw = fs.readFileSync(_dotenvPath, 'utf8');
       // 手动解析 dotenv 格式：兼容 KEY=VALUE、KEY="VALUE"、KEY='VALUE'、# 注释、空行
       const _lines = String(_raw || '').split(/\r?\n/);
+      // ★ 内联：多层包裹字符剥离（最多 6 轮，顺序先 stripTrim 再 stripChars）
+      //   覆盖用户常见错误写法：
+      //     IA_TONGYI_BASE_URL="`https://.../api/v1`"  （双引号 + 反引号 双层）
+      //     IA_TONGYI_BASE_URL='`https://.../api/v1`'  （单引号 + 反引号 双层）
+      //     IA_TONGYI_BASE_URL=``https://.../api/v1``   （双反引号 双层）
+      //     IA_TONGYI_BASE_URL=`"https://.../api/v1"`   （反引号 + 双引号 双层）
+      //     IA_TONGYI_BASE_URL="  https://.../api/v1  " （前后空格）
+      const _STRIP_CHARS = new Set(['`', '"', "'", ' ', '\t', '\r', '\n', '\u3000', '\u201C', '\u201D', '\u2018', '\u2019']);
+      const _stripWraps = (raw) => {
+        let s = String(raw || '');
+        for (let i = 0; i < 8; i++) {
+          const before = s;
+          s = s.trim();
+          while (s.length > 0 && _STRIP_CHARS.has(s.charAt(0))) s = s.slice(1);
+          while (s.length > 0 && _STRIP_CHARS.has(s.charAt(s.length - 1))) s = s.slice(0, -1);
+          if (s === before) break;
+        }
+        return s;
+      };
       let _parsedFromFile = 0;
       for (const _line of _lines) {
         const _trimmed = String(_line || '').trim();
@@ -73,10 +92,15 @@ ConfigManager.prototype.loadConfig = function () {
         if (_eq < 0) continue;
         let _k = _trimmed.substring(0, _eq).trim();
         let _v = _trimmed.substring(_eq + 1);
-        // 去掉首尾包裹的单引号/双引号（手动解析 dotenv 不做这个）
+        // ★★ 修复 1：先去掉严格匹配的单层引号（原逻辑），再用 _stripWraps 多层去包裹（防反引号/多层引号）
         _v = String(_v || '').trim();
         if ((_v.startsWith('"') && _v.endsWith('"')) || (_v.startsWith("'") && _v.endsWith("'"))) {
           _v = _v.slice(1, -1);
+        }
+        const _beforeStrip = _v;
+        _v = _stripWraps(_v);
+        if (_beforeStrip !== _v) {
+          console.log(`[ConfigManager.env][parse] ⚠ ${_k} 值存在包裹字符，已自动剥离：before=${JSON.stringify(_beforeStrip)} → after=${JSON.stringify(_v)}`);
         }
         if (_k) {
           // ★ 关键：.env 文件里的值优先于 Windows 系统环境变量，强制覆盖
@@ -90,6 +114,31 @@ ConfigManager.prototype.loadConfig = function () {
     console.warn('[ConfigManager.env] 手动解析 .env 失败，回退使用 process.env：', _e && _e.message);
   }
 
+  // 【超激进清理】统一函数：去掉所有控制字符 + 常见 Unicode 包裹字符，再按白名单过滤剩余字符。
+  //   原因：用户从 .env 示例 / 复制粘贴带入了看不见的控制字符 / 罕见 Unicode 引号变体，导致正则字符类匹配不上。
+  //   本函数作为「最后一道关口」，暴力删除所有非白名单字符，保证注入 config 的值绝对干净。
+  //   URL 白名单（RFC 3986 unreserved + sub-delims + gen-delims + =&%）：A-Z a-z 0-9 -._~ :/?#[]@ !$&'()*+,;= %
+  //   字符串白名单（API Key / 枚举值）：A-Z a-z 0-9 -._~ :/!$&'()*+,;= %@#
+  const _aggressiveClean = (raw, kind) => {
+    if (typeof raw !== 'string') return '';
+    let s = raw;
+    // 第一步：统一删除常见 Unicode 引号 / 包裹字符（ASCII 反引号、弯引号、全角反引号、角括号、方头括号、书名号等）
+    const wraps = /[\x60\uFF40\u201C\u201D\u2018\u2019\u300C\u300D\u300E\u300F\u3010\u3011\uFF08\uFF09\u300A\u300B\u201E\u201F\u201A\u201B\u00AB\u00BB\u2039\u203A]/g;
+    s = s.replace(wraps, '');
+    // 第二步：删除所有控制字符（\u0000-\u0008 \u000B \u000C \u000E-\u001F \u007F-\u009F）
+    const ctrls = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+    s = s.replace(ctrls, '');
+    // 第三步：白名单过滤
+    let allowed;
+    if (kind === 'url') {
+      allowed = /[^A-Za-z0-9\-._~:\/?#\[\]@!$&'()*+,;=%]/g;
+    } else {
+      allowed = /[^A-Za-z0-9\-._~:\/!$&'()*+,;=%@#]/g;
+    }
+    s = s.replace(allowed, '');
+    return s;
+  };
+
   // 增强字符串清理：去掉首尾可能出现的「反引号(\x60) / 单引号 / 双引号 / 全角空格 / 半角空格 / 弯引号 / 全角括号 / 书名号」
   //   注意：正则里反引号使用 \x60（十六进制 ASCII 码），避免与 JS 模板字符串的 ` 冲突（双重保险）
   //   覆盖范围（和 aiService.js 保持一致，保证 config → ai 整个链路清理一致）：
@@ -100,21 +149,34 @@ ConfigManager.prototype.loadConfig = function () {
   const _WRAP_CHARS = '\\s\\u3000\\x60\\uFF40\'"\\u201C\\u201D\\u2018\\u2019\\u300C\\u300D\\u300E\\u300F\\u3010\\u3011\\uFF08\\uFF09\\u300A\\u300B';
   const _reCleanHead = new RegExp('^[' + _WRAP_CHARS + ']+');
   const _reCleanTail = new RegExp('[' + _WRAP_CHARS + ']+$');
+  /**
+   * 通用字符串清理：12 轮首尾包裹剥离 + 超激进白名单过滤（保证值绝对干净）。
+   * 用于 API Key / 枚举值 / 普通字符串。
+   */
   const _cleanStr = (s) => {
     if (typeof s !== 'string') return '';
     let x = s;
-    // 最多 12 轮：循环清理首尾包裹字符（支持多层嵌套如 『"`xxx`"』）
     for (let i = 0; i < 12; i++) {
       const before = x;
       x = x.replace(_reCleanHead, '').replace(_reCleanTail, '');
       if (x === before) break;
     }
-    return x;
+    return _aggressiveClean(x, 'str');
   };
-  // URL 专用：复用 _cleanStr 去包裹字符 + 额外去掉尾部斜杠（最多一轮在末尾即可）
+  /**
+   * URL 清理：12 轮首尾包裹剥离 + 去尾部斜杠 + 超激进白名单过滤。
+   * 用于 tongyiBaseUrl 等 URL 类型字段。
+   */
   const _cleanUrl = (s) => {
-    const base = _cleanStr(s);
-    return typeof base === 'string' ? base.replace(/\/+$/, '') : '';
+    if (typeof s !== 'string') return '';
+    let x = s;
+    for (let i = 0; i < 12; i++) {
+      const before = x;
+      x = x.replace(_reCleanHead, '').replace(_reCleanTail, '').replace(/\/+$/, '');
+      if (x === before) break;
+    }
+    const clean = _aggressiveClean(x, 'url');
+    return clean.replace(/\/+$/, '');
   };
 
   // 先把 .env 读到哪些关键变量打出来（脱敏），方便用户直接肉眼确认 dotenv 是否生效
@@ -135,6 +197,35 @@ ConfigManager.prototype.loadConfig = function () {
     + ` | IA_TONGYI_VISION_MODEL=${_hasEnv('IA_TONGYI_VISION_MODEL') ? _cleanStr(envCopy.IA_TONGYI_VISION_MODEL) : '(not-set,默认qvq-plus)'}`
     + ` | IA_ZHIPU_VISION_MODEL=${_hasEnv('IA_ZHIPU_VISION_MODEL') ? _cleanStr(envCopy.IA_ZHIPU_VISION_MODEL) : '(not-set)'}`
   );
+  // ===== ★ 注入前：清理前后对比诊断 warn。如果原值 != 清理后，说明 .env 写法有误（两侧带反引号/引号），一次性打出来供用户修正 =====
+  try {
+    const _checkList = [
+      { key: 'IA_TONGYI_BASE_URL', raw: envCopy.IA_TONGYI_BASE_URL, clean: _cleanUrl(envCopy.IA_TONGYI_BASE_URL), isUrl: true },
+      { key: 'IA_TONGYI_API_KEY',  raw: envCopy.IA_TONGYI_API_KEY,  clean: _cleanStr(envCopy.IA_TONGYI_API_KEY),  isUrl: false },
+      { key: 'IA_DEFAULT_SERVICE', raw: envCopy.IA_DEFAULT_SERVICE, clean: _cleanStr(envCopy.IA_DEFAULT_SERVICE), isUrl: false },
+      { key: 'IA_ZHIPU_API_KEY',   raw: envCopy.IA_ZHIPU_API_KEY,   clean: _cleanStr(envCopy.IA_ZHIPU_API_KEY),   isUrl: false },
+      { key: 'IA_BAIDU_API_KEY',   raw: envCopy.IA_BAIDU_API_KEY,   clean: _cleanStr(envCopy.IA_BAIDU_API_KEY),   isUrl: false },
+      { key: 'IA_BAIDU_APP_ID',    raw: envCopy.IA_BAIDU_APP_ID,    clean: _cleanStr(envCopy.IA_BAIDU_APP_ID),    isUrl: false },
+      { key: 'IA_BAIDU_SECRET_KEY',raw: envCopy.IA_BAIDU_SECRET_KEY,clean: _cleanStr(envCopy.IA_BAIDU_SECRET_KEY),isUrl: false },
+      { key: 'IA_WENXIN_API_KEY',  raw: envCopy.IA_WENXIN_API_KEY,  clean: _cleanStr(envCopy.IA_WENXIN_API_KEY),  isUrl: false },
+      { key: 'IA_TONGYI_VISION_MODEL', raw: envCopy.IA_TONGYI_VISION_MODEL, clean: _cleanStr(envCopy.IA_TONGYI_VISION_MODEL), isUrl: false },
+      { key: 'IA_ZHIPU_VISION_MODEL',  raw: envCopy.IA_ZHIPU_VISION_MODEL,  clean: _cleanStr(envCopy.IA_ZHIPU_VISION_MODEL),  isUrl: false }
+    ];
+    const _dirtyItems = _checkList.filter(x => (typeof x.raw === 'string') && x.raw !== x.clean);
+    if (_dirtyItems.length > 0) {
+      const _lines = _dirtyItems.map(x => {
+        const _raw = x.isUrl ? JSON.stringify(x.raw) : `(len=${x.raw.length})`;
+        const _clean = x.isUrl ? JSON.stringify(x.clean) : `(len=${x.clean.length})`;
+        return `    ❌ ${x.key}：\n      原值=${_raw}\n      清理后=${_clean}\n      正确写法示例：${x.key}=${x.clean || '<你的真实值，两侧不要加反引号/双引号/单引号>'}`;
+      });
+      console.warn(
+        `[ConfigManager.env] ⚠️⚠️⚠️ .env 中有 ${_dirtyItems.length} 个配置项写法错误（两侧附带了反引号/引号/不可见字符，现已自动清理，但请手动修正 .env 文件避免后续问题）：\n${_lines.join('\n')}`
+      );
+    } else {
+      console.log(`[ConfigManager.env] ✅ 所有 IA_* 配置项清理通过（原值与清理后一致，.env 写法无反引号/引号包裹问题）`);
+    }
+  } catch (_diagErr) { /* ignore：即便是诊断逻辑异常也不能阻塞正常配置注入 */ }
+  // ===== 开始注入到 this.config（全部通过 _cleanStr/_cleanUrl 清洗，保证 config 中值绝对干净）=====
   if (_hasEnv('IA_BAIDU_APP_ID'))      this.config.baiduAppId     = _cleanStr(envCopy.IA_BAIDU_APP_ID);
   if (_hasEnv('IA_BAIDU_API_KEY'))    this.config.baiduApiKey    = _cleanStr(envCopy.IA_BAIDU_API_KEY);
   if (_hasEnv('IA_BAIDU_SECRET_KEY')) this.config.baiduSecretKey = _cleanStr(envCopy.IA_BAIDU_SECRET_KEY);
@@ -152,6 +243,18 @@ ConfigManager.prototype.loadConfig = function () {
       this.config.selectedService = svc;
     }
   }
+  // 注入后：再次校验 tongyiBaseUrl（如果清理后仍没有 http(s):// 前缀，打致命错误），避免 baseUrl 非法导致所有 LLM 请求失败
+  try {
+    const bu = (typeof this.config.tongyiBaseUrl === 'string') ? this.config.tongyiBaseUrl : '';
+    if (bu && !/^https?:\/\//i.test(bu)) {
+      console.error(
+        `[ConfigManager.env] ❌❌ tongyiBaseUrl 注入后仍非法（没有 http(s):// 前缀）：值=${JSON.stringify(bu)}\n`
+        + `  请修正 .env 文件中的 IA_TONGYI_BASE_URL，正确写法示例：\n`
+        + `    IA_TONGYI_BASE_URL=https://llm-xxxxxx.cn-beijing.maas.aliyuncs.com/api/v1\n`
+        + `    注意：两侧不要加任何反引号、双引号、单引号！不要有前后空格！`
+      );
+    }
+  } catch (_) { /* ignore */ }
   // 注入后再次打快照（脱敏），确认 config 字段是否真正被覆盖
   console.log(
     '[ConfigManager.env] 注入后config快照：'

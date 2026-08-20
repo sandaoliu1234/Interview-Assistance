@@ -1166,84 +1166,26 @@ function bindTabs() {
 
 /**
  * 绑定「简历优化」面板的交互（对应 HireMe 第三个标签页）。
- * 包括：简历上传解析、优化方向选择、生成优化建议（复用主进程 LLM 引擎）。
+ *
+ *  注意：简历优化 / 模拟面试 的真实 DOM 事件绑定，已经由
+ *  `src/renderer/mockResumePanels.js` 的 `bindEvents() / initMockAndResumeUI()`
+ *  统一接管（包括：resumeOptUploadBtn / resumeOptClearBtn / resumeOptUseSavedBtn /
+ *  resumeDropzone / resumeFileInput / resumeOptEditor 字数计数 / resumeOptStartBtn /
+ *  resumeOptExportDocxBtn / resumeOptCopyBtn）。
+ *
+ *  本函数在这里仅保留一个"守卫壳"：
+ *    - 兼容 seg 控件初选中 active 状态（若简历方向段控件存在），
+ *    - 保证旧版本/未来误调用时不会抛错，
+ *    - 不会再次绑定同一按钮，避免「两套点击回调各跑一遍」导致上传 / 清空 / 字数更新被覆盖
  */
 function bindResumePanel() {
-  let resumeDir = 'general'; // 当前选中的优化方向
-
-  // 上传按钮：选文件 -> 解析 -> 写入文本框
-  const uploadBtn = document.getElementById('resumeOptUploadBtn');
-  if (uploadBtn) {
-    uploadBtn.addEventListener('click', async () => {
-      const picked = await pickFile({
-        title: '上传简历（PDF / DOCX / MD / TXT）',
-        filters: [
-          { name: '简历文件', extensions: ['pdf', 'docx', 'doc', 'md', 'markdown', 'txt'] },
-          { name: 'All Files', extensions: ['*'] }
-        ]
-      });
-      if (!picked) return;
-      const status = document.getElementById('resumeOptStatus');
-      status.textContent = '解析中…';
-      const text = await parseFileToText(picked.path, picked.buffer);
-      if (text === null) {
-        status.textContent = '解析失败，请直接粘贴文本';
-        return;
-      }
-      setVal('resumeOptEditor', text);
-      status.textContent = `已解析 ${text.length} 字`;
-    });
-  }
-
-  // 优化方向分段控件：切换时记录当前方向
+  // 优化方向分段控件：如果 UI 存在，就按 HTML 里的 active 默认项同步 resumeDir；
+  // 真实的 click 事件绑定已由 mockResumePanels.js 的 setResumeLang 统一承担，这里不重复绑。
   const dirSeg = document.querySelector('#resumePanel .seg-control');
   if (dirSeg) {
     const buttons = dirSeg.querySelectorAll('.seg-btn');
-    buttons.forEach((el) => {
-      el.addEventListener('click', () => {
-        resumeDir = el.getAttribute('data-resume-dir');
-        buttons.forEach((b) => b.classList.toggle('active', b === el));
-      });
-    });
-    // 默认选中第一项（与 HTML 中 .active 保持一致）
     const first = dirSeg.querySelector('.seg-btn.active') || dirSeg.querySelector('.seg-btn');
-    if (first) {
-      resumeDir = first.getAttribute('data-resume-dir');
-      buttons.forEach((b) => b.classList.toggle('active', b === first));
-    }
-  }
-
-  // 生成优化建议：调用主进程 optimize-resume（复用现有 LLM）
-  const runBtn = document.getElementById('resumeOptRunBtn');
-  const editor = document.getElementById('resumeOptEditor');
-  const resultCard = document.getElementById('resumeOptResultCard');
-  const resultBox = document.getElementById('resumeOptResult');
-  if (runBtn) {
-    runBtn.addEventListener('click', async () => {
-      const text = editor ? editor.value.trim() : '';
-      if (!text) {
-        if (resultCard) resultCard.classList.remove('hidden');
-        if (resultBox) resultBox.textContent = '请先在上方上传或粘贴简历内容。';
-        return;
-      }
-      runBtn.disabled = true;          // 防止重复点击
-      runBtn.textContent = '生成中…';
-      if (resultCard) resultCard.classList.remove('hidden');
-      if (resultBox) resultBox.textContent = '正在分析并优化简历，请稍候…';
-      try {
-        const res = await api.optimizeResume(text, resumeDir);
-        if (res && res.success) {
-          resultBox.textContent = res.answer;
-        } else {
-          resultBox.textContent = '优化失败：' + (res && res.error ? res.error : '未知错误');
-        }
-      } catch (e) {
-        resultBox.textContent = '优化失败：' + e.message;
-      } finally {
-        runBtn.disabled = false;
-        runBtn.textContent = '✨ 生成优化建议';
-      }
-    });
+    if (first) buttons.forEach((b) => b.classList.toggle('active', b === first));
   }
 }
 

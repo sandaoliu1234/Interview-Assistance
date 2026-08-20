@@ -10,6 +10,45 @@ const { PrivacyAudit } = require('./privacyAudit');
 //   反引号字符使用 \x60（十六进制 ASCII 码 96），绝对避免与 JS 模板字符串的 ` 冲突。
 //   额外覆盖：全角引号 『』「】【】（）《》、弯引号 “”‘’、全角 `｀`(U+FF40) 等
 // ============================================================
+/**
+ * 超激进清理：去掉字符串中的所有『非 ASCII 可打印字符 + 常见 Unicode 包裹字符 + 控制字符』。
+ *   使用场景：dotenv / process.env / config.json 中被带入了看不见的控制字符（\u0000-\u001F、\u007F-\u009F）
+ *             或罕见 Unicode 引号变体，导致正则字符类匹配不上。
+ *             本函数作为『最后一道关口』，暴力删掉所有不在白名单内的字符。
+ *   URL 白名单（RFC 3986 unreserved + sub-delims + :/?#[]@ + =&%）：
+ *     A-Z a-z 0-9 -._~ :/?#[]@ !$&'()*+,;= %
+ *   字符串白名单（API Key 等场景）：
+ *     A-Z a-z 0-9 -._~ :/!$&'()*+,;= %@#
+ * @param {string} raw   原始字符串
+ * @param {'url'|'str'} kind  白名单类型：'url'（严格 URL 白名单）或 'str'（较宽松，允许 @# 等常见密钥字符）
+ */
+function _aggressiveClean(raw, kind) {
+  if (typeof raw !== 'string') return '';
+  // 先转普通字符串，保证后续 replace 生效
+  let s = raw;
+  // 第一步：把所有常见 Unicode 引号 / 包裹字符 统一替换为空（这些字符在正则白名单之外，本就会被删掉，但先显式列出来更稳妥）
+  //   覆盖：ASCII 反引号 / 单双引号、弯引号、全角反引号、日文角括号、方头括号、全角括号、书名号
+  const commonWraps = /[\x60\uFF40\u201C\u201D\u2018\u2019\u300C\u300D\u300E\u300F\u3010\u3011\uFF08\uFF09\u300A\u300B\u201E\u201F\u201A\u201B\u00AB\u00BB\u2039\u203A]/g;
+  s = s.replace(commonWraps, '');
+  // 第二步：删除所有控制字符（C0 控制区 \u0000-\u001F 除 \t\n\r，以及 DEL \u007F，C1 控制区 \u0080-\u009F）
+  const controlChars = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+  s = s.replace(controlChars, '');
+  // 第三步：按 kind 应用白名单（保留 ASCII 可打印 + URL/密钥 常用特殊字符）
+  let allowed;
+  if (kind === 'url') {
+    // RFC 3986 + 常见 URL 字符（unreserved + sub-delims + gen-delims + =&% 用于 query）
+    allowed = /[^A-Za-z0-9\-._~:\/?#\[\]@!$&'()*+,;=%]/g;
+  } else {
+    // API Key / 普通字符串：允许字母数字 + 常见密钥符号（含 @# 等）
+    allowed = /[^A-Za-z0-9\-._~:\/!$&'()*+,;=%@#]/g;
+  }
+  s = s.replace(allowed, '');
+  return s;
+}
+/**
+ * URL 防御性清理：多层包裹字符剥离 + 超激进白名单清理 + 去除尾部斜杠
+ * @param {*} u  原始 URL 值
+ */
 function _cleanUrl(u) {
   if (typeof u !== 'string') return '';
   let x = u;
@@ -35,13 +74,19 @@ function _cleanUrl(u) {
     x = x.replace(reHead, '').replace(reTail, '').replace(/\/+$/, '');
     if (x === before) break;
   }
-  return x;
+  // ★ 最后一步：超激进清理（白名单过滤），保证 URL 绝对干净
+  const aggressive = _aggressiveClean(x, 'url');
+  // 去掉尾部斜杠（最终）
+  return aggressive.replace(/\/+$/, '');
 }
-// 字符串（非 URL）防御性清理：只去首尾包裹字符，不删 /
+/**
+ * 字符串（非 URL）防御性清理：多层包裹字符剥离 + 超激进白名单清理（保留常见密钥符号）
+ * @param {*} s  原始字符串（如 API Key）
+ */
 function _cleanStr(s) {
   if (typeof s !== 'string') return '';
   let x = s;
-  const WRAP = '\\s\\u3000\\x60\\uFF40\'"\\u201C\\u201D\\u2018\\u2019\\u300C\\u300D\\u300E\\u300F\\u3010\\u3011\\uFF08\\uFF09\\u300A\\u300B';
+  const WRAP = '\\s\\u3000\\x60\\uFF40\'"\\u201C\\u201D\\u2018\u2019\\u300C\\u300D\\u300E\\u300F\\u3010\\u3011\\uFF08\\uFF09\\u300A\\u300B';
   const reHead = new RegExp('^[' + WRAP + ']+');
   const reTail = new RegExp('[' + WRAP + ']+$');
   for (let i = 0; i < 12; i++) {
@@ -49,7 +94,8 @@ function _cleanStr(s) {
     x = x.replace(reHead, '').replace(reTail, '');
     if (x === before) break;
   }
-  return x;
+  // ★ 最后一步：超激进清理（白名单过滤），保证字符串绝对干净
+  return _aggressiveClean(x, 'str');
 }
 
 // ============================================================
@@ -278,12 +324,28 @@ class AIService {
   //                                     百炼私有空间形如 'https://llm-xxx.cn-beijing.maas.aliyuncs.com/api/v1'
   //                                     （注：百炼私有空间走 OpenAI 兼容接口，公共版走 DashScope 原生接口，二者完全不同！）
   async callTongyi(prompt, apiKey, model = 'qwen-turbo', baseUrl) {
-    // 1) 参数防御性清理：最后一道关口，去掉首尾包裹字符（反引号/单引号/双引号/全角空格/半角空格）
+    // 0) 原始值快照（脱敏 key，保留 baseUrl 原样，便于对比清理是否生效）
+    const rawBase = (baseUrl && typeof baseUrl === 'string') ? baseUrl : '';
+    const rawKeyLen = (apiKey && typeof apiKey === 'string') ? apiKey.length : 0;
+    // 1) 参数防御性清理：最后一道关口，去掉首尾包裹字符（反引号/单引号/双引号/全角空格/半角空格 + 超激进白名单清理）
     //    原因：用户从 Markdown/CSV/我的日志里复制粘贴时，常带上 `https://...` 或 "https://..." 格式
     const key = _cleanStr(apiKey);
-    // 2) 统一去掉尾部斜杠，并使用 _cleanUrl 做 URL 专用清理（去包裹+去尾斜杠）
+    // 2) 统一去掉尾部斜杠，并使用 _cleanUrl 做 URL 专用清理（去包裹+去尾斜杠 + 超激进白名单）
     const base = _cleanUrl(baseUrl || 'https://dashscope.aliyuncs.com/api/v1') || 'https://dashscope.aliyuncs.com/api/v1';
-    // 【关键路由】判断是否是百炼私有工作空间（域名包含 maas.aliyuncs.com 则为百炼私有 MaaS）
+    // 2.1) ★ 关键：清理前后对比日志 —— 如果清理后与原值不一致，打 warn 日志提醒用户 .env/config.json 写法有误
+    const baseChanged = (rawBase !== base) && (rawBase.length > 0);
+    const keyLenChanged = (rawKeyLen > 0 && rawKeyLen !== key.length);
+    if (baseChanged || keyLenChanged) {
+      console.warn(
+        `[callTongyi] ⚠️ 参数清理生效（原始值带反引号/引号/不可见字符，请修正 .env 或 config.json）：\n`
+        + `  baseUrl 清理前: ${JSON.stringify(rawBase)}\n`
+        + `  baseUrl 清理后: ${JSON.stringify(base)}\n`
+        + `  key 长度: 原值 ${rawKeyLen} → 清理后 ${key.length}（是否变化: ${keyLenChanged ? 'YES' : 'NO'}）`
+      );
+    } else {
+      console.log(`[callTongyi] ✅ 参数清理通过（原值与清理后一致）：baseUrl=${JSON.stringify(base)} keyLen=${key.length}`);
+    }
+    // 3) 【关键路由】判断是否是百炼私有工作空间（域名包含 maas.aliyuncs.com 则为百炼私有 MaaS）
     //   百炼私有空间：必须走 CSV 中 openAiCompatible 字段给出的「兼容模式端点」/compatible-mode/v1/chat/completions
     //     1) 若用户填的是 dashScope 字段（/api/v1 结尾）→ 自动替换为 /compatible-mode/v1
     //     2) 若用户填的是 openAiCompatible 字段（已带 /compatible-mode/v1）→ 直接使用
@@ -293,6 +355,15 @@ class AIService {
       ? _cleanUrl(base.replace(/\/api\/v1$/i, '/compatible-mode/v1'))
       : base;
     const authHeader = `Bearer ${key}`;
+    // 3.1) 关键防护：如果清理后 base 仍不是合法 URL（没有 http 开头），打致命错误日志，防止请求发到非法地址
+    if (!/^https?:\/\//i.test(base)) {
+      console.error(
+        `[callTongyi] ❌❌ baseUrl 清理后仍非法（没有 http(s):// 前缀）！请求将失败。\n`
+        + `  原始 baseUrl=${JSON.stringify(rawBase)}\n`
+        + `  清理后 base=${JSON.stringify(base)}\n`
+        + `  请检查 .env 文件，正确写法应为：IA_TONGYI_BASE_URL=https://llm-xxx.cn-beijing.maas.aliyuncs.com/api/v1（两侧不要加反引号/引号）`
+      );
+    }
     console.log(`[callTongyi] 路由判定：baseUrl=${JSON.stringify(base)} → ${isBailianPrivate ? '百炼私有空间(OpenAI兼容)' : '公共DashScope(原生)'} | ${isBailianPrivate ? ('兼容端点=' + JSON.stringify(bailianCompatibleBase)) : ('原生端点头尾')} | model=${model}`);
     return withRetry(
       async () => {

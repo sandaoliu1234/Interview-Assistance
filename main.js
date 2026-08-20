@@ -136,6 +136,7 @@ async function loadNativeAudio() {
 
 let mainWindow;
 let overlayWindow;   // ★ 独立答题面板 BrowserWindow（可跨屏，alwaysOnTop）
+let mockInterviewFloatWindow;  // ★ 模拟面试专用浮动面板 BrowserWindow（锁死作答方式、题目+答题+最终总点评专用）
 let tray;
 let isWindowVisible = true;
 let isStealthMode = false;
@@ -1288,6 +1289,8 @@ ipcMain.handle('interview-session-list', async (event, opts = {}) => {
       keyword: opts && opts.keyword ? String(opts.keyword) : '',
       limit: Number(opts && opts.limit) || 50,
       offset: Number(opts && opts.offset) || 0,
+      // ★ 面试类型互斥过滤：'copilot'=仅真实面试 / 'mock'=仅模拟面试 / 空字符串=全部
+      category: (opts && opts.category) ? String(opts.category) : '',
     });
     return Object.assign({ ok: true }, r);
   } catch (e) {
@@ -1617,12 +1620,41 @@ function getDefaultOverlayBounds() {
  * @param  {...any} args
  */
 function broadcastToAllViews(channel, ...args) {
+  // ★ asr:* 通道诊断：浮窗收不到文字时的根因定位开关
+  //   只在 asr:interim / asr:final / asr:recording-status 三个通道打诊断，
+  //   其他高频通道（如 local:status-changed）不打，避免刷屏。
+  const isAsrChannel = typeof channel === 'string' && channel.startsWith('asr:');
   try {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
   } catch (_) { /* 忽略 */ }
   try {
     if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.webContents.send(channel, ...args);
   } catch (_) { /* 忽略 */ }
+  // ★ 模拟面试浮窗也必须收到 ASR 事件广播（asr:interim / asr:final / asr:recording-status）：
+  //   语音模式下浮窗靠这些通道把识别文字实时写进作答 textarea；
+  //   之前只广播 mainWindow + overlayWindow，导致浮窗永远收不到麦克风转写结果。
+  try {
+    if (mockInterviewFloatWindow && !mockInterviewFloatWindow.isDestroyed()) {
+      const wc = mockInterviewFloatWindow.webContents;
+      const floatWcId = wc && typeof wc.id === 'function' ? wc.id : (wc && wc.id);
+      const argsPreview = (channel === 'asr:interim' || channel === 'asr:final')
+        ? `text="${String(args[0]||'').slice(0, 30)}" len=${String(args[0]||'').length}`
+        : `args=${JSON.stringify(args).slice(0, 60)}`;
+      if (isAsrChannel) {
+        console.log(`[broadcast-ASR] ✉ 向浮窗广播 channel=${channel} wcId=${floatWcId} destroyed=${!!mockInterviewFloatWindow.isDestroyed()} visible=${mockInterviewFloatWindow.isVisible()} ${argsPreview}`);
+      }
+      mockInterviewFloatWindow.webContents.send(channel, ...args);
+      if (isAsrChannel) {
+        console.log(`[broadcast-ASR] ✓ send() 调用完成（无同步抛错）：channel=${channel}`);
+      }
+    } else if (isAsrChannel) {
+      // ★ 浮窗不存在/已销毁 但却在广播 ASR 事件 → 说明顺序错了（ASR 启动早于浮窗创建）
+      const destroyed = mockInterviewFloatWindow ? mockInterviewFloatWindow.isDestroyed() : '(null)';
+      console.log(`[broadcast-ASR] ⚠ 浮窗对象不可用 → ASR 文本不会送达！mockInterviewFloatWindow=${mockInterviewFloatWindow ? 'exists' : 'NULL'} destroyed=${destroyed}`);
+    }
+  } catch (e) {
+    if (isAsrChannel) console.log(`[broadcast-ASR] ❌ 浮窗 send() 异常 channel=${channel}: ${e && e.message}`);
+  }
 }
 
 /**
@@ -2119,11 +2151,30 @@ ipcMain.handle('start-asr-pipeline', async (event, config) => {
       app.bus.emit('asr:recording-status', false);
     }
 
+    // ====== ★ 防御性归一化：部分入口（如模拟面试浮窗）调用 startAsrPipeline() 时不传 config ======
+    //   原先直接 config.baiduApiKey 会在 config=undefined 时抛
+    //   "TypeError: Cannot read properties of undefined (reading 'baiduApiKey')" 导致管线启动失败
+    const inCfg = (config && typeof config === 'object' && !Array.isArray(config)) ? config : {};
+
+    // ====== ★ 兜底合并：传入 config 缺少百度密钥/LLM 服务配置时，从应用全局配置补齐 ======
+    //   浮窗首次启动 ASR 没有任何参数 → 百度 Key 必须从用户保存的应用配置里取；
+    //   同时 selectedService / tongyiApiKey 等 LLM 字段也一并补齐（管线 AI 判定/答题要用）
+    let baseCfg = inCfg;
+    if (!inCfg.baiduApiKey || !inCfg.baiduSecretKey || !inCfg.baiduAppId || !inCfg.selectedService) {
+      try {
+        const appCfg = loadConfig() || {};
+        baseCfg = Object.assign({}, appCfg, inCfg); // inCfg 显式传入的值优先，应用配置兜底
+        console.log('[main] start-asr-pipeline：传入 config 不完整，已从应用配置兜底合并（baiduApiKey/selectedService 等字段）');
+      } catch (cfgErr) {
+        console.warn('[main] start-asr-pipeline：应用配置兜底加载失败（继续用传入 config）：', cfgErr && cfgErr.message);
+      }
+    }
+
     // 合并环境变量（.env 中的百度 Key 作为兜底）
-    const mergedConfig = Object.assign({}, config, {
-      baiduApiKey: config.baiduApiKey || process.env.BAIDU_API_KEY,
-      baiduSecretKey: config.baiduSecretKey || process.env.BAIDU_SECRET_KEY,
-      baiduAppId: config.baiduAppId || process.env.BAIDU_APP_ID
+    const mergedConfig = Object.assign({}, baseCfg, {
+      baiduApiKey: baseCfg.baiduApiKey || process.env.BAIDU_API_KEY,
+      baiduSecretKey: baseCfg.baiduSecretKey || process.env.BAIDU_SECRET_KEY,
+      baiduAppId: baseCfg.baiduAppId || process.env.BAIDU_APP_ID
     });
 
     // 创建管线实例
@@ -2161,13 +2212,17 @@ ipcMain.handle('start-asr-pipeline', async (event, config) => {
       }
     };
 
-    // 注册回调：app.bus.emit 解耦 + 双窗口 webContents.send
+    // 注册回调：app.bus.emit 解耦 + 多窗口 webContents.send
+    // ★ transcribeOnly 纯转写模式（模拟面试浮窗）：
+    //   bus.emit 会把识别文本写进 localHttpServer 的主面板 history（面试官区），
+    //   而麦克风识别的是"用户自己的回答"——必须跳过 bus，只向各窗口（含浮窗）广播。
+    const isTranscribeOnly = !!(mergedConfig && mergedConfig.transcribeOnly);
     asrPipeline.onInterim = (text) => {
-      app.bus.emit('asr:interim', text);
+      if (!isTranscribeOnly) app.bus.emit('asr:interim', text);
       broadcastToAllViews('asr:interim', text);
     };
     asrPipeline.onFinal = (text) => {
-      app.bus.emit('asr:final', text);
+      if (!isTranscribeOnly) app.bus.emit('asr:final', text);
       broadcastToAllViews('asr:final', text);
     };
     // 问题检测完成 → AI 开始答题前：发 answer-start 用于 overlay 显示 ⏳
@@ -2995,8 +3050,17 @@ ipcMain.handle('stop-local-server', () => {
  */
 ipcMain.handle('get-server-status', () => {
   try {
-    return { ok: true, status: localHttpServer.getStatus() };
+    const r = { ok: true, status: localHttpServer.getStatus() };
+    // 诊断：每秒轮询一次会刷屏，所以只在状态变化 / 参数异常（port=0 或 token 空）时才打印
+    const st = r && r.status ? r.status : null;
+    const port = Number(st && st.port) || 0;
+    const tokenLen = String((st && st.token) || '').length;
+    if (port === 0 || tokenLen === 0) {
+      console.log(`[mock-interview][main][IPC:get-server-status] ⚠ 返回值异常：port=${port} tokenLen=${tokenLen}`);
+    }
+    return r;
   } catch (e) {
+    console.error(`[mock-interview][main][IPC:get-server-status] ✗ 内部异常：${e && e.message}`);
     return { ok: false, error: 'internal', msg: e.message || '读取状态失败' };
   }
 });
@@ -3019,21 +3083,729 @@ ipcMain.handle('disconnect-miniapp', () => {
  *   如 HTTP 服务尚未启动，会立即启动一次再返回（保证 fetch 可用）。
  */
 ipcMain.handle('get-server-http-info', async () => {
+  const t0 = Date.now();
+  console.log(`[mock-interview][main][IPC:get-server-http-info] ? 收到请求，准备启动/读取 HTTP 服务状态...`);
   try {
     attachLocalHttpServerExternals();
+    let started = false;
     if (localHttpServer.status === 'idle') {
       await localHttpServer.start({ bus: app.bus });
+      started = true;
     }
     const st = localHttpServer.getStatus() || {};
-    return {
+    const port = Number(st && st.port) || 0;
+    const token = String(st && st.token ? st.token : '');
+    const r = {
       ok: true,
       isRunning: !!st && st.status && st.status !== 'idle',
-      port: Number(st && st.port) || 0,
-      token: String(st && st.token ? st.token : ''),
+      port,
+      token,
       baseUrl: (st && st.port) ? `http://127.0.0.1:${st.port}` : '',
       status: st
     };
+    console.log(`[mock-interview][main][IPC:get-server-http-info] ✓ 返回：startedNew=${started} port=${port} token=${token ? `${token.slice(0,4)}***${token.slice(-4)}(len=${token.length})` : '<empty>'} baseUrl=${r.baseUrl || '(空)'} 用时=${Date.now() - t0}ms`);
+    return r;
   } catch (e) {
+    console.error(`[mock-interview][main][IPC:get-server-http-info] ✗ 内部异常：${e && e.message} 用时=${Date.now() - t0}ms 堆栈：\n${e && e.stack || 'no-stack'}`);
     return { ok: false, error: 'internal', msg: e && e.message || '获取 HTTP 服务失败', isRunning:false, port:0, token:'', baseUrl:'' };
   }
 });
+
+// ============================================================
+// ★ 模拟面试浮动面板 BrowserWindow（mockInterviewFloatWindow）
+// 职责划分：
+//   - 主进程(main.js)：创建/销毁 BrowserWindow、窗口尺寸/置顶/位置、接收 startParams 并在 did-finish-load 时推送给渲染层
+//   - 渲染进程(mockInterviewFloat.html + mockInterviewFloatRenderer.js)：UI 渲染、作答流程推进、语音/文字交互、调用 localHttpServer 接口
+// 用法：主窗口 mockResumePanels.js 在用户点击"开始模拟面试"后，先调 HTTP /session 启动会话，
+//       再调 electronAPI.openMockInterviewFloatWin(startParams) 打开浮窗。
+// ============================================================
+
+/**
+ * 获取模拟面试浮窗当前状态：{exists, bounds}
+ * @returns {{exists:boolean, bounds:null|{x:number,y:number,width:number,height:number}}}
+ */
+function getMockInterviewFloatStatus() {
+  const exists = !!(mockInterviewFloatWindow && !mockInterviewFloatWindow.isDestroyed());
+  let bounds = null;
+  if (exists) {
+    try { bounds = mockInterviewFloatWindow.getBounds(); } catch (_) { bounds = null; }
+  }
+  return { exists, bounds };
+}
+
+/**
+ * 关闭模拟面试浮窗：释放资源 + 清引用
+ */
+function closeMockInterviewFloatWindow() {
+  if (!mockInterviewFloatWindow) return;
+  try {
+    if (!mockInterviewFloatWindow.isDestroyed()) mockInterviewFloatWindow.close();
+  } catch (_) { /* 忽略关窗过程中的异常 */ }
+  mockInterviewFloatWindow = null;
+}
+
+/**
+ * 创建/显示模拟面试浮动面板窗口。
+ * - 若窗口已存在：仅 focus/show，不会重建。
+ * - startParams 结构（由渲染层传入）：
+ *   { answerMode:'voice'|'text', totalQuestions:number, language:'zh'|'en',
+ *     positionLabel:string, industryLabel:string, typeLabel:string, serverInfo:{port,token,baseUrl} }
+ * @returns {BrowserWindow|null}
+ */
+
+/**
+ * ★ 浮动面板补发定时器 & ack 管理（核心修复：主进程监听 IPC ack 必须用 ipcMain.on，不能用 wc.on）
+ *   数据结构：Map<webContentsId, Set<Timeout>>
+ *   作用：
+ *    1. 创建/补发 startParams 时把 setTimeout 返回值放入对应 wcId 的 Set
+ *    2. 收到浮窗 ipcRenderer.send('mock-interview:started-ack') 时，按 evt.sender.id 找到该 wc
+ *    3. 清掉所有未到期的补发定时器（t2/t3 等）
+ *    4. 浮窗 closed 时按 wcId 清理整组，避免内存泄漏
+ */
+const _mockFloatPendingByWcId = new Map();
+
+/**
+ * 一次性全局注册：浮窗启动成功后发的 mock-interview:started-ack 事件
+ * 【注意】必须用 ipcMain.on 接收 ipcRenderer.send，wc.on('mock-interview:started-ack', ...) 永远不会触发
+ */
+(function _registerMockFloatAckListenerOnce() {
+  if (global._mockFloatAckRegistered) return;
+  try { global._mockFloatAckRegistered = true; } catch (_) { /* ignore */ }
+  ipcMain.on('mock-interview:started-ack', (evt) => {
+    try {
+      const senderWc = evt && evt.sender;
+      // 先检查 senderWc 是否存在，再检查是否有 isDestroyed 方法且已销毁（加括号明确 && 优先级）
+      if (!senderWc || (typeof senderWc.isDestroyed === 'function' && senderWc.isDestroyed())) return;
+      const wcId = Number(senderWc.id);
+      if (!wcId) return;
+      const timers = _mockFloatPendingByWcId.get(wcId);
+      if (!timers || timers.size === 0) {
+        console.log(`[mock-interview][main][ack] ✓ 收到浮窗 ack（wcId=${wcId}），无待取消的补发定时器`);
+        return;
+      }
+      let count = 0;
+      timers.forEach(t => { try { clearTimeout(t); count++; } catch (_) {} });
+      timers.clear();
+      console.log(`[mock-interview][main][ack] ✓ 收到浮窗 ack（wcId=${wcId}），已取消 ${count} 个未执行的补发定时器`);
+      // 窗口已存在分支用的是同一个 wc，也注册了 ack 清理，保持 set 即可（不清 Map key，多次 create 时复用）
+    } catch (e) {
+      console.warn(`[mock-interview][main][ack] 处理浮窗 ack 异常（非致命）：${e && e.message}`);
+    }
+  });
+  console.log(`[mock-interview][main][ack] 全局 ack 监听器已一次性注册（ipcMain.on mock-interview:started-ack）`);
+})();
+
+/**
+ * 一次性全局注册：浮窗 → 主进程 的『诊断日志』通道（排障专用，避免用户必须开浮窗 DevTools 才能看到业务层日志）
+ *   对应 src/renderer/mockInterviewFloatRenderer.js 中 F_DIAG.send()
+ *   打印格式：[float][wcId=xx] ❌/⚠️/ℹ️ [level] tagMsg | summary（已脱敏+裁剪，安全可直接看）
+ */
+(function _registerMockFloatDiagnosticListenerOnce() {
+  if (global._mockFloatDiagRegistered) return;
+  try { global._mockFloatDiagRegistered = true; } catch (_) { /* ignore */ }
+  ipcMain.on('mock-interview:diagnostic', (evt, payload) => {
+    try {
+      const senderWc = evt && evt.sender;
+      // 安全判断：必须存在 senderWc → 且若有 isDestroyed 方法则需未销毁 → 取 id
+      const wcId = (senderWc && (typeof senderWc.isDestroyed !== 'function' || !senderWc.isDestroyed())) ? Number(senderWc.id) : 0;
+      const level = (payload && payload.level) ? String(payload.level) : 'info';
+      const tagMsg = String(payload && payload.tagMsg || '');
+      const summary = String(payload && payload.summary || '');
+      const icon = (level === 'error') ? '❌' : (level === 'warn' ? '⚠️' : 'ℹ️');
+      const prefix = `[float][wcId=${wcId}]${icon}[${level}]`;
+      if (summary) console.log(`${prefix} ${tagMsg} | ${summary}`);
+      else console.log(`${prefix} ${tagMsg}`);
+    } catch (e) {
+      // 诊断通道自身失败时，仅打一行 warn，不能吞掉/干扰正常业务日志
+      console.warn(`[mock-interview][main][diag] 处理浮窗诊断消息异常（非致命）：${e && e.message}`);
+    }
+  });
+  console.log(`[mock-interview][main][diag] 全局浮窗诊断监听器已一次性注册（ipcMain.on mock-interview:diagnostic）`);
+})();
+
+/**
+ * 一次性全局注册：preload.js 执行探针监听器（判断"preload 到底有没有执行、是在哪个窗口执行的"）
+ *   对应 preload.js 开头 ipcRenderer.send('preload-executed', probe)
+ *   打印字段：wcId / window / process.type / contextIsolated / electronAPIBefore(挂载前是否已存在) / preload 文件路径
+ *   判断依据：如果创建浮窗后没有任何 [preload-probe][wcId=xx] 日志 → 100% 证明 preload 没有被 BrowserWindow 调用（可能 webPreferences.preload 路径错、或 sandbox 强制 true 禁用 Node API）
+ */
+(function _registerPreloadProbeListenerOnce() {
+  if (global._preloadProbeRegistered) return;
+  try { global._preloadProbeRegistered = true; } catch (_) { /* ignore */ }
+  ipcMain.on('preload-executed', (evt, probe) => {
+    try {
+      const senderWc = evt && evt.sender;
+      const wcId = (senderWc && (typeof senderWc.isDestroyed !== 'function' || !senderWc.isDestroyed())) ? Number(senderWc.id) : 0;
+      const hostWebContentsType = (senderWc && senderWc.hostWebContents && senderWc.hostWebContents.id) ? `webview(hostWcId=${senderWc.hostWebContents.id})` : 'window';
+      const p = probe || {};
+      console.log(`[preload-probe][wcId=${wcId}] ✓ preload.js 已执行（type=${hostWebContentsType}）：processType=${String(p.processType||'')} contextIsolated=${String(p.contextIsolated)} hasCtxBridge=${!!p.hasContextBridge} hasIpc=${!!p.hasIpcRenderer} typeofWindow=${String(p.typeofWindow)} electronAPI_before_bridge=${!!p.electronAPIBefore} script=${String(p.preloadScriptLocation||'')}`);
+    } catch (e) {
+      console.warn(`[preload-probe] 处理探针消息异常（非致命）：${e && e.message}`);
+    }
+  });
+  console.log(`[preload-probe] 全局 preload 执行探针监听器已一次性注册（ipcMain.on preload-executed）`);
+})();
+
+/**
+ * 一次性全局注册：『浮窗 → 主进程 Node.js 代发 HTTP 请求』代理通道
+ * ★ 终极兜底方案（彻底解决 file:// → http:// 同源策略/CSP/Chromium 拦截问题）
+ *   原理：Node.js 的 http/https 模块没有同源策略、没有 CSP、没有协议限制 → 100% 能通
+ *   对应：mockInterviewFloatRenderer.js apiFetch 中，当原生 fetch 出现"Failed to fetch"（Chromium 拦截特征）时自动回退到 IPC 代发
+ *   请求参数（req）：{ url, method, headers, body(String|Object) , timeoutMs }
+ *   返回结构（总是同步 resolve，不会在 IPC 层 reject）：
+ *     成功：{ ok:true,  status, statusText, data(json 或 null), rawText, elapsedMs }
+ *     失败：{ ok:false, status, statusText, errorMsg, rawText, elapsedMs, cause }
+ */
+(function _registerMockInterviewHttpProxyOnce() {
+  if (global._mockHttpProxyRegistered) return;
+  try { global._mockHttpProxyRegistered = true; } catch (_) { /* ignore */ }
+  // 提前加载 Node 内置 http/https 模块（懒加载，失败时告知用户）
+  const httpMod = (function () { try { return require('http'); } catch (_) { return null; } })();
+  const httpsMod = (function () { try { return require('https'); } catch (_) { return null; } })();
+  const { URL } = require('url');
+
+  ipcMain.handle('mock-interview:http-proxy', async (_evt, req) => {
+    const t0 = Date.now();
+    try {
+      const r = req || {};
+      const rawUrl = String(r.url || '').trim();
+      const method = String(r.method || 'GET').toUpperCase();
+      const timeoutMs = Number(r.timeoutMs) || 120000; // 默认 120s 超时
+      if (!rawUrl) {
+        return { ok: false, status: 0, errorMsg: 'HTTP Proxy: url 为空', elapsedMs: Date.now() - t0 };
+      }
+      // 1. 解析 URL（识别 http/https，取 host/path）
+      let u;
+      try { u = new URL(rawUrl); } catch (parseErr) {
+        return { ok: false, status: 0, errorMsg: `HTTP Proxy: URL 解析失败（${parseErr && parseErr.message || '未知错误'}），url=${rawUrl.slice(0, 200)}`, elapsedMs: Date.now() - t0 };
+      }
+      const useHttps = (u.protocol === 'https:');
+      const mod = useHttps ? httpsMod : httpMod;
+      if (!mod) {
+        return { ok: false, status: 0, errorMsg: `HTTP Proxy: 缺少 Node ${useHttps ? 'https' : 'http'} 内置模块（运行环境异常）`, elapsedMs: Date.now() - t0 };
+      }
+      // 2. 处理 headers（对象 → 大小写兼容）+ 处理 body
+      const headers = {};
+      if (r.headers && typeof r.headers === 'object') {
+        Object.keys(r.headers).forEach(k => {
+          try { headers[String(k)] = String(r.headers[k]); } catch (_) {}
+        });
+      }
+      let sendBody = null;
+      if (r.body !== undefined && r.body !== null && ['POST','PUT','PATCH'].indexOf(method) >= 0) {
+        if (Buffer.isBuffer(r.body)) {
+          sendBody = r.body;
+          if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'application/octet-stream';
+        } else if (typeof r.body === 'string') {
+          sendBody = r.body;
+          if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'text/plain; charset=utf-8';
+        } else {
+          try {
+            sendBody = JSON.stringify(r.body);
+            if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'application/json; charset=utf-8';
+          } catch (jsonErr) {
+            return { ok: false, status: 0, errorMsg: `HTTP Proxy: body 序列化失败（${jsonErr && jsonErr.message}）`, elapsedMs: Date.now() - t0 };
+          }
+        }
+        if (sendBody && Buffer.isBuffer(sendBody)) headers['Content-Length'] = String(Buffer.byteLength(sendBody));
+        else if (typeof sendBody === 'string') headers['Content-Length'] = String(Buffer.byteLength(sendBody, 'utf8'));
+      }
+      // 3. 构造请求选项
+      const options = {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port ? Number(u.port) : (useHttps ? 443 : 80),
+        method,
+        path: u.pathname + (u.search || ''),
+        headers,
+        timeout: timeoutMs
+      };
+      if (useHttps) {
+        // HTTPS 时允许通义/百炼自签或 SNI 场景（避免极端环境拦截）
+        options.rejectUnauthorized = true;
+      }
+
+      // 4. 发起请求（用 Promise 包装回调形式）
+      const result = await new Promise((resolve) => {
+        let _timedOut = false;
+        let _finished = false;
+        const reqObj = mod.request(options, (res) => {
+          // 收集响应体
+          const chunks = [];
+          res.on('data', (c) => { try { chunks.push(c); } catch (_) {} });
+          res.on('end', () => {
+            if (_finished) return;
+            _finished = true;
+            let rawText = '';
+            try { rawText = Buffer.concat(chunks).toString('utf8'); } catch (_) { rawText = ''; }
+            let data = null;
+            const ct = (res.headers && (res.headers['content-type'] || res.headers['Content-Type'])) ? String(res.headers['content-type'] || res.headers['Content-Type']) : '';
+            if (ct.indexOf('application/json') >= 0 || rawText.trim().startsWith('{') || rawText.trim().startsWith('[')) {
+              try { data = JSON.parse(rawText); } catch (_) { data = null; }
+            }
+            const status = Number(res.statusCode) || 0;
+            resolve({
+              ok: status >= 200 && status < 300,
+              status,
+              statusText: String(res.statusMessage || ''),
+              data,
+              rawText
+            });
+          });
+          res.on('error', (e) => {
+            if (_finished) return;
+            _finished = true;
+            resolve({ ok: false, status: 0, errorMsg: `响应体读取失败：${e && e.message || '未知错误'}`, cause: String(e && e.message || '') });
+          });
+        });
+        // 请求级错误（DNS 解析失败/拒绝连接/TLS 握手中途断开等）
+        reqObj.on('error', (e) => {
+          if (_finished) return;
+          _finished = true;
+          resolve({ ok: false, status: 0, errorMsg: `请求失败：${e && e.message || '未知错误'}`, cause: String(e && e.message || '') });
+        });
+        // 超时：主动 abort（避免无限等待）
+        reqObj.on('timeout', () => {
+          if (_finished || _timedOut) return;
+          _timedOut = true;
+          try { reqObj.destroy(new Error(`timeout after ${timeoutMs}ms`)); } catch (_) {}
+        });
+        // 写 body
+        if (sendBody !== null) {
+          try { reqObj.write(sendBody); } catch (writeErr) {
+            if (_finished) return;
+            _finished = true;
+            resolve({ ok: false, status: 0, errorMsg: `写入 body 失败：${writeErr && writeErr.message || ''}`, cause: String(writeErr && writeErr.message || '') });
+            return;
+          }
+        }
+        try { reqObj.end(); } catch (endErr) {
+          if (_finished) return;
+          _finished = true;
+          resolve({ ok: false, status: 0, errorMsg: `req.end 失败：${endErr && endErr.message || ''}`, cause: String(endErr && endErr.message || '') });
+        }
+      });
+
+      const elapsedMs = Date.now() - t0;
+      // 打印代理请求诊断日志（脱敏 Authorization）
+      const authRaw = String(headers['Authorization'] || headers['authorization'] || '');
+      const authMasked = authRaw ? authRaw.replace(/(Bearer\s+)([A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]{4,})/i, (_, p1, p2) => `${p1}${p2.slice(0,4)}***${p2.slice(-3)}(len=${p2.length})`) : '';
+      console.log(`[mock-interview][main][HTTP-Proxy] ${result.ok ? '✅' : '❌'} ${method} ${rawUrl.slice(0, 320)} | HTTP ${result.status || 0} | auth=${authMasked || '(no auth)'} | elapsed=${elapsedMs}ms | error=${result.errorMsg ? result.errorMsg.slice(0, 200) : '(none)'}`);
+      return { ...result, elapsedMs };
+    } catch (outerErr) {
+      const elapsedMs = Date.now() - t0;
+      console.error(`[mock-interview][main][HTTP-Proxy] ❌ 代理顶层异常：${outerErr && outerErr.message || '未知错误'} (elapsed=${elapsedMs}ms)`);
+      return { ok: false, status: 0, errorMsg: `HTTP Proxy 顶层异常：${outerErr && outerErr.message || '未知错误'}`, elapsedMs };
+    }
+  });
+  console.log(`[mock-interview][main][HTTP-Proxy] 全局 HTTP 代理 IPC 通道已一次性注册（ipcMain.handle mock-interview:http-proxy），使用 Node ${httpMod ? 'http' : '!!HTTP缺失!!'}/${httpsMod ? 'https' : '!!HTTPS缺失!!'} 模块代发请求`);
+})();
+
+/**
+ * 辅助：把某个补发定时器注册到指定 wc 的待取消集合中
+ * @param {Electron.WebContents} wc 目标浮窗的 webContents
+ * @param {NodeJS.Timeout} timer setTimeout 返回的定时器
+ */
+function _trackMockFloatTimer(wc, timer) {
+  if (!wc || !timer) return;
+  if (wc.isDestroyed && wc.isDestroyed()) return;
+  const wcId = Number(wc.id);
+  if (!wcId) return;
+  if (!_mockFloatPendingByWcId.has(wcId)) _mockFloatPendingByWcId.set(wcId, new Set());
+  _mockFloatPendingByWcId.get(wcId).add(timer);
+}
+
+/**
+ * 辅助：浮窗 closed 时清掉 wcId 对应的所有补发定时器
+ * @param {Electron.WebContents} wc 目标浮窗的 webContents
+ */
+function _clearMockFloatTimersByWc(wc) {
+  if (!wc) return;
+  try {
+    const wcId = Number(wc.id);
+    if (!wcId) return;
+    const timers = _mockFloatPendingByWcId.get(wcId);
+    if (timers) {
+      timers.forEach(t => { try { clearTimeout(t); } catch (_) {} });
+      timers.clear();
+      _mockFloatPendingByWcId.delete(wcId);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function createMockInterviewFloatWindow(startParams) {
+  // 1) 诊断：打印最终下发的 startParams（脱敏 token），保证主进程控制台能看到注入是否成功
+  try {
+    const p = (startParams && typeof startParams === 'object') ? startParams : {};
+    const safe = {
+      answerMode: p.answerMode, totalQuestions: p.totalQuestions, language: p.language,
+      typeLabel: p.typeLabel, interviewType: p.interviewType, positionLabel: p.positionLabel, industryLabel: p.industryLabel,
+      port: Number((p.serverInfo && p.serverInfo.port) || 0),
+      baseUrl: (p.serverInfo && p.serverInfo.baseUrl) ? String(p.serverInfo.baseUrl).replace(/\/$/, '') : '',
+      token: (p.serverInfo && p.serverInfo.token) ? `${String(p.serverInfo.token).slice(0, 4)}***${String(p.serverInfo.token).slice(-4)}(len=${String(p.serverInfo.token).length})` : '<empty>'
+    };
+    console.log(`[mock-interview][main][createFloat] ▶ createMockInterviewFloatWindow 开始，startParams 快照：${JSON.stringify(safe)}`);
+  } catch (_) { /* ignore 诊断日志异常 */ }
+
+  // 窗口已存在：直接显示 + 重新下发 startParams（避免重建时资源丢失）
+  if (mockInterviewFloatWindow && !mockInterviewFloatWindow.isDestroyed()) {
+    mockInterviewFloatWindow.show();
+    mockInterviewFloatWindow.focus();
+    // 已存在窗口：走一次双发机制（第一次立即，第二次 250ms 后）
+    try {
+      const wc = mockInterviewFloatWindow.webContents;
+      wc.send('mock-interview:start-params', startParams || {});
+      console.log(`[mock-interview][main][createFloat] ✓ 窗口已存在，立即发送 startParams`);
+      const t2 = setTimeout(() => {
+        if (!mockInterviewFloatWindow.isDestroyed() && wc && !wc.isDestroyed()) {
+          try { wc.send('mock-interview:start-params', startParams || {}); console.log(`[mock-interview][main][createFloat] → (窗口已存在 250ms) 补发 startParams`); } catch (e) { console.warn(`[mock-interview][main][createFloat] ✗ (窗口已存在) 250ms 补发异常：${e && e.message}`); }
+        }
+      }, 250);
+      // ★ 修复：将 t2 放入按 wcId 索引的全局 Map，ipcMain.on('mock-interview:started-ack') 会统一清（不再用无效的 wc.on）
+      _trackMockFloatTimer(wc, t2);
+    } catch (e) { console.warn(`[mock-interview][main][createFloat] (窗口已存在) 下发 startParams 异常：${e && e.message}`); }
+    return mockInterviewFloatWindow;
+  }
+
+  // 1. 新建 BrowserWindow：标准 frame 标题栏 + 可缩放 + 置顶提示用户
+  // ★ 排障增强：创建前先打印"即将传入的完整 webPreferences 快照"（双向校验：传前 vs 传后）
+  const _targetWp = {
+    preload: path.join(__dirname, 'preload.js'),
+    nodeIntegration: true,
+    contextIsolation: false,
+    enableRemoteModule: true,
+    webSecurity: false,          // ★ 核心：关闭同源策略，允许 file:// → http:// fetch
+    allowRunningInsecureContent: true,
+    sandbox: false,              // ★ 配套：preload.js 能使用 Node API（挂载 electronAPI）
+    backgroundThrottling: false  // ★ 配套：失焦不节流计时器（VAD/ASR）
+  };
+  console.log(`[mock-interview][main][createFloat] ★ ① 创建前：webPreferences 传入快照 → webSecurity=${_targetWp.webSecurity ? 'ENABLED(危险)' : 'DISABLED(✅ 允许 file→http fetch)'} | sandbox=${_targetWp.sandbox} | allowRunningInsecure=${_targetWp.allowRunningInsecureContent} | preload="${_targetWp.preload}"`);
+  mockInterviewFloatWindow = new BrowserWindow({
+    width: 820,
+    height: 720,
+    minWidth: 560,
+    minHeight: 480,
+    title: '模拟面试 · 进行中',
+    frame: true,
+    resizable: true,
+    minimizable: true,
+    maximizable: true,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    backgroundColor: '#0f1218',
+    webPreferences: _targetWp,
+    icon: path.join(__dirname, 'assets', 'icon.png')
+  });
+  try { mockInterviewFloatWindow.setMenuBarVisibility(false); } catch (_) { /* 部分平台无菜单栏 */ }
+  // ★ 排障增强：创建后双向打印"实际生效的 webPreferences"（避免某些 Electron 版本悄悄覆盖/忽略传入值）
+  try {
+    const wc = mockInterviewFloatWindow.webContents;
+    const wcId = wc ? Number(wc.id) : 0;
+    let diagLine = '';
+    if (wc && typeof wc.getWebPreferences === 'function') {
+      const wp = wc.getWebPreferences();
+      diagLine = `★ ② 创建后（getWebPreferences）：webSecurity=${wp.webSecurity ? 'ENABLED(危险，实际被覆盖！)' : 'DISABLED(✅ 已生效)'} | sandbox=${wp.sandbox} | allowRunningInsecure=${wp.allowRunningInsecureContent} | nodeIntegration=${wp.nodeIntegration} | contextIsolation=${wp.contextIsolation}`;
+    } else {
+      diagLine = `★ ② 创建后：getWebPreferences 接口不存在（此 Electron 版本无该接口），请以"① 创建前传入值"为准判断 webSecurity/sandbox`;
+    }
+    console.log(`[mock-interview][main][createFloat] ${diagLine} (wcId=${wcId})`);
+
+    // ---- ★★★ 排障增强 A：console-message 全转发（浮窗 DevTools Console 的 warn/error 同步打到主进程终端）
+    //   原因：F_DIAG 只转发渲染层自己调用 log() 产生的日志；但还有第三方库/未通过 log() 的 console.error/warn（如 fetch 原生错误堆栈）需要捕获
+    try {
+      if (wc && typeof wc.on === 'function') {
+        wc.on('console-message', (_evt, level, message, line, sourceId) => {
+          try {
+            const levelStr = (level === 3) ? 'error' : (level === 2 ? 'warn' : (level === 0 ? 'verbose' : 'info'));
+            if (levelStr !== 'error' && levelStr !== 'warn') return; // info/verbose 量太大忽略
+            const icon = levelStr === 'error' ? '❌' : '⚠️';
+            console.log(`[float-console][wcId=${wcId}]${icon}[${levelStr}] ${String(message || '').slice(0, 1000)}  (at ${String(sourceId||'(unknown)')}:${line})`);
+          } catch (_) {}
+        });
+        // ---- 排障增强 B：did-fail-load / did-fail-provisional-load（浮窗 HTML 本身加载失败）
+        wc.on('did-fail-load', (_evt, errCode, errDesc, validatedURL, isMainFrame) => {
+          if (isMainFrame) console.error(`[mock-interview][main][createFloat][wcId=${wcId}] ❌ 主页面加载失败：errCode=${errCode} errDesc=${errDesc} url=${validatedURL}`);
+          else console.warn(`[mock-interview][main][createFloat][wcId=${wcId}] ⚠️ 子资源加载失败：errCode=${errCode} errDesc=${errDesc} url=${validatedURL}`);
+        });
+        wc.on('did-fail-provisional-load', (_evt, errCode, errDesc, validatedURL, isMainFrame) => {
+          console.error(`[mock-interview][main][createFloat][wcId=${wcId}] ❌ 页面加载临时失败(provisional)：errCode=${errCode} errDesc=${errDesc} url=${validatedURL} mainFrame=${isMainFrame}`);
+        });
+      }
+    } catch (_evtErr) {
+      console.warn(`[mock-interview][main][createFloat] console-message 事件监听注册失败（非致命）：${_evtErr && _evtErr.message}`);
+    }
+
+    // ---- ★★★ 排障增强 C：webRequest 全链路监听（浮窗发起的所有请求，看 Chromium 层到底发/没发、到哪个阶段挂了）
+    //   监听目标 wc.session 的 onBeforeRequest/onCompleted/onErrorOccurred
+    //   只记录：URL 含 127.0.0.1:28765 或 /api/mock-interview/* 接口（避免日志太杂）
+    try {
+      const sess = (wc && wc.session) ? wc.session : null;
+      if (sess && typeof sess.webRequest === 'object' && sess.webRequest) {
+        const wr = sess.webRequest;
+        // ★★★ 关键修复：filter 只匹配 http/https，绝不能包含 file:// ！
+        //   原因：Electron 的 webRequest 拦截 file:// 协议的主文档加载时会导致页面加载挂起/失败
+        //   （did-finish-load 永不触发 → 渲染脚本不执行 → 面板不渲染白屏）。
+        //   上一轮用 <all_urls> 恰好踩中这个坑：拦截了 loadFile 加载的 file:// 主文档。
+        //   改为 http/https 后：既能继续观察 127.0.0.1:28765 的 fetch 请求，又完全不干扰 file:// 页面加载。
+        const filter = { urls: ['http://*/*', 'https://*/*'] };
+        const isTarget = (u) => typeof u === 'string' && ((u.indexOf('127.0.0.1:28765') >= 0) || (u.indexOf('/api/mock-interview/next-question') >= 0) || (u.indexOf('/api/mock-interview/register-answer') >= 0) || (u.indexOf('/api/mock-interview/final-review') >= 0));
+        // onBeforeRequest：请求从 JS 层发出，进入 Chromium 网络栈前的第一个钩子（如果不触发 → 证明被 CSP/同源/协议在 JS 层就拦了）
+        if (typeof wr.onBeforeRequest === 'function') {
+          wr.onBeforeRequest(filter, (details) => {
+            try { if (isTarget(details && details.url)) console.log(`[float-webReq][wcId=${wcId}] → onBeforeRequest : ${String(details.method||'GET')} ${String(details.url||'').slice(0, 300)} id=${details.id} type=${details.resourceType}`); } catch (_) {}
+            return {}; // 不修改请求，纯观察
+          });
+        }
+        // onSendHeaders：Chromium 已完成 request body 组装、即将把字节写到 TCP 连接（请求真正"出本机"的标志）
+        //   ★ 如果 onBeforeRequest 打印了但 onSendHeaders 没打印 → 说明在 Chromium 网络栈内部挂起（建连/CORS/缓存层异常）
+        if (typeof wr.onSendHeaders === 'function') {
+          wr.onSendHeaders(filter, (details) => {
+            try { if (isTarget(details && details.url)) console.log(`[float-webReq][wcId=${wcId}] → onSendHeaders : ${String(details.method||'GET')} ${String(details.url||'').slice(0, 300)} id=${details.id} bytes=${Number(details.requestHeadersSize||0)}`); } catch (_) {}
+          });
+        }
+        // onHeadersReceived：服务端已返回响应头（说明服务端收到并处理了请求，正等响应体）
+        //   ★ 如果 onSendHeaders 打印了但 onHeadersReceived 没打印 → 服务端/链路问题（本地 HTTP 服务未收到请求 → 防火墙/端口占用/请求被 Windows Defender 拦等）
+        if (typeof wr.onHeadersReceived === 'function') {
+          wr.onHeadersReceived(filter, (details) => {
+            try { if (isTarget(details && details.url)) console.log(`[float-webReq][wcId=${wcId}] ← onHeadersReceived : HTTP ${Number(details.statusCode||0)} ${String(details.method||'GET')} ${String(details.url||'').slice(0, 300)} id=${details.id}`); } catch (_) {}
+          });
+        }
+        // onCompleted：请求成功（即使 HTTP 4xx/5xx 也算 completed）到达响应体阶段
+        if (typeof wr.onCompleted === 'function') {
+          wr.onCompleted(filter, (details) => {
+            try { if (isTarget(details && details.url)) console.log(`[float-webReq][wcId=${wcId}] ← onCompleted   : HTTP ${Number(details.statusCode||0)} ${String(details.method||'GET')} ${String(details.url||'').slice(0, 300)} id=${details.id}`); } catch (_) {}
+          });
+        }
+        // onErrorOccurred：Chromium 网络层抛错（DNS 解析失败 / 拒绝连接 / ERR_BLOCKED_BY_CLIENT / ERR_BLOCKED_BY_CSP / ERR_UNSAFE_PORT / ERR_INVALID_URL 等 —— 所有 Failed to fetch 的真相都在这里）
+        if (typeof wr.onErrorOccurred === 'function') {
+          wr.onErrorOccurred(filter, (details) => {
+            try { if (isTarget(details && details.url)) console.log(`[float-webReq][wcId=${wcId}] ❌ onErrorOccurred: err="${String(details.error||'')}" ${String(details.method||'GET')} ${String(details.url||'').slice(0, 300)} id=${details.id}`); } catch (_) {}
+          });
+        }
+        console.log(`[mock-interview][main][createFloat] ★ ③ webRequest 全链路监听已挂（wcId=${wcId}，filter=http/https only，不碰 file://）：onBeforeRequest / onSendHeaders / onHeadersReceived / onCompleted / onErrorOccurred → 命中 127.0.0.1:28765 或 mock-interview/* 接口时打印详细阶段`);
+      } else {
+        console.warn(`[mock-interview][main][createFloat] ⚠️ 浮窗 wc.session 或 wc.session.webRequest 不可用，webRequest 链路监听跳过（非致命）`);
+      }
+    } catch (_wrErr) {
+      console.warn(`[mock-interview][main][createFloat] webRequest 监听注册失败（非致命）：${_wrErr && _wrErr.message}`);
+    }
+
+    // ---- ★★★ 排障增强 D：页面加载进度观测 + 3 秒安全兜底强制 show
+    try {
+      if (wc && typeof wc.on === 'function') {
+        // dom-ready：DOM 解析完成（渲染脚本开始执行），比 did-finish-load 更早
+        wc.once('dom-ready', () => {
+          try { console.log(`[mock-interview][main][createFloat][wcId=${wcId}] ℹ️ dom-ready：DOM 已解析，渲染脚本开始执行`); } catch (_) {}
+        });
+        // did-stop-loading：所有加载活动停止（无论成功失败）
+        wc.once('did-stop-loading', () => {
+          try { console.log(`[mock-interview][main][createFloat][wcId=${wcId}] ℹ️ did-stop-loading：页面加载活动已停止`); } catch (_) {}
+        });
+        // render-process-gone：渲染进程崩溃（OOM / GPU 异常等）
+        wc.on('render-process-gone', (_evt, details) => {
+          try { console.error(`[mock-interview][main][createFloat][wcId=${wcId}] ❌ 渲染进程崩溃：reason=${details && details.reason} exitCode=${details && details.exitCode}`); } catch (_) {}
+        });
+        // unresponsive：页面无响应（JS 死循环等）
+        wc.on('unresponsive', () => {
+          try { console.error(`[mock-interview][main][createFloat][wcId=${wcId}] ❌ 页面无响应（unresponsive，可能有 JS 死循环）`); } catch (_) {}
+        });
+        // ============================================================
+        // ★ 终极 ASR 文本丢失定位：在 webContents 层（主进程侧）挂 ipc-message 监听
+        //   目的：区分"主进程没发出消息"还是"消息到达了 webContents 子系统但渲染层 ipcRenderer.on 没回调"
+        //     - 如果下面这条日志打印了 → 证明 broadcastToAllViews 的 webContents.send 工作正常，
+        //       问题在渲染层（preload window.electronAPI 没挂 onAsrInterim / ipcRenderer.on 不可用 / 吞了异常）
+        //     - 如果下面这条日志没打印（但 [broadcast-ASR] 有 ✉）→ 证明 webContents.send() 被 Electron 丢弃了
+        //       （如 webContents 对象不是目标浮窗的 / wc 已被替换 / 跨进程消息路由错误）
+        // ============================================================
+        wc.on('ipc-message', (_evt, channel, ...args) => {
+          if (typeof channel === 'string' && channel.startsWith('asr:')) {
+            const textPreview = (channel === 'asr:interim' || channel === 'asr:final')
+              ? `text="${String(args[0]||'').slice(0, 30)}" len=${String(args[0]||'').length}`
+              : `args=${JSON.stringify(args).slice(0, 60)}`;
+            console.log(`[float-wc-ipc][wcId=${wcId}] ↓ 渲染进程从主进程收到 IPC channel=${channel} frame=${_evt && _evt.frameId || '(main)'} ${textPreview}`);
+          }
+        });
+        wc.on('ipc-message-sync', (_evt, channel, ...args) => {
+          if (typeof channel === 'string' && channel.startsWith('asr:')) {
+            console.log(`[float-wc-ipc][wcId=${wcId}] ↓ sync IPC channel=${channel}`);
+          }
+        });
+      }
+    } catch (_obsErr) {
+      console.warn(`[mock-interview][main][createFloat] 页面加载观测注册失败（非致命）：${_obsErr && _obsErr.message}`);
+    }
+    // 3 秒安全兜底：若 did-finish-load 因任何原因未触发（页面加载挂起），强制 show 窗口避免"窗口存在但不可见"
+    const _safetyShowTimer = setTimeout(() => {
+      try {
+        if (mockInterviewFloatWindow && !mockInterviewFloatWindow.isDestroyed()) {
+          if (!mockInterviewFloatWindow.isVisible()) {
+            mockInterviewFloatWindow.show();
+            console.warn(`[mock-interview][main][createFloat][wcId=${wcId}] ⚠️ 3s 安全兜底：did-finish-load 未触发（页面加载可能挂起/被拦截），已强制 show 窗口`);
+          }
+        }
+      } catch (_) {}
+    }, 3000);
+    mockInterviewFloatWindow.once('closed', () => { try { clearTimeout(_safetyShowTimer); } catch (_) {} });
+
+  } catch (_wpErr) {
+    // getWebPreferences 或整段排障代码抛错时，至少打一行日志证明创建完成了，避免"完全没有 webPreferences 诊断"
+    console.log(`[mock-interview][main][createFloat] ✓ BrowserWindow 创建完成（排障诊断段抛错，忽略）：err=${_wpErr && _wpErr.message}`);
+  }
+
+  // 2. 窗口关闭时：统一清引用 + 清补发定时器（全局 Map + 兼容老的 global._mockFloatTimers 双保险），保证下次 create 从零开始
+  mockInterviewFloatWindow.once('closed', () => {
+    try {
+      // 先通过 webContents.id 清理全局 Map 中对应的所有补发定时器（主修复：ipc ack 管理）
+      try {
+        if (mockInterviewFloatWindow) {
+          const wc = mockInterviewFloatWindow.webContents;
+          if (wc) _clearMockFloatTimersByWc(wc);
+        }
+      } catch (_) {}
+      // 再清理旧的 global._mockFloatTimers 兼容引用
+      if (typeof _mockFloatTimers !== 'undefined' && _mockFloatTimers && Array.isArray(_mockFloatTimers)) {
+        _mockFloatTimers.forEach(t => { try { clearTimeout(t); } catch (_) {} });
+        _mockFloatTimers.length = 0;
+      }
+    } catch (_) { /* ignore */ }
+    mockInterviewFloatWindow = null;
+  });
+
+  // 3. ★★ 三保险下发 startParams ★★
+  //    保险 1：把 startParams encode 到 URL query → 即使所有 IPC 事件丢失，浮窗也能从 window.location.search 读到（最底层兜底）
+  //    保险 2：webContents 'did-finish-load' 触发后第一次 send（保证渲染脚本已执行，订阅已挂好）
+  //    保险 3：250ms / 1000ms 后两次补发（避免 did-finish-load 与订阅仍有竞态），收到浮窗 mock-interview:started-ack 后立刻取消未发送的补发
+  const loadFileOptions = {};
+  try {
+    const queryPayload = encodeURIComponent(JSON.stringify(startParams || {}));
+    loadFileOptions.search = `startParams=${queryPayload}`;
+    console.log(`[mock-interview][main][createFloat] ✓ 保险 1：startParams 已 encode 到 loadFile query，长度=${queryPayload.length} chars`);
+  } catch (e) {
+    console.warn(`[mock-interview][main][createFloat] ✗ 保险 1（query 传参）encode 失败（不影响保险 2/3）：${e && e.message}`);
+  }
+  // 补发定时器集合（窗口关闭时统一清理，兼容老的 global._mockFloatTimers 引用）
+  const pendingTimers = [];
+  try {
+    if (typeof _mockFloatTimers === 'undefined') global._mockFloatTimers = pendingTimers;
+    else { global._mockFloatTimers = pendingTimers; }
+  } catch (_) { /* ignore */ }
+
+  mockInterviewFloatWindow.webContents.once('did-finish-load', () => {
+    console.log(`[mock-interview][main][createFloat] ✓ 保险 2：webContents did-finish-load 到达，准备发送 startParams + 250/1000ms 补发`);
+    const wc = mockInterviewFloatWindow && !mockInterviewFloatWindow.isDestroyed() ? mockInterviewFloatWindow.webContents : null;
+    if (!wc) return;
+    // show + 第一次发送
+    try { if (mockInterviewFloatWindow && !mockInterviewFloatWindow.isDestroyed()) mockInterviewFloatWindow.show(); } catch (_) {}
+    try { wc.send('mock-interview:start-params', startParams || {}); console.log(`[mock-interview][main][createFloat] → (did-finish-load) 第 1 次发送 startParams`); } catch (e) { console.warn(`[mock-interview][main][createFloat] ✗ 第 1 次 send 异常：${e && e.message}`); }
+    // 第 2 次补发：250ms 后
+    const t2 = setTimeout(() => {
+      if (mockInterviewFloatWindow && !mockInterviewFloatWindow.isDestroyed()) {
+        try { wc.send('mock-interview:start-params', startParams || {}); console.log(`[mock-interview][main][createFloat] → (250ms) 第 2 次补发 startParams`); } catch (e) { console.warn(`[mock-interview][main][createFloat] ✗ 第 2 次补发异常：${e && e.message}`); }
+      }
+    }, 250);
+    pendingTimers.push(t2);
+    _trackMockFloatTimer(wc, t2); // ★ 修复：同时注册到按 wcId 管理的全局 Map，ack 时统一取消
+    // 第 3 次补发：1000ms 后（防止极端竞态）
+    const t3 = setTimeout(() => {
+      if (mockInterviewFloatWindow && !mockInterviewFloatWindow.isDestroyed()) {
+        try { wc.send('mock-interview:start-params', startParams || {}); console.log(`[mock-interview][main][createFloat] → (1000ms) 第 3 次补发 startParams`); } catch (e) { console.warn(`[mock-interview][main][createFloat] ✗ 第 3 次补发异常：${e && e.message}`); }
+      }
+    }, 1000);
+    pendingTimers.push(t3);
+    _trackMockFloatTimer(wc, t3); // ★ 修复：同时注册到按 wcId 管理的全局 Map，ack 时统一取消
+    // ★ 修复：删除无效的 wc.on('mock-interview:started-ack', onAck) —— 主进程监听 ipcRenderer.send 必须用 ipcMain.on
+    //   已在 createMockInterviewFloatWindow 之前通过 _registerMockFloatAckListenerOnce() 全局一次性注册
+  });
+
+  // 3. 加载浮动面板 HTML（携带 query 参数）
+  mockInterviewFloatWindow.loadFile(
+    path.join(__dirname, 'mockInterviewFloat.html'),
+    loadFileOptions
+  ).catch((e) => {
+    console.error('[mock-interview][main] 浮窗 loadFile 失败：', e && e.message);
+  });
+
+  // 开发模式（--dev）下自动打开 DevTools，方便调试 VAD/识别
+  if (process.argv.includes('--dev')) {
+    try { mockInterviewFloatWindow.webContents.openDevTools({ mode: 'detach' }); } catch (_) {}
+  }
+
+  return mockInterviewFloatWindow;
+}
+
+/**
+ * IPC: open-mock-interview-floatwin — 由主窗口 mockResumePanels.js 点击"开始模拟面试"后调用
+ * @param {object} event IPC 事件
+ * @param {object} params 启动参数（包含 answerMode、totalQuestions、serverInfo 等）
+ * @returns {{success:boolean, status:object}}
+ */
+ipcMain.handle('open-mock-interview-floatwin', async (event, params) => {
+  const t0 = Date.now();
+  // 打印入口参数（脱敏 token）：判断主窗口传进来的 params 是否一开始就空/脏
+  let safeIncoming = {};
+  try {
+    const p = (params && typeof params === 'object') ? params : {};
+    safeIncoming = {
+      answerMode: p.answerMode, totalQuestions: Number(p.totalQuestions) || 0, language: p.language,
+      hasServerInfo: !!((p.serverInfo && typeof p.serverInfo === 'object')),
+      in_port: Number((p.serverInfo && p.serverInfo.port) || 0),
+      in_baseUrl: (p.serverInfo && p.serverInfo.baseUrl) ? String(p.serverInfo.baseUrl).slice(0, 60) : '',
+      in_token: (p.serverInfo && p.serverInfo.token) ? `${String(p.serverInfo.token).slice(0, 4)}***${String(p.serverInfo.token).slice(-4)}(len=${String(p.serverInfo.token).length})` : '<empty>'
+    };
+    console.log(`[mock-interview][main][IPC:open-floatwin] ▶ 收到请求：incoming=${JSON.stringify(safeIncoming)}`);
+  } catch (_) { /* ignore 诊断日志异常 */ }
+  try {
+    // 先确保 localHttpServer 已启动（渲染层要 fetch /api/mock-interview/*）：实际启动由主窗口提前完成，这里做幂等兜底
+    try {
+      await ensureLocalHttpServerWithBus();
+      if (localHttpServer && localHttpServer.status === 'idle') {
+        await localHttpServer.start({ bus: app.bus });
+      }
+    } catch (e) {
+      console.warn('[mock-interview][open] HTTP 启动兜底异常（非致命）：', e && e.message);
+    }
+    // ========== ★ 双保险：强制注入 serverInfo ==========
+    const finalParams = (params && typeof params === 'object') ? { ...params } : {};
+    try {
+      const st = (localHttpServer && typeof localHttpServer.getStatus === 'function')
+        ? (localHttpServer.getStatus() || {})
+        : {};
+      const port = Number(st.port) || 0;
+      const token = String(st.token || '');
+      if (port > 0 && token.length > 0) {
+        finalParams.serverInfo = {
+          port,
+          token,
+          baseUrl: `http://127.0.0.1:${port}`
+        };
+      }
+      // 诊断：注入后 finalParams 的 serverInfo 是否真有有效值
+      console.log(`[mock-interview][main][IPC:open-floatwin] ✓ 注入完成：finalParams.port=${Number((finalParams.serverInfo && finalParams.serverInfo.port) || 0)} token=${(finalParams.serverInfo && finalParams.serverInfo.token) ? `${String(finalParams.serverInfo.token).slice(0, 4)}***${String(finalParams.serverInfo.token).slice(-4)}(len=${String(finalParams.serverInfo.token).length})` : '<empty>'} baseUrl=${(finalParams.serverInfo && finalParams.serverInfo.baseUrl) || '(空)'}`);
+    } catch (e) {
+      console.warn('[mock-interview][open] 注入 serverInfo 异常（使用原始 params）：', e && e.message);
+    }
+    const w = createMockInterviewFloatWindow(finalParams);
+    const status = getMockInterviewFloatStatus();
+    console.log(`[mock-interview][main][IPC:open-floatwin] ⇢ 返回：success=${!!(w && !w.isDestroyed())} floatExists=${status && status.exists} 总用时=${Date.now() - t0}ms`);
+    return { success: !!(w && !w.isDestroyed()), status };
+  } catch (e) {
+    console.error(`[mock-interview][main][IPC:open-floatwin] ✗ 总异常：${e && e.message} 总用时=${Date.now() - t0}ms 堆栈：\n${e && e.stack || 'no-stack'}`);
+    return { success: false, error: 'internal', msg: e && e.message || '打开失败', status: getMockInterviewFloatStatus() };
+  }
+});
+
+/**
+ * IPC: close-mock-interview-floatwin — 主窗口或浮窗自身请求关闭
+ * @returns {{success:boolean}}
+ */
+ipcMain.handle('close-mock-interview-floatwin', () => {
+  closeMockInterviewFloatWindow();
+  return { success: true };
+});
+
+/**
+ * IPC: mock-interview-floatwin-status — 查询浮窗是否存在 + bounds（主窗口按钮 disabled 判断）
+ * @returns {{exists:boolean, bounds:object|null}}
+ */
+ipcMain.handle('mock-interview-floatwin-status', () => getMockInterviewFloatStatus());
+

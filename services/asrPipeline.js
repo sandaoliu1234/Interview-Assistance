@@ -58,6 +58,11 @@ class ASRPipeline {
   /**
    * 启动 ASR 管线
    * @param {Object} config 面试配置（含 baiduApiKey, baiduSecretKey, baiduAppId 等）
+   * @param {boolean} [config.transcribeOnly] 纯转写模式（模拟面试浮窗用）：
+   *        true 时只出 interim/final 转写事件，跳过问题检测与 AI 答题，
+   *        且 final 文本不写 bus（不污染主面板 Copilot 会话 history）。
+   * @param {string} [config.inputSource] 音频输入源：'mic'=麦克风采集（模拟面试），
+   *        缺省='system'=WASAPI Loopback 回录系统声音（Copilot 面试辅助）。
    * @param {Object} callbacks 回调函数集合
    * @param {Function} callbacks.onInterim 临时识别文本回调 (text)
    * @param {Function} callbacks.onFinal 最终识别文本回调 (text)
@@ -71,13 +76,24 @@ class ASRPipeline {
     }
 
     this.config = config;
-    this.onInterim = callbacks.onInterim || (() => {});
-    this.onFinal = callbacks.onFinal || (() => {});
-    this.onAnswer = callbacks.onAnswer || (() => {});
+    // ★ 回调赋值策略：**只在 callbacks 传入有效函数时覆盖，否则保留现有值**
+    //   原因：main.js 中会先于 start() 调用给 asrPipeline.onInterim/onFinal/onAnswer
+    //   等注入"broadcastToAllViews 广播回调"，再调用 start(mergedConfig, {})。
+    //   如果这里用 `|| (() => {})` 强制赋值，callbacks={} 时会把外部已注入的
+    //   广播函数**清空成空函数**，导致浮窗/主窗口永远收不到 ASR 文本/答案。
+    if (typeof callbacks.onInterim === 'function') this.onInterim = callbacks.onInterim;
+    else if (typeof this.onInterim !== 'function') this.onInterim = () => {};
+    if (typeof callbacks.onFinal === 'function') this.onFinal = callbacks.onFinal;
+    else if (typeof this.onFinal !== 'function') this.onFinal = () => {};
+    if (typeof callbacks.onAnswer === 'function') this.onAnswer = callbacks.onAnswer;
+    else if (typeof this.onAnswer !== 'function') this.onAnswer = () => {};
     // ★ 新增回调：问题检测完成后、AI 开始答题前触发（Overlay 上用于显示"正在生成答案…"）
-    this.onBeforeAnswer = callbacks.onBeforeAnswer || (() => {});
-    this.onError = callbacks.onError || (() => {});
-    this.onStatus = callbacks.onStatus || (() => {});
+    if (typeof callbacks.onBeforeAnswer === 'function') this.onBeforeAnswer = callbacks.onBeforeAnswer;
+    else if (typeof this.onBeforeAnswer !== 'function') this.onBeforeAnswer = () => {};
+    if (typeof callbacks.onError === 'function') this.onError = callbacks.onError;
+    else if (typeof this.onError !== 'function') this.onError = () => {};
+    if (typeof callbacks.onStatus === 'function') this.onStatus = callbacks.onStatus;
+    else if (typeof this.onStatus !== 'function') this.onStatus = () => {};
 
     // 校验百度 API 配置
     const apiKey = config.baiduApiKey || process.env.BAIDU_API_KEY;
@@ -235,31 +251,37 @@ class ASRPipeline {
         this._emitError(`系统音频采集错误: ${e.message}`);
       });
 
-      // ⭐ 透传 deviceId / includeProcesses / excludeProcesses：
-      //   - 如果主窗口设置了 loopbackDeviceId，就用它（可支持非默认端点的专项采集）；
-      //   - 否则，让 SystemAudioCapture 自己在内部调 getDefaultOutputDevice() 拿默认输出设备的 id。
+      // ⭐ 透传 deviceId / includeProcesses / excludeProcesses / inputSource：
+      //   - inputSource='mic'（模拟面试浮窗）：采集麦克风（用户对着麦克风回答），
+      //     此时 loopbackDeviceId/includeProcesses/excludeProcesses 均不适用（传 undefined）；
+      //   - 默认（Copilot 模式）：WASAPI Loopback 回录系统声音：
+      //     如果主窗口设置了 loopbackDeviceId，就用它（可支持非默认端点的专项采集）；
+      //     否则，让 SystemAudioCapture 自己在内部调 getDefaultOutputDevice() 拿默认输出设备的 id。
+      const useMicInput = !!(config && config.inputSource === 'mic');
       await this.capture.start({
         sampleRate: 16000,
         chunkDurationMs: 128,
         stereo: false,
         emitSilence: true,
-        deviceId: config && typeof config.loopbackDeviceId === 'string' && config.loopbackDeviceId.trim()
+        // ★ 输入源：'mic'=麦克风采集（模拟面试）；缺省='system'（WASAPI 回环，Copilot）
+        inputSource: useMicInput ? 'mic' : 'system',
+        deviceId: !useMicInput && config && typeof config.loopbackDeviceId === 'string' && config.loopbackDeviceId.trim()
           ? config.loopbackDeviceId.trim()
           : undefined,
-        includeProcesses: Array.isArray(config && config.includeProcesses) ? config.includeProcesses : null,
-        excludeProcesses: Array.isArray(config && config.excludeProcesses) ? config.excludeProcesses : null,
+        includeProcesses: !useMicInput && Array.isArray(config && config.includeProcesses) ? config.includeProcesses : null,
+        excludeProcesses: !useMicInput && Array.isArray(config && config.excludeProcesses) ? config.excludeProcesses : null,
       });
-      console.log('[asrPipeline] ✓ WASAPI 系统音频采集已启动');
+      console.log(`[asrPipeline] ✓ ${useMicInput ? '麦克风' : 'WASAPI 系统音频'}采集已启动`);
     } catch (e) {
       // 采集失败，关闭 ASR 连接
       this._closeASR();
-      this._emitError(`WASAPI 采集启动失败: ${e.message}`);
+      this._emitError(`${config && config.inputSource === 'mic' ? '麦克风' : 'WASAPI'} 采集启动失败: ${e.message}`);
       throw e;
     }
 
     this.isRunning = true;
     this._emitStatus('listening');
-    console.log('[asrPipeline] 🚀 管线全部就绪：WASAPI → 百度ASR → 问题检测 → AI答题');
+    console.log(`[asrPipeline] 🚀 管线全部就绪：${config && config.transcribeOnly ? '麦克风 → 百度ASR → 纯转写（不触发 AI 答题）' : 'WASAPI → 百度ASR → 问题检测 → AI答题'}`);
   }
 
   /**
@@ -317,23 +339,30 @@ class ASRPipeline {
     // 最终识别结果 → 先写 bus/localHttpServer（面板面试官区立即显示全部文字）→ 再走问题检测/AI答题
     this.asr.on('final', ({ text }) => {
       console.log('[asrPipeline] ASR 最终结果:', text);
+      // ★ transcribeOnly 纯转写模式（模拟面试浮窗）：
+      //   麦克风识别到的是"用户自己的回答"，绝不能写进 bus 的 asr:final——
+      //   否则 localHttpServer 会把用户回答当成"面试官说的话"写进主面板 history（污染 Copilot 会话）。
+      //   此模式只走 onFinal 回调（main.js 里会广播给浮窗 textarea），bus 完全旁路。
+      const transcribeOnly = !!(this.config && this.config.transcribeOnly);
       // ====== 新增：把这句 final 文本立刻 emit 到 bus，让 localHttpServer 写进 history.questionText ======
       //   保证：不管 detectQuestion 是否命中、AI 是否开始作答，面板/H5 的面试官区都能看到 ASR 识别出的"全部文字"
       //   对应 localHttpServer._bindBusHandlers 里 h['asr:final'] 的处理逻辑（追加/复用 asked 轮）
-      try {
-        if (typeof this.emitBus === 'function') {
-          this.emitBus('asr:final', text);
-          console.log(`[asrPipeline] → bus.emit('asr:final') 已发送，len=${(text||'').length}`);
-        } else {
-          console.warn('[asrPipeline] ⚠ this.emitBus 未注入（null/非函数），bus.asr:final 不会发 → 面试官区不会实时显示。请检查 main.js start-asr-pipeline 是否赋值 emitBus=appBus.emit。');
+      if (!transcribeOnly) {
+        try {
+          if (typeof this.emitBus === 'function') {
+            this.emitBus('asr:final', text);
+            console.log(`[asrPipeline] → bus.emit('asr:final') 已发送，len=${(text||'').length}`);
+          } else {
+            console.warn('[asrPipeline] ⚠ this.emitBus 未注入（null/非函数），bus.asr:final 不会发 → 面试官区不会实时显示。请检查 main.js start-asr-pipeline 是否赋值 emitBus=appBus.emit。');
+          }
+        } catch (e) {
+          // bus 异常不能吞掉答题流程，仅记录
+          console.warn('[asrPipeline] emitBus(asr:final) 发送异常（已兜底忽略）：', (e && e.message) || e);
         }
-      } catch (e) {
-        // bus 异常不能吞掉答题流程，仅记录
-        console.warn('[asrPipeline] emitBus(asr:final) 发送异常（已兜底忽略）：', (e && e.message) || e);
       }
-      // ====== 兼容回调（旧入口/主窗口临时文本显示）======
+      // ====== 兼容回调（旧入口/主窗口临时文本显示；transcribeOnly 模式下这是浮窗拿转写文本的唯一通道）======
       this.onFinal(text);
-      // ====== 进入"粗筛 → AI 识别真正提问 → 答题"流程 ======
+      // ====== 进入"粗筛 → AI 识别真正提问 → 答题"流程（transcribeOnly 模式内部会直接 return）======
       this._handleFinalText(text);
     });
 
@@ -489,6 +518,16 @@ class ASRPipeline {
   async _handleFinalText(text) {
     if (!text || text.trim().length === 0) return;
     const finalSentence = String(text).trim();
+
+    // ====== ★ 步骤 0：transcribeOnly 纯转写模式（模拟面试浮窗专用）—— 直接短路 ======
+    //   模拟面试里麦克风识别的是"用户自己的回答"，不是面试官提问：
+    //   若继续走下面的问题检测/AI 兜底判定/AI 答题，用户每说一句话都会被误判为
+    //   "面试官提问"而触发 AI 抢答（且会烧 LLM tokens）。此模式下只出转写文本：
+    //   final 文本已通过上方 onFinal 回调 → main.js broadcastToAllViews → 浮窗 textarea。
+    if (this.config && this.config.transcribeOnly) {
+      console.log(`[asrPipeline] 纯转写模式（transcribeOnly=true）：跳过问题检测/AI 答题，句长=${finalSentence.length}`);
+      return;
+    }
 
     // ====== 步骤 A：更新"最近 N 句 ASR final 缓冲"（整段识别文字，给 AI 看上下文）======
     this._recentFinalBuffer.push(finalSentence);
