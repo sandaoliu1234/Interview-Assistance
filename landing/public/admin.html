@@ -1,0 +1,3218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>管理后台 · HireMe AI 面试助手</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    /* ============ 管理后台专属布局样式（复用控制台布局结构） ============ */
+
+/* 通用隐藏类 */
+.hidden { display: none !important; }
+
+    /* 页面整体：flex 布局，左侧固定导航 */
+    .admin-layout {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* ---------- 左侧导航栏 ---------- */
+    .admin-sidebar {
+      width: 240px;
+      background: var(--bg-elevated);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .sidebar-brand {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .sidebar-brand .brand-mark {
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      border-radius: 10px;
+      background: var(--accent-gradient);
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .sidebar-brand .brand-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .sidebar-brand .brand-icon {
+      margin-left: auto;
+      font-size: 18px;
+      color: var(--text-tertiary);
+      cursor: pointer;
+    }
+
+    .sidebar-menu {
+      flex: 1;
+      padding: 16px 12px;
+      overflow-y: auto;
+    }
+
+    .menu-group {
+      margin-bottom: 8px;
+    }
+
+    .menu-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      color: var(--text-secondary);
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      position: relative;
+    }
+
+    .menu-item:hover {
+      background: var(--bg-card);
+      color: var(--text-primary);
+    }
+
+    .menu-item.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .menu-item .menu-icon {
+      font-size: 18px;
+      width: 20px;
+      text-align: center;
+    }
+
+    .menu-item .badge {
+      margin-left: auto;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .badge.admin { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+
+    .sidebar-footer {
+      padding: 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .sidebar-user {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .sidebar-user:hover {
+      background: var(--bg-card);
+    }
+
+    .sidebar-user .avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--accent-gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      color: #fff;
+      font-size: 14px;
+    }
+
+    .sidebar-user .user-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .sidebar-user .user-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sidebar-user .user-email {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sidebar-user .logout-icon {
+      font-size: 18px;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      padding: 4px;
+    }
+
+    .sidebar-user .logout-icon:hover {
+      color: var(--danger);
+    }
+
+    /* ---------- 主内容区 ---------- */
+    .admin-main {
+      flex: 1;
+      padding: 24px 32px;
+      overflow-y: auto;
+    }
+
+    .main-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+
+    .welcome-section h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin: 0 0 4px;
+      color: var(--text-primary);
+    }
+
+    .welcome-section .plan-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+
+    .plan-badge {
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .admin-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    /* ---------- 统计卡片 ---------- */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      transition: all 0.2s;
+    }
+
+    .stat-card:hover {
+      border-color: var(--border-active);
+      transform: translateY(-2px);
+    }
+
+    .stat-card .stat-label {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .stat-card .stat-value {
+      font-size: 36px;
+      font-weight: 800;
+      color: var(--text-primary);
+      line-height: 1;
+    }
+
+    .stat-card .stat-value .unit {
+      font-size: 18px;
+      color: var(--text-tertiary);
+      margin-left: 4px;
+    }
+
+    .stat-card .stat-sub {
+      font-size: 13px;
+      color: var(--text-tertiary);
+      margin-top: 8px;
+    }
+
+    .stat-card .stat-sub .positive { color: var(--success); }
+    .stat-card .stat-sub .negative { color: var(--warning); }
+
+    /* ---------- 区域标题 ---------- */
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 0 0 16px;
+    }
+
+    /* ---------- Hero 运营卡片 ---------- */
+    .admin-hero {
+      border: none;
+      border-radius: 20px;
+      padding: 28px 32px;
+      background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 40%, #DB2777 100%);
+      color: #fff;
+      box-shadow: 0 18px 40px rgba(79, 70, 229, 0.25);
+      margin-bottom: 32px;
+    }
+
+    .admin-hero .hero-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .admin-hero .hero-desc {
+      font-size: 14px;
+      opacity: 0.9;
+      line-height: 1.7;
+    }
+
+    .admin-hero .hero-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .admin-hero .hero-btn {
+      padding: 8px 16px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.2);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid rgba(255,255,255,0.3);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .admin-hero .hero-btn:hover {
+      background: rgba(255,255,255,0.3);
+    }
+
+    /* ---------- 搜索框 ---------- */
+    .search-bar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      align-items: center;
+    }
+
+    .search-input {
+      flex: 1;
+      max-width: 480px;
+      padding: 11px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 14px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .search-input::placeholder { color: var(--text-tertiary); }
+    .search-input:focus {
+      outline: none;
+      border-color: var(--border-active);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+    }
+
+    .search-hint {
+      font-size: 12px;
+      color: var(--text-tertiary);
+    }
+
+    /* ---------- 表格 ---------- */
+    .admin-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .admin-table th {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      background: var(--bg-elevated);
+      font-weight: 600;
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .admin-table td {
+      padding: 14px 16px;
+      vertical-align: middle;
+      font-size: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .admin-table tr:hover td {
+      background: var(--bg-card);
+    }
+
+    .table-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    .table-container .table-scroll {
+      overflow-x: auto;
+    }
+
+    /* ---------- 用户头像 ---------- */
+    .user-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent-gradient);
+      color: #fff;
+      font-weight: 700;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .user-cell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .user-cell .user-name {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .user-cell .user-email {
+      font-size: 12px;
+      color: var(--text-tertiary);
+    }
+
+    /* ---------- 标签徽章 ---------- */
+    .badge-soft {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .badge-soft-admin {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .badge-soft-user {
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+
+    .credit-plus { color: var(--success); font-weight: 700; }
+    .credit-minus { color: var(--warning); font-weight: 700; }
+
+    /* ---------- 订单 / 上下架状态徽章 ---------- */
+    /* 已支付：绿色 */
+    .badge-paid {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    /* 待支付：黄色 */
+    .badge-pending {
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+    /* 已取消：灰色 */
+    .badge-cancelled {
+      background: var(--bg-elevated);
+      color: var(--text-tertiary);
+      border: 1px solid var(--border);
+    }
+    /* 已上架：绿色 */
+    .badge-active {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    /* 已下架：灰色 */
+    .badge-inactive {
+      background: var(--bg-elevated);
+      color: var(--text-tertiary);
+      border: 1px solid var(--border);
+    }
+
+    /* ---------- 面板容器（用于 ordersPanel / packagesPanel） ---------- */
+    .panel {
+      animation: panelIn 0.18s ease;
+    }
+    @keyframes panelIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ---------- 面板顶部操作条（标题 + 新增按钮） ---------- */
+    .panel-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .panel-toolbar h1 { margin: 0; font-size: 22px; font-weight: 700; color: var(--text-primary); }
+
+    /* ---------- 操作按钮 ---------- */
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+      border: 1px solid var(--border-strong);
+      background: transparent;
+      color: var(--text-primary);
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .btn-sm:hover {
+      background: var(--accent-soft);
+      border-color: var(--border-active);
+      color: var(--accent);
+    }
+
+    .btn-sm.primary {
+      background: var(--accent-gradient);
+      color: #fff;
+      border-color: transparent;
+    }
+
+    .btn-sm.primary:hover {
+      box-shadow: 0 4px 14px rgba(59, 130, 246, 0.32);
+      color: #fff;
+    }
+
+    .btn-sm.danger {
+      color: var(--danger);
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+
+    .btn-sm.danger:hover {
+      background: rgba(239, 68, 68, 0.15);
+    }
+
+    /* ---------- 套餐卡片 ---------- */
+    .packages-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .package-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      transition: all 0.2s;
+      position: relative;
+    }
+
+    .package-card:hover {
+      border-color: var(--border-active);
+      transform: translateY(-2px);
+    }
+
+    .package-card.featured {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+
+    .package-card .package-badge {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--accent-gradient);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .package-card .package-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+
+    .package-card .package-id {
+      font-size: 12px;
+      color: var(--text-tertiary);
+    }
+
+    .package-card .package-price {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--text-primary);
+      margin: 12px 0;
+    }
+
+    .package-card .package-credits {
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(99, 102, 241, 0.15));
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+      margin-bottom: 12px;
+    }
+
+    .package-card .package-credits .amount {
+      font-size: 28px;
+      font-weight: 800;
+      background: var(--accent-gradient);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .package-card .package-credits .bonus {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-top: 4px;
+    }
+
+    .package-card .package-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    /* ---------- 弹窗 ---------- */
+    .modal-mask {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .modal-mask.show { display: flex; }
+
+    .modal {
+      width: 100%;
+      max-width: 480px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      border-radius: 18px;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+      animation: modalIn 0.2s ease;
+    }
+
+    .modal.lg { max-width: 720px; }
+
+    @keyframes modalIn {
+      from { opacity: 0; transform: translateY(20px) scale(0.98); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .modal-header {
+      padding: 18px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-header h3 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .modal-close {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .modal-close:hover {
+      background: var(--accent-soft);
+      color: #fff;
+      border-color: var(--border-active);
+    }
+
+    .modal-body { padding: 22px; }
+    .modal-footer {
+      padding: 16px 22px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    /* 弹窗内表单 */
+    .modal-form-group {
+      margin-bottom: 16px;
+    }
+
+    .modal-form-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .modal-form-label .req { color: var(--danger); }
+
+    .modal-form-input,
+    .modal-form-textarea {
+      width: 100%;
+      padding: 11px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 14px;
+      font-family: inherit;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .modal-form-textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .modal-form-input:focus,
+    .modal-form-textarea:focus {
+      outline: none;
+      border-color: var(--border-active);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+    }
+
+    .modal-form-hint {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-top: 4px;
+    }
+
+    .modal-form-counter {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      text-align: right;
+      margin-top: 4px;
+    }
+
+    /* 用户概览 */
+    .user-overview {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .overview-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .overview-card .label {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-bottom: 8px;
+    }
+
+    .overview-card .value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .overview-card .sub {
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    .overview-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    /* 流水图标 */
+    .flow-icon {
+      display: inline-flex;
+      width: 32px;
+      height: 32px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .fi-charge  { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
+    .fi-consume { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+    .fi-refund  { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+    .fi-reward  { background: rgba(236, 72, 153, 0.15); color: #ec4899; }
+    .fi-adjust  { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    /* ---------- 登录页 ---------- */
+    .admin-login {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 20px;
+      text-align: center;
+      padding: 60px 24px;
+      background: var(--bg-page);
+    }
+
+    .admin-login .lock-icon {
+      font-size: 64px;
+    }
+
+    .admin-login h2 {
+      font-size: 24px;
+      margin: 0;
+      color: var(--text-primary);
+    }
+
+    .admin-login p {
+      color: var(--text-secondary);
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .admin-login .login-form {
+      width: 100%;
+      max-width: 360px;
+      margin-top: 16px;
+    }
+
+    .admin-login .login-hint {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-top: 12px;
+    }
+
+    /* ---------- 加载状态 ---------- */
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: var(--text-tertiary);
+      font-size: 14px;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--border-strong);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ---------- 空状态 ---------- */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-tertiary);
+    }
+
+    /* ---------- 浮动按钮 ---------- */
+    .floating-btn {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: var(--accent-gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      cursor: pointer;
+      box-shadow: 0 8px 32px rgba(59, 130, 246, 0.4);
+      transition: all 0.2s;
+      border: none;
+      color: #fff;
+    }
+
+    .floating-btn:hover {
+      transform: scale(1.1);
+    }
+
+    /* ---------- Toast ---------- */
+    .toast-wrap {
+      position: fixed;
+      right: 20px;
+      top: 80px;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: 360px;
+    }
+
+    /* ---------- 响应式 ---------- */
+    @media (max-width: 1024px) {
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 768px) {
+      .admin-layout {
+        flex-direction: column;
+      }
+
+      .admin-sidebar {
+        width: 100%;
+        height: auto;
+        position: relative;
+      }
+
+      .admin-main {
+        padding: 16px;
+      }
+
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .main-header {
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .user-overview {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ============ 登录页（未登录时显示） ============ -->
+<div class="admin-login hidden" id="adminLogin">
+  <div class="lock-icon">🔐</div>
+  <h2>管理员登录</h2>
+  <p>HireMe 管理后台 · 仅管理员可访问</p>
+  <div class="login-form">
+    <form id="admin-login-form" onsubmit="return false;">
+      <div class="form-group" style="margin-bottom:14px;">
+        <label class="form-label" for="admin-login-email">管理员邮箱</label>
+        <input type="email" class="form-input" id="admin-login-email"
+               placeholder="请输入管理员邮箱" required autocomplete="email" />
+      </div>
+      <div class="form-group" style="margin-bottom:14px;">
+        <label class="form-label" for="admin-login-password">密码</label>
+        <input type="password" class="form-input" id="admin-login-password"
+               placeholder="请输入密码" required autocomplete="current-password" />
+      </div>
+      <button type="submit" class="btn btn-primary w-100" id="admin-login-btn" style="width:100%;">
+        管理员登录
+      </button>
+    </form>
+    <div class="login-hint">默认管理员：15376110673@163.com/ 123456</div>
+  </div>
+</div>
+
+<!-- ============ 主布局（已登录时显示） ============ -->
+<div class="admin-layout hidden" id="adminLayout">
+
+  <!-- 左侧导航栏 -->
+  <aside class="admin-sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-mark">🛠</div>
+      <span class="brand-name">管理后台</span>
+      <span class="brand-icon" title="管理员">⚙️</span>
+    </div>
+
+    <nav class="sidebar-menu">
+      <div class="menu-group">
+        <a href="#" class="menu-item active" data-menu="overview">
+          <span class="menu-icon">📊</span>
+          <span>总览看板</span>
+        </a>
+      </div>
+
+      <div class="menu-group">
+        <a href="#" class="menu-item" data-menu="users">
+          <span class="menu-icon">👥</span>
+          <span>用户管理</span>
+        </a>
+      </div>
+
+      <div class="menu-group">
+        <a href="#" class="menu-item" data-menu="consumption">
+          <span class="menu-icon">💎</span>
+          <span>套餐 & 消耗</span>
+        </a>
+      </div>
+
+      <!-- 新增：订单管理菜单 -->
+      <div class="menu-group">
+        <a href="#" class="menu-item" data-menu="orders">
+          <span class="menu-icon">📦</span>
+          <span>订单管理</span>
+        </a>
+      </div>
+
+      <!-- 新增：套餐管理（增删改）菜单 -->
+      <div class="menu-group">
+        <a href="#" class="menu-item" data-menu="packages">
+          <span class="menu-icon">📦</span>
+          <span>套餐管理</span>
+        </a>
+      </div>
+
+      <!-- 新增：兑换码管理菜单 -->
+      <div class="menu-group">
+        <a href="#" class="menu-item" data-menu="redeem">
+          <span class="menu-icon">🎫</span>
+          <span>兑换码管理</span>
+        </a>
+      </div>
+
+      <!-- 新增：公告管理菜单 -->
+      <div class="menu-group">
+        <a href="#" class="menu-item" data-menu="news">
+          <span class="menu-icon">📢</span>
+          <span>公告管理</span>
+        </a>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-user" id="sidebarUser">
+        <div class="avatar" id="userAvatar">A</div>
+        <div class="user-info">
+          <div class="user-name" id="userName">管理员</div>
+          <div class="user-email" id="userEmail">admin@example.com</div>
+        </div>
+        <span class="logout-icon" id="logoutBtn" title="退出登录">←</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主内容区 -->
+  <main class="admin-main" id="adminMain">
+    <!-- 内容由 JS 动态渲染 -->
+  </main>
+</div>
+
+<!-- ============ 弹窗容器 ============ -->
+<!-- 调账弹窗 -->
+<div class="modal-mask" id="adjustModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🧮 手工调整积分</h3>
+      <button class="modal-close" data-close-modal="adjustModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-form-group">
+        <div class="modal-form-label">目标用户</div>
+        <div class="overview-card" style="margin-bottom:0;">
+          <div class="value" id="adj-user-line" style="font-size:16px;font-weight:600;">—</div>
+          <div class="label">当前可用积分：<span id="adj-user-balance" style="color:var(--accent);font-weight:600;">—</span></div>
+        </div>
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">调整积分 delta <span class="req">*</span></label>
+        <input type="number" class="modal-form-input" id="adj-delta"
+               placeholder="正数=加积分，负数=扣积分（例：+100 或 -50）" step="1" />
+        <div class="modal-form-hint">必须为整数。负 delta 扣到余额 0 以下会拒绝。</div>
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">调整原因 / 备注 <span class="req">*</span></label>
+        <textarea class="modal-form-textarea" id="adj-reason" rows="3" maxlength="200"
+                  placeholder="例：首次注册奖励 / 误扣费补偿 / 客服补分 / 违规扣积分。将写入流水用于审计。"></textarea>
+        <div class="modal-form-counter"><span id="adj-reason-cnt">0</span> / 200</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close-modal="adjustModal">取消</button>
+      <button class="btn btn-primary" id="adj-submit">确认调整</button>
+    </div>
+  </div>
+</div>
+
+<!-- 用户详情弹窗 -->
+<div class="modal-mask" id="userDetailModal">
+  <div class="modal lg">
+    <div class="modal-header">
+      <h3>📒 用户详情：<span id="ud-title">—</span></h3>
+      <button class="modal-close" data-close-modal="userDetailModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="user-overview">
+        <div class="overview-card">
+          <div class="label">积分概览</div>
+          <div class="value"><span id="ud-balance">—</span></div>
+          <div class="sub">当前可用</div>
+        </div>
+        <div class="overview-card">
+          <div class="label">累计统计</div>
+          <div class="sub" style="margin-top:8px;">
+            <div class="credit-plus">累计充值 +<span id="ud-recharged">—</span></div>
+            <div class="credit-minus" style="margin-top:4px;">累计消耗 −<span id="ud-consumed">—</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="overview-actions">
+        <button class="btn btn-sm primary" data-ud-sub="flows">📋 查看该用户流水</button>
+        <button class="btn btn-sm" data-ud-sub="orders">🧾 查看该用户订单</button>
+        <button class="btn btn-sm danger" id="ud-open-adjust" style="margin-left:auto;">🔧 给该用户调账</button>
+      </div>
+      <div id="ud-body" class="empty-state">⬆ 点击上方按钮查看流水或订单</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close-modal="userDetailModal">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增：套餐编辑弹窗（新增 / 编辑共用） -->
+<div class="modal-mask" id="packageEditModal">
+  <div class="modal lg">
+    <div class="modal-header">
+      <h3 id="pkgEditTitle">📦 套餐编辑</h3>
+      <button class="modal-close" data-close-modal="packageEditModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- 编辑模式 ID 只读，新增模式可填 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label">套餐 ID <span class="req">*</span></label>
+        <input type="text" class="modal-form-input" id="pkg-packageId"
+               placeholder="例：pro_month / starter_pack（小写下划线）" />
+        <div class="modal-form-hint">编辑模式下 ID 不可修改；新增后不可更改。</div>
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">标题 <span class="req">*</span></label>
+        <input type="text" class="modal-form-input" id="pkg-title"
+               placeholder="例：专业月卡 / 入门套餐" maxlength="60" />
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">基础积分 <span class="req">*</span></label>
+        <input type="number" class="modal-form-input" id="pkg-credits" step="1" min="0"
+               placeholder="例：1000（用户付款后获得的基础积分）" />
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">赠送积分</label>
+        <input type="number" class="modal-form-input" id="pkg-bonusCredits" step="1" min="0"
+               placeholder="例：200（促销多送，可为 0）" />
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">价格(元) <span class="req">*</span></label>
+        <input type="number" class="modal-form-input" id="pkg-priceYuan" step="0.01" min="0"
+               placeholder="例：19.90（人民币元，会换算成分）" />
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">标签</label>
+        <input type="text" class="modal-form-input" id="pkg-tag"
+               placeholder="例：推荐 / 限时 / 热销（可空）" maxlength="20" />
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">描述</label>
+        <textarea class="modal-form-textarea" id="pkg-description" rows="3" maxlength="300"
+                  placeholder="套餐文案，例：每月 1000 积分，适合高频面试用户。"></textarea>
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">排序权重</label>
+        <input type="number" class="modal-form-input" id="pkg-sortOrder" step="1" min="0"
+               placeholder="数字越大越靠前；默认 0" />
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="pkg-isActive" checked
+                 style="width:16px;height:16px;" />
+          <span>上架（勾选=用户可见，取消=下架）</span>
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close-modal="packageEditModal">取消</button>
+      <button class="btn btn-primary" id="pkg-submit">保存套餐</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增：兑换码批量生成弹窗（含生成结果展示区，供复制） -->
+<div class="modal-mask" id="redeemGenerateModal">
+  <div class="modal lg">
+    <div class="modal-header">
+      <h3>🎫 批量生成兑换码</h3>
+      <button class="modal-close" data-close-modal="redeemGenerateModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- 生成数量 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label">生成数量 <span class="req">*</span></label>
+        <input type="number" class="modal-form-input" id="rg-count" step="1" min="1" max="500" value="10" />
+        <div class="modal-form-hint">一次最多 500 个，默认 10。</div>
+      </div>
+      <!-- 单码积分 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label">单码积分 <span class="req">*</span></label>
+        <input type="number" class="modal-form-input" id="rg-credits" step="1" min="1" value="100" />
+        <div class="modal-form-hint">每个兑换码兑换后获得的积分，默认 100。</div>
+      </div>
+      <!-- 过期天数 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label">过期天数 <span class="req">*</span></label>
+        <input type="number" class="modal-form-input" id="rg-expireDays" step="1" min="1" value="30" />
+        <div class="modal-form-hint">从生成日起 N 天后过期，默认 30。</div>
+      </div>
+      <!-- 备注 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label">备注</label>
+        <input type="text" class="modal-form-input" id="rg-note" maxlength="100" placeholder="例：双十二活动批次（可空）" />
+      </div>
+      <!-- 生成结果区（默认隐藏，生成成功后显示） -->
+      <div class="modal-form-group" id="rg-result-wrap" style="display:none;">
+        <label class="modal-form-label">生成结果（批次：<span id="rg-batch-id">—</span>，共 <span id="rg-count-out">—</span> 个）</label>
+        <textarea class="modal-form-textarea" id="rg-codes" rows="6" readonly placeholder="生成后将在此显示兑换码，可全选复制。"></textarea>
+        <div class="modal-form-hint">
+          <button type="button" class="btn btn-sm" id="rg-copy-btn">📋 复制全部</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close-modal="redeemGenerateModal">关闭</button>
+      <button class="btn btn-primary" id="rg-submit">生成兑换码</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增：公告编辑弹窗（新增 / 编辑共用） -->
+<div class="modal-mask" id="newsEditModal">
+  <div class="modal lg">
+    <div class="modal-header">
+      <h3 id="newsEditTitle">📢 编辑公告</h3>
+      <button class="modal-close" data-close-modal="newsEditModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- 编辑模式携带 newsId，新增模式为空 -->
+      <input type="hidden" id="news-newsId" />
+      <!-- 标题 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label">标题 <span class="req">*</span></label>
+        <input type="text" class="modal-form-input" id="news-title" maxlength="120" placeholder="例：系统维护通知 / 双十二活动上线" />
+      </div>
+      <!-- 分类下拉 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label">分类</label>
+        <select class="modal-form-input" id="news-category">
+          <option value="system">系统</option>
+          <option value="activity">活动</option>
+          <option value="update">更新</option>
+        </select>
+      </div>
+      <!-- 正文 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label">正文 <span class="req">*</span></label>
+        <textarea class="modal-form-textarea" id="news-content" rows="8" maxlength="2000" placeholder="公告正文，支持纯文本。"></textarea>
+      </div>
+      <!-- 置顶开关 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="news-isPinned" style="width:16px;height:16px;" />
+          <span>置顶（勾选=首页置顶展示）</span>
+        </label>
+      </div>
+      <!-- 发布开关 -->
+      <div class="modal-form-group">
+        <label class="modal-form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="news-isPublished" style="width:16px;height:16px;" />
+          <span>发布（勾选=已发布，取消=草稿）</span>
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close-modal="newsEditModal">取消</button>
+      <button class="btn btn-primary" id="news-submit">保存公告</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增：重置密码弹窗 -->
+<div class="modal-mask" id="resetPasswordModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔑 重置用户密码</h3>
+      <button class="modal-close" data-close-modal="resetPasswordModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-form-group">
+        <div class="modal-form-label">目标用户</div>
+        <div class="overview-card" style="margin-bottom:0;">
+          <div class="value" id="rp-user-line" style="font-size:15px;font-weight:600;">—</div>
+          <div class="label">点击确认后将强制修改该账号密码</div>
+        </div>
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">新密码 <span class="req">*</span></label>
+        <input type="password" class="modal-form-input" id="rp-newPassword"
+               placeholder="至少 6 位" autocomplete="new-password" />
+        <div class="modal-form-hint">建议至少 6 位；提交后用户需用新密码登录。</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close-modal="resetPasswordModal">取消</button>
+      <button class="btn btn-primary" id="rp-submit">确认重置</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增：禁用账号弹窗（启用操作直接调 API，无需弹窗） -->
+<div class="modal-mask" id="disableModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🚫 禁用账号</h3>
+      <button class="modal-close" data-close-modal="disableModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-form-group">
+        <div class="modal-form-label">目标用户</div>
+        <div class="overview-card" style="margin-bottom:0;">
+          <div class="value" id="dis-user-line" style="font-size:15px;font-weight:600;">—</div>
+          <div class="label">禁用后该账号将无法登录，但数据保留。</div>
+        </div>
+      </div>
+      <div class="modal-form-group">
+        <label class="modal-form-label">禁用原因 <span class="req">*</span></label>
+        <textarea class="modal-form-textarea" id="dis-reason" rows="3" maxlength="200"
+                  placeholder="例：违规操作 / 用户申请停用 / 风险账号。会写入审计记录。"></textarea>
+        <div class="modal-form-counter"><span id="dis-reason-cnt">0</span> / 200</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close-modal="disableModal">取消</button>
+      <button class="btn btn-primary danger" id="dis-submit">确认禁用</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 容器 -->
+<div class="toast-wrap" id="toastWrap" role="status" aria-live="polite"></div>
+
+<!-- 浮动反馈按钮 -->
+<button class="floating-btn" title="返回首页" onclick="window.location.href='/'">🏠</button>
+
+<script>
+// ============================================================
+// 管理后台页面初始化脚本
+//   1) 先 /api/auth/me 校验登录 + isAdmin；不是管理员 → 登录页
+//   2) 是管理员 → 渲染主布局，默认加载「总览看板」
+// ============================================================
+'use strict';
+
+// --- 通用工具函数 ---
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+/** 安全格式化：防止 XSS */
+function h(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** 数字格式化（千分位） */
+function fmtNum(n) {
+  const v = Number(n) || 0;
+  return v.toLocaleString();
+}
+
+/** 时间戳格式化 */
+function fmtTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(Number(ts));
+  const pad = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Toast 提示 */
+function showToast(msg, type) {
+  const wrap = $('#toastWrap');
+  if (!wrap) return;
+  const el = document.createElement('div');
+  el.className = 'toast' + (type === 'ok' ? ' ok' : type === 'error' ? ' error' : type === 'warn' ? ' warn' : '');
+  el.textContent = String(msg || '');
+  wrap.appendChild(el);
+  setTimeout(() => {
+    el.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+    el.style.opacity = '0';
+    el.style.transform = 'translateX(20px)';
+  }, 2400);
+  setTimeout(() => {
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }, 2600);
+}
+
+/** 流水图标映射 */
+function flowIconCls(type) {
+  return type === 'charge'  ? 'fi-charge'
+       : type === 'consume' ? 'fi-consume'
+       : type === 'refund'  ? 'fi-refund'
+       : type === 'reward'  ? 'fi-reward'
+       : type === 'adjust'  ? 'fi-adjust'
+       : 'fi-consume';
+}
+
+/** 流水图标 SVG/Unicode 映射 */
+function flowIconSymbol(type) {
+  return type === 'charge'  ? '💰'
+       : type === 'consume' ? '📉'
+       : type === 'refund'  ? '↩️'
+       : type === 'reward'  ? '🎁'
+       : type === 'adjust'  ? '🔧'
+       : '•';
+}
+
+// --- HTTP 封装 ---
+/** 管理员端专用 fetch JSON 包装 */
+async function adminFetch(path, options) {
+  const opts = Object.assign({ credentials: 'same-origin', headers: {} }, options || {});
+  if (opts.body && typeof opts.body !== 'string' && !(opts.body instanceof FormData)) {
+    opts.body = JSON.stringify(opts.body);
+    opts.headers['Content-Type'] = 'application/json';
+  }
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    return { ok: false, httpStatus: 0, msg: '网络异常：' + (e && e.message || e), data: null };
+  }
+  let data = null;
+  try { data = await res.json(); } catch (_) { data = null; }
+  return {
+    ok: !!(data && data.ok),
+    httpStatus: res.status,
+    data: data,
+    msg: (data && data.msg) || (res.ok ? '成功' : `HTTP ${res.status}`),
+  };
+}
+
+// --- 全局状态 ---
+let _currentMenu = 'overview';
+let _adminUser = null;
+
+// ============================================================
+// 登录 / 登出
+// ============================================================
+
+/** 渲染登录表单 */
+function renderLoginForm(errorMsg) {
+  $('#adminLayout').classList.add('hidden');
+  $('#adminLogin').classList.remove('hidden');
+  if (errorMsg) {
+    showToast(errorMsg, 'error');
+  }
+  // 绑定登录表单
+  const form = $('#admin-login-form');
+  if (form && !form._bound) {
+    form._bound = true;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = String($('#admin-login-email').value || '').trim();
+      const password = String($('#admin-login-password').value || '');
+      if (!email || !password) return;
+      const btn = $('#admin-login-btn');
+      btn.disabled = true;
+      btn.textContent = '登录中...';
+      try {
+        const resp = await adminFetch('/api/auth/login', {
+          method: 'POST',
+          body: { email, password }
+        });
+        if (resp.ok && resp.data && resp.data.user) {
+          const u = resp.data.user;
+          if (u.isAdmin === true) {
+            showToast('✅ 登录成功', 'ok');
+            bootAdminLayout(u);
+          } else {
+            showToast('当前账号不是管理员，无权访问管理后台', 'error');
+          }
+        } else {
+          showToast((resp.data && resp.data.msg) || resp.msg || '登录失败', 'error');
+        }
+      } catch (err) {
+        showToast('网络错误：' + (err.message || err), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '管理员登录';
+      }
+    });
+  }
+}
+
+/** 渲染主布局（已登录） */
+function bootAdminLayout(user) {
+  _adminUser = user;
+  $('#adminLogin').classList.add('hidden');
+  $('#adminLayout').classList.remove('hidden');
+
+  // 填充侧边栏用户信息
+  const av = $('#userAvatar');
+  const dn = user.displayName || user.email || 'A';
+  av.textContent = dn.charAt(0).toUpperCase();
+  $('#userName').textContent = dn;
+  $('#userEmail').textContent = user.email || '';
+
+  // 绑定退出按钮
+  const logoutBtn = $('#logoutBtn');
+  if (logoutBtn && !logoutBtn._bound) {
+    logoutBtn._bound = true;
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await adminFetch('/api/auth/logout', { method: 'POST' });
+      } catch (_) {}
+      showToast('已退出登录', 'ok');
+      renderLoginForm();
+    });
+  }
+
+  // 绑定菜单点击
+  $$('.menu-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.preventDefault();
+      const menu = item.dataset.menu;
+      switchMenu(menu);
+    });
+  });
+
+  // 默认加载总览
+  switchMenu('overview');
+}
+
+/** 切换菜单 */
+function switchMenu(menu) {
+  _currentMenu = menu;
+  $$('.menu-item').forEach(el => el.classList.toggle('active', el.dataset.menu === menu));
+  const main = $('#adminMain');
+
+  if (menu === 'overview') {
+    main.innerHTML = renderOverviewHTML();
+    loadOverviewData();
+  } else if (menu === 'users') {
+    main.innerHTML = renderUsersHTML();
+    loadUsersData();
+  } else if (menu === 'consumption') {
+    // 原"套餐 & 消耗"只读面板
+    main.innerHTML = renderPackagesHTML();
+    loadPackagesData();
+  } else if (menu === 'orders') {
+    // 新增"订单管理"面板：点击即加载订单列表
+    main.innerHTML = renderOrdersHTML();
+    loadOrdersData();
+  } else if (menu === 'packages') {
+    // 新增"套餐管理"面板（增删改）：点击即加载套餐列表
+    main.innerHTML = renderPackagesAdminHTML();
+    loadPackagesAdminData();
+  } else if (menu === 'redeem') {
+    // 兑换码管理：生成/查看/删除
+    main.innerHTML = renderRedeemAdminHTML();
+    loadRedeemAdminData();
+  } else if (menu === 'news') {
+    // 公告管理：增删改查
+    main.innerHTML = renderNewsAdminHTML();
+    loadNewsAdminData();
+  }
+}
+
+/** 刷新当前菜单 */
+async function refreshCurrentMenu() {
+  switchMenu(_currentMenu);
+}
+
+// ============================================================
+// 菜单 1：总览看板
+// ============================================================
+
+/** 渲染总览 HTML 骨架 */
+function renderOverviewHTML() {
+  const u = _adminUser || {};
+  return `
+    <div class="main-header">
+      <div class="welcome-section">
+        <h1>欢迎回来，${h(u.displayName || u.email || '管理员')} 👋</h1>
+        <div class="plan-info">
+          <span>当前角色：</span>
+          <span class="plan-badge">🛠 管理员</span>
+          <span class="plan-badge">v1.0 · HireMe 积分运营</span>
+        </div>
+      </div>
+      <div class="admin-actions">
+        <span class="credits-tag" style="padding:4px 12px;border-radius:999px;background:var(--bg-card);color:var(--text-secondary);font-size:13px;font-weight:500;" id="currentTime"></span>
+      </div>
+    </div>
+
+    <!-- 运营提示 Hero 卡 -->
+    <div class="admin-hero">
+      <div class="hero-title">📊 积分体系 · SQLite 事务保证</div>
+      <div class="hero-desc">每次变动（充值 / 扣费 / 手工调账）都在同一个 <b>SQLite 事务</b> 内更新 <b>credit_balances</b> 余额表 + 写入 <b>credit_flows</b> 流水表，通过 WAL 模式 + 预编译语句执行，不会出现对账不一致。</div>
+      <div class="hero-actions">
+        <button class="hero-btn" onclick="switchMenu('users')">👥 去用户管理</button>
+        <button class="hero-btn" onclick="switchMenu('consumption')">💎 查看套餐</button>
+      </div>
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label"><span>注册账号</span><span>👥</span></div>
+        <div class="stat-value"><span id="stat-total-accounts">—</span></div>
+        <div class="stat-sub">管理员 <span class="positive" id="stat-admin-count">—</span> 人</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label"><span>积分总余额</span><span>💎</span></div>
+        <div class="stat-value mono"><span id="stat-total-balance">—</span></div>
+        <div class="stat-sub">
+          <span class="positive">+<span id="stat-total-recharged">—</span></span>
+          <span style="margin:0 6px;color:var(--text-tertiary);">/</span>
+          <span class="negative">−<span id="stat-total-consumed">—</span></span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label"><span>订单</span><span>🧾</span></div>
+        <div class="stat-value"><span id="stat-total-orders">—</span><span class="unit">单</span></div>
+        <div class="stat-sub">
+          已支付 <b id="stat-paid-orders">—</b> /
+          累计流水 <span class="positive">¥<span id="stat-paid-amount">—</span></span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label"><span>近 30 天流水</span><span>📋</span></div>
+        <div class="stat-value"><span id="stat-flows-30">—</span></div>
+        <div class="stat-sub">笔（充值 / 扣费 / 调账合计）</div>
+      </div>
+    </div>
+
+    <div class="loading" id="overviewLoading">
+      <span class="spinner"></span>加载总览数据...
+    </div>
+  `;
+}
+
+/** 加载总览数据 */
+async function loadOverviewData() {
+  // 更新时间
+  const timeEl = $('#currentTime');
+  if (timeEl) {
+    const d = new Date();
+    const pad = (x) => String(x).padStart(2, '0');
+    timeEl.textContent = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  try {
+    const resp = await adminFetch('/api/admin/overview');
+    if (!(resp && resp.ok)) {
+      showToast('总览加载失败：' + ((resp && resp.msg) || '未知错误'), 'error');
+      $('#overviewLoading').innerHTML = '<span style="color:var(--danger);">加载失败，请刷新重试</span>';
+      return;
+    }
+    const o = (resp.data && resp.data.overview) || {};
+    const a = o.accounts || {};
+    const c = o.credits || {};
+    const ord = o.orders || {};
+
+    $('#stat-total-accounts').textContent = fmtNum(a.total || 0);
+    $('#stat-admin-count').textContent = fmtNum(a.admins || 0);
+    $('#stat-total-balance').textContent = fmtNum(c.totalBalance || 0);
+    $('#stat-total-recharged').textContent = fmtNum(c.totalRecharged || 0);
+    $('#stat-total-consumed').textContent = fmtNum(c.totalConsumed || 0);
+    $('#stat-total-orders').textContent = fmtNum(ord.total || 0);
+    $('#stat-paid-orders').textContent = fmtNum(ord.paid || 0);
+    $('#stat-paid-amount').textContent = (ord.paidAmountYuan || 0).toFixed(2);
+    $('#stat-flows-30').textContent = fmtNum(o.flows30 || 0);
+
+    $('#overviewLoading').style.display = 'none';
+  } catch (e) {
+    showToast('总览加载异常：' + (e.message || e), 'error');
+    $('#overviewLoading').innerHTML = '<span style="color:var(--danger);">加载失败</span>';
+  }
+}
+
+// ============================================================
+// 菜单 2：用户管理
+// ============================================================
+
+/** 渲染用户管理 HTML 骨架 */
+function renderUsersHTML() {
+  return `
+    <div class="main-header">
+      <div class="welcome-section">
+        <h1>用户管理 👥</h1>
+        <div class="plan-info">
+          <span>管理员手工调账时，原因会写入流水中，用于审计。</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 搜索框 -->
+    <div class="search-bar">
+      <input type="search" class="search-input" id="user-search-input"
+             placeholder="搜索邮箱 / 昵称 / accountId（留空查全部）" />
+      <button class="btn btn-primary" id="user-search-btn">🔍 搜索</button>
+      <span class="search-hint" id="user-count-hint"></span>
+    </div>
+
+    <!-- 用户列表 -->
+    <div class="table-container">
+      <div class="table-scroll" id="user-list-mount">
+        <div class="loading">
+          <span class="spinner"></span>加载用户列表...
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/** 加载用户列表数据 */
+async function loadUsersData(keyword) {
+  const mount = $('#user-list-mount');
+  const btn = $('#user-search-btn');
+  const input = $('#user-search-input');
+  const countHint = $('#user-count-hint');
+
+  // 绑定搜索按钮（仅一次）
+  if (btn && !btn._bound) {
+    btn._bound = true;
+    btn.addEventListener('click', () => {
+      loadUsersData(input ? input.value : '');
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadUsersData(input.value);
+    });
+  }
+
+  mount.innerHTML = '<div class="loading"><span class="spinner"></span>搜索中...</div>';
+  const kw = encodeURIComponent((keyword || '').trim());
+
+  try {
+    const resp = await adminFetch(`/api/admin/accounts?keyword=${kw}&limit=300`);
+    if (!(resp && resp.ok)) {
+      mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">搜索失败：${h((resp && resp.msg) || '未知错误')}</div>`;
+      return;
+    }
+    const list = (resp.data && resp.data.items) || [];
+    countHint.textContent = `共 ${list.length} 个用户`;
+
+    if (!list.length) {
+      mount.innerHTML = `<div class="empty-state">没有匹配的用户（${kw ? '搜索词：' + h(decodeURIComponent(kw)) : '系统暂无用户'}）</div>`;
+      return;
+    }
+
+    mount.innerHTML = `
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>用户</th>
+            <th>角色 / 状态</th>
+            <th>积分（当前/累计充值/累计消耗）</th>
+            <th>最后登录</th>
+            <th style="text-align:right;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${list.map(u => {
+            const c = u.credits || {};
+            const seed = Object.assign({}, u, c, { balance: c.balance || 0 });
+            const initial = ((u.displayName || u.email || u.accountId || '?').trim().charAt(0)).toUpperCase();
+            // 安全序列化账号 ID / 邮箱 / 昵称，用于内联 onclick 调用
+            const acid = JSON.stringify(u.accountId);
+            const aem  = JSON.stringify(u.email || '');
+            const adn  = JSON.stringify(u.displayName || '');
+            const abal = JSON.stringify(c.balance || 0);
+            return `
+              <tr>
+                <td>
+                  <div class="user-cell">
+                    <div class="user-avatar">${h(initial)}</div>
+                    <div>
+                      <div class="user-name">${h(u.displayName || (u.email ? String(u.email).split('@')[0] : (u.accountId || '')))}</div>
+                      <div class="user-email">${h(u.email)}</div>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <div>${u.isAdmin
+                        ? '<span class="badge-soft badge-soft-admin">🛠 管理员</span>'
+                        : '<span class="badge-soft badge-soft-user">普通用户</span>'}</div>
+                  ${u.disabled
+                    ? '<div style="margin-top:4px;"><span class="badge-soft badge-cancelled">已禁用</span></div>'
+                    : ''}
+                </td>
+                <td>
+                  <div class="mono" style="font-weight:bold;color:var(--text-primary);">${fmtNum(c.balance || 0)}</div>
+                  <div style="font-size:12px;">
+                    <span class="credit-plus">+${fmtNum(c.totalRecharged || 0)}</span>
+                    <span style="margin:0 4px;color:var(--text-tertiary);">·</span>
+                    <span class="credit-minus">−${fmtNum(c.totalConsumed || 0)}</span>
+                  </div>
+                </td>
+                <td style="font-size:12px;">
+                  <div>${fmtTs(u.lastLoginTs || 0)}</div>
+                  <div style="color:var(--text-tertiary);">注册 ${fmtTs(u.createdAt || 0)}</div>
+                </td>
+                <td>
+                  <div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end;">
+                    <button class="btn btn-sm" onclick='openUserDetailModal(${acid},${JSON.stringify(seed)})'>
+                      📒 详情
+                    </button>
+                    <button class="btn btn-sm danger"
+                            onclick='openAdjustModal(${acid},${aem},${adn},${abal})'>
+                      🔧 调账
+                    </button>
+                    <button class="btn btn-sm" onclick='openResetPasswordModal(${acid},${aem})'>
+                      🔑 重置密码
+                    </button>
+                    ${u.disabled
+                      ? `<button class="btn btn-sm primary" onclick='enableAccount(${acid})'>✅ 启用</button>`
+                      : `<button class="btn btn-sm danger" onclick='openDisableModal(${acid},${aem})'>🚫 禁用</button>`}
+                    ${u.isAdmin
+                      ? `<button class="btn btn-sm" onclick='setAdmin(${acid},false)'>❌ 取消管理员</button>`
+                      : `<button class="btn btn-sm primary" onclick='setAdmin(${acid},true)'>🛠 设为管理员</button>`}
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">搜索失败：${h(e.message || e)}</div>`;
+  }
+}
+
+// ============================================================
+// 菜单 3：套餐 & 消耗参考
+// ============================================================
+
+/** 渲染套餐页 HTML 骨架 */
+function renderPackagesHTML() {
+  return `
+    <div class="main-header">
+      <div class="welcome-section">
+        <h1>套餐 & 消耗参考 💎</h1>
+        <div class="plan-info">
+          <span>套餐参数来自代码常量，如需修改请编辑后重启服务。</span>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="section-title">💎 积分套餐</h3>
+    <div id="packagesGrid" class="packages-grid">
+      <div class="loading"><span class="spinner"></span>加载套餐...</div>
+    </div>
+
+    <h3 class="section-title">🔋 功能消耗参考</h3>
+    <div class="table-container">
+      <div class="table-scroll" id="priceTableMount">
+        <div class="loading"><span class="spinner"></span>加载单价表...</div>
+      </div>
+    </div>
+  `;
+}
+
+/** 加载套餐和单价数据 */
+async function loadPackagesData() {
+  try {
+    // 并行请求套餐和单价
+    const [pkgResp, priceResp] = await Promise.all([
+      adminFetch('/api/admin/packages'),
+      adminFetch('/api/console/price-list')
+    ]);
+
+    const items = (pkgResp && pkgResp.ok && Array.isArray(pkgResp.data && pkgResp.data.items))
+      ? pkgResp.data.items : [];
+    const prices = (priceResp && priceResp.ok && Array.isArray(priceResp.data && priceResp.data.items))
+      ? priceResp.data.items : [];
+
+    // 渲染套餐卡片
+    const grid = $('#packagesGrid');
+    if (!items.length) {
+      grid.innerHTML = '<div class="empty-state">暂无套餐数据</div>';
+    } else {
+      grid.innerHTML = items.map(p => `
+        <div class="package-card ${p.featured ? 'featured' : ''}">
+          ${p.featured ? '<div class="package-badge">推荐</div>' : ''}
+          <div class="package-name">${h(p.name)}</div>
+          <div class="package-id">${h(p.id)}</div>
+          <div class="package-credits">
+            <div class="amount">+${fmtNum((Number(p.credits) || 0) + (Number(p.bonusCredits) || 0))}</div>
+            <div class="bonus">其中赠送 +${fmtNum(Number(p.bonusCredits) || 0)}</div>
+          </div>
+          <div class="package-price">¥${h((Number(p.priceCents || 0) / 100).toFixed(2))}</div>
+          <div class="package-desc">${h(p.desc || '')}</div>
+        </div>
+      `).join('');
+    }
+
+    // 渲染单价表
+    const priceMount = $('#priceTableMount');
+    if (!prices.length) {
+      priceMount.innerHTML = '<div class="empty-state">暂无单价数据</div>';
+    } else {
+      priceMount.innerHTML = `
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>功能</th>
+              <th>单次积分</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${prices.map(p => `
+              <tr>
+                <td style="font-weight:600;">${h(p.name || p.key || '')}</td>
+                <td class="mono credit-minus">−${fmtNum(Number(p.credits) || 0)}</td>
+                <td style="color:var(--text-secondary);font-size:13px;">${h(p.desc || '')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+  } catch (e) {
+    showToast('套餐加载失败：' + (e.message || e), 'error');
+  }
+}
+
+// ============================================================
+// 弹窗逻辑：调账
+// ============================================================
+
+/** 打开调账弹窗 */
+function openAdjustModal(accountId, email, displayName, balance) {
+  $('#adj-user-line').textContent = `${displayName || '—'} （${email || ''} · ${accountId || ''}）`;
+  $('#adj-user-balance').textContent = fmtNum(balance);
+  $('#adj-delta').value = '';
+  $('#adj-reason').value = '';
+  $('#adj-reason-cnt').textContent = '0';
+  $('#adjustModal').classList.add('show');
+
+  const reasonInput = $('#adj-reason');
+  reasonInput.oninput = () => {
+    $('#adj-reason-cnt').textContent = String(reasonInput.value.length || 0);
+  };
+
+  // 提交按钮绑定（每次打开重绑）
+  const submit = $('#adj-submit');
+  submit.onclick = async () => {
+    const d = $('#adj-delta');
+    const r = $('#adj-reason');
+    const delta = Number(d.value);
+    const reason = String(r.value || '').trim();
+    if (!Number.isSafeInteger(delta) || delta === 0) {
+      showToast('delta 必须是非零整数', 'error');
+      return;
+    }
+    if (!reason) {
+      showToast('请填写调整原因（用于审计）', 'error');
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = '提交中…';
+    try {
+      const resp = await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountId)}/adjust`, {
+        method: 'POST',
+        body: { delta, reason }
+      });
+      if (resp.ok) {
+        showToast(`✅ 调整成功：delta=${resp.data.delta}，新余额=${fmtNum(resp.data.balance)}`, 'ok');
+        closeModal('adjustModal');
+        await refreshCurrentMenu();
+      } else {
+        showToast('❌ ' + ((resp.data && resp.data.msg) || '调整失败'), 'error');
+      }
+    } catch (e) {
+      showToast('❌ 网络错误：' + (e.message || e), 'error');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = '确认调整';
+    }
+  };
+}
+
+// ============================================================
+// 弹窗逻辑：用户详情
+// ============================================================
+
+/** 打开用户详情弹窗 */
+async function openUserDetailModal(accountId, seed) {
+  const t = $('#ud-title');
+  t.textContent = `${(seed && seed.email) || accountId}${(seed && seed.displayName) ? ' · ' + seed.displayName : ''}`;
+  $('#ud-balance').textContent = seed && typeof seed.balance === 'number' ? fmtNum(seed.balance) : '加载中…';
+  $('#ud-recharged').textContent = seed && typeof seed.totalRecharged === 'number' ? fmtNum(seed.totalRecharged) : '—';
+  $('#ud-consumed').textContent = seed && typeof seed.totalConsumed === 'number' ? fmtNum(seed.totalConsumed) : '—';
+  $('#ud-body').innerHTML = '<div class="empty-state">⬆ 点击上方按钮查看流水或订单</div>';
+
+  $('#userDetailModal').classList.add('show');
+
+  // 如需拉取详情
+  let acc = seed && typeof seed.balance === 'number' ? seed : null;
+  if (!acc) {
+    try {
+      const detail = await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountId)}`);
+      if (detail.ok && detail.data) {
+        acc = Object.assign({}, detail.data.account || {}, detail.data.credits || {});
+        $('#ud-balance').textContent = fmtNum(acc.balance || 0);
+        $('#ud-recharged').textContent = fmtNum(acc.totalRecharged || 0);
+        $('#ud-consumed').textContent = fmtNum(acc.totalConsumed || 0);
+      }
+    } catch (_) {}
+  }
+
+  // 绑定子功能按钮
+  $$('[data-ud-sub]').forEach(btn => {
+    btn.onclick = async () => {
+      const sub = btn.getAttribute('data-ud-sub');
+      const body = $('#ud-body');
+      body.innerHTML = `<div class="loading"><span class="spinner"></span>加载${sub === 'flows' ? '流水' : '订单'}…</div>`;
+
+      if (sub === 'flows') {
+        const resp = await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountId)}/flows?limit=200&desc=1`);
+        if (!(resp && resp.ok)) {
+          body.innerHTML = `<div class="empty-state" style="color:var(--danger);">拉流水失败：${h((resp.data && resp.data.msg) || '未知错误')}</div>`;
+          return;
+        }
+        const items = (resp.data && resp.data.items) || [];
+        if (!items.length) {
+          body.innerHTML = '<div class="empty-state">该用户暂无积分流水。</div>';
+          return;
+        }
+        body.innerHTML = `
+          <div style="overflow-x:auto;">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th style="width:48px;">类型</th>
+                <th>时间</th>
+                <th>业务 / 备注</th>
+                <th style="text-align:right;">Δ</th>
+                <th style="text-align:right;">余额</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map(f => {
+                const cls = flowIconCls(f.type);
+                return `
+                <tr>
+                  <td><span class="flow-icon ${cls}">${flowIconSymbol(f.type)}</span></td>
+                  <td style="font-size:12px;">${fmtTs(f.createdAt)}</td>
+                  <td>
+                    <div style="font-weight:600;">${h(f.bizType || f.type || '')}${f.bizId ? `<span class="mono" style="font-size:11px;color:var(--text-tertiary);margin-left:8px;">${h(f.bizId)}</span>` : ''}</div>
+                    ${f.desc ? `<div style="font-size:12px;color:var(--text-tertiary);">${h(f.desc)}</div>` : ''}
+                    ${f.operatorEmail ? `<div style="font-size:12px;color:var(--text-tertiary);">操作人：${h(f.operatorEmail)}</div>` : ''}
+                  </td>
+                  <td style="text-align:right;" class="mono ${Number(f.delta) > 0 ? 'credit-plus' : Number(f.delta) < 0 ? 'credit-minus' : 'text-muted'}">
+                    ${Number(f.delta) > 0 ? '+' : ''}${fmtNum(f.delta)}
+                  </td>
+                  <td style="text-align:right;font-weight:600;" class="mono">${fmtNum(f.balanceAfter)}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+          </div>
+        `;
+      } else {
+        // 订单
+        const resp = await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountId)}/orders?limit=100`);
+        if (!(resp && resp.ok)) {
+          body.innerHTML = `<div class="empty-state" style="color:var(--danger);">拉订单失败：${h((resp.data && resp.data.msg) || '未知错误')}</div>`;
+          return;
+        }
+        const items = (resp.data && resp.data.items) || [];
+        if (!items.length) {
+          body.innerHTML = '<div class="empty-state">该用户暂无订单。</div>';
+          return;
+        }
+        body.innerHTML = `
+          <div style="overflow-x:auto;">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>订单号</th>
+                <th>套餐 / 状态</th>
+                <th>下单时间</th>
+                <th style="text-align:right;">金额</th>
+                <th style="text-align:right;">到账积分</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map(o => `
+                <tr>
+                  <td class="mono" style="font-size:12px;">${h(o.orderId || '')}</td>
+                  <td>
+                    <div style="font-weight:600;">${h(o.packageName || '套餐')}</div>
+                    <div style="font-size:12px;margin-top:2px;">
+                      ${o.status === 'paid' ? '<span class="badge-soft" style="background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid rgba(34,197,94,0.3);">支付成功</span>'
+                        : o.status === 'pending' ? '<span class="badge-soft" style="background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);">待支付</span>'
+                        : o.status === 'cancelled' ? '<span class="badge-soft" style="background:var(--bg-elevated);color:var(--text-tertiary);border:1px solid var(--border);">已取消</span>'
+                        : `<span class="badge-soft" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);">${h(o.status || '未知')}</span>`}
+                    </div>
+                  </td>
+                  <td style="font-size:12px;">
+                    ${fmtTs(o.createdAt)}
+                    ${o.paidAt ? `<div style="color:var(--text-tertiary);">支付 ${fmtTs(o.paidAt)}</div>` : ''}
+                  </td>
+                  <td style="text-align:right;" class="mono">¥${h(typeof o.priceYuan === 'number' ? o.priceYuan.toFixed(2) : ((o.priceCents || 0) / 100).toFixed(2))}</td>
+                  <td style="text-align:right;" class="mono credit-plus">+${fmtNum(o.paidCredits || 0)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          </div>
+        `;
+      }
+    };
+  });
+
+  // 调账按钮
+  $('#ud-open-adjust').onclick = () => {
+    const bal = acc && typeof acc.balance === 'number' ? acc.balance : 0;
+    const em = (acc && acc.email) || (seed && seed.email) || '';
+    const dn = (acc && acc.displayName) || (seed && seed.displayName) || '';
+    window.openAdjustModal(accountId, em, dn, bal);
+  };
+}
+
+// ============================================================
+// 弹窗辅助：关闭弹窗
+// ============================================================
+
+/** 关闭指定弹窗 */
+function closeModal(id) {
+  const m = document.getElementById(id);
+  if (m) m.classList.remove('show');
+}
+
+// 绑定所有关闭按钮
+document.addEventListener('click', (e) => {
+  const target = e.target;
+  if (target instanceof HTMLElement && target.hasAttribute('data-close-modal')) {
+    const id = target.getAttribute('data-close-modal');
+    closeModal(id);
+  }
+  // 点击弹窗背景关闭
+  if (target.classList && target.classList.contains('modal-mask') && target.classList.contains('show')) {
+    target.classList.remove('show');
+  }
+});
+
+// ============================================================
+// 菜单 4：订单管理
+// ============================================================
+
+/** 渲染订单管理面板骨架（包含 #ordersPanel 容器 + #ordersBody 表格挂载点） */
+function renderOrdersHTML() {
+  return `
+    <div class="panel" id="ordersPanel">
+      <div class="panel-toolbar">
+        <div>
+          <h1>订单管理 📦</h1>
+          <div class="plan-info">
+            <span>展示最近 50 笔订单。状态徽章：绿色=已支付，黄色=待支付，灰色=已取消。</span>
+          </div>
+        </div>
+      </div>
+      <div class="table-container">
+        <div class="table-scroll" id="ordersBody">
+          <div class="loading"><span class="spinner"></span>加载订单列表...</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 渲染订单表格 body（任务指定函数名）
+ * @param {Array} items - 订单数组，每项含 orderId/email/packageName/priceYuan/paidCredits/status/createdAt 等
+ */
+function renderOrdersPanel(items) {
+  const mount = $('#ordersBody');
+  if (!mount) return;
+  if (!Array.isArray(items) || !items.length) {
+    mount.innerHTML = '<div class="empty-state">暂无订单数据</div>';
+    return;
+  }
+  // 状态徽章：paid=绿 / pending=黄 / cancelled=灰
+  const badgeFor = (status) => {
+    const s = String(status || '').toLowerCase();
+    if (s === 'paid')      return '<span class="badge-soft badge-paid">已支付</span>';
+    if (s === 'pending')   return '<span class="badge-soft badge-pending">待支付</span>';
+    if (s === 'cancelled') return '<span class="badge-soft badge-cancelled">已取消</span>';
+    return `<span class="badge-soft badge-cancelled">${h(s || '未知')}</span>`;
+  };
+  mount.innerHTML = `
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>订单号</th>
+          <th>用户邮箱</th>
+          <th>套餐</th>
+          <th style="text-align:right;">金额(元)</th>
+          <th style="text-align:right;">积分</th>
+          <th>状态</th>
+          <th>时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(o => `
+          <tr>
+            <td class="mono" style="font-size:12px;">${h(o.orderId || '')}</td>
+            <td>${h(o.email || '')}</td>
+            <td>${h(o.packageName || o.packageId || '')}</td>
+            <td style="text-align:right;" class="mono">¥${h(typeof o.priceYuan === 'number' ? o.priceYuan.toFixed(2) : ((o.priceCents || 0) / 100).toFixed(2))}</td>
+            <td style="text-align:right;" class="mono credit-plus">+${fmtNum(o.paidCredits || 0)}</td>
+            <td>${badgeFor(o.status)}</td>
+            <td style="font-size:12px;">${fmtTs(o.createdAt || 0)}${o.paidAt ? `<div style="color:var(--text-tertiary);">支付 ${fmtTs(o.paidAt)}</div>` : ''}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+/** 加载订单列表数据：GET /api/admin/orders?limit=50 */
+async function loadOrdersData() {
+  const mount = $('#ordersBody');
+  if (mount) mount.innerHTML = '<div class="loading"><span class="spinner"></span>加载订单列表...</div>';
+  try {
+    const resp = await adminFetch('/api/admin/orders?limit=50');
+    if (!(resp && resp.ok)) {
+      if (mount) mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">订单加载失败：${h((resp && resp.msg) || '未知错误')}</div>`;
+      return;
+    }
+    const items = (resp.data && resp.data.items) || [];
+    renderOrdersPanel(items);
+  } catch (e) {
+    if (mount) mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">订单加载异常：${h(e.message || e)}</div>`;
+  }
+}
+
+// ============================================================
+// 菜单 5：套餐管理（增删改）
+// ============================================================
+
+/** 渲染套餐管理面板骨架（含「新增套餐」按钮 + #packagesBody 挂载点） */
+function renderPackagesAdminHTML() {
+  return `
+    <div class="panel" id="packagesPanel">
+      <div class="panel-toolbar">
+        <div>
+          <h1>套餐管理 📦</h1>
+          <div class="plan-info">
+            <span>支持新增 / 编辑 / 删除 / 上下架。下架后用户不可见，数据保留。</span>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick='openPackageEditModal(null)'>＋ 新增套餐</button>
+      </div>
+      <div class="table-container">
+        <div class="table-scroll" id="packagesBody">
+          <div class="loading"><span class="spinner"></span>加载套餐列表...</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 渲染套餐管理表格 body（任务指定函数名）
+ * @param {Array} items - 套餐数组，含已下架套餐
+ */
+function renderPackagesPanel(items) {
+  const mount = $('#packagesBody');
+  if (!mount) return;
+  if (!Array.isArray(items) || !items.length) {
+    mount.innerHTML = '<div class="empty-state">暂无套餐，点击右上角「新增套餐」</div>';
+    return;
+  }
+  // 状态徽章：上架=绿，下架=灰
+  const statusBadge = (p) => (p.isActive !== false)
+    ? '<span class="badge-soft badge-active">上架</span>'
+    : '<span class="badge-soft badge-inactive">下架</span>';
+  // 价格统一取 priceYuan，无则用 priceCents/100 兜底
+  const priceYuanOf = (p) => typeof p.priceYuan === 'number'
+    ? p.priceYuan : (Number(p.priceCents || 0) / 100);
+
+  mount.innerHTML = `
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>套餐ID</th>
+          <th>标题</th>
+          <th style="text-align:right;">基础积分</th>
+          <th style="text-align:right;">赠送积分</th>
+          <th style="text-align:right;">价格(元)</th>
+          <th>标签</th>
+          <th>状态</th>
+          <th style="text-align:right;">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(p => {
+          // 序列化套餐对象，传给 openPackageEditModal
+          const pdata = JSON.stringify({
+            packageId: p.packageId || p.id || '',
+            title: p.title || p.name || '',
+            credits: Number(p.credits) || 0,
+            bonusCredits: Number(p.bonusCredits) || 0,
+            priceYuan: priceYuanOf(p),
+            tag: p.tag || '',
+            description: p.description || p.desc || '',
+            sortOrder: Number(p.sortOrder) || 0,
+            isActive: p.isActive !== false
+          });
+          const pid = JSON.stringify(p.packageId || p.id || '');
+          return `
+            <tr>
+              <td class="mono" style="font-size:12px;">${h(p.packageId || p.id || '')}</td>
+              <td style="font-weight:600;">${h(p.title || p.name || '')}</td>
+              <td style="text-align:right;" class="mono">${fmtNum(p.credits || 0)}</td>
+              <td style="text-align:right;" class="mono credit-plus">+${fmtNum(p.bonusCredits || 0)}</td>
+              <td style="text-align:right;" class="mono">¥${h(priceYuanOf(p).toFixed(2))}</td>
+              <td>${p.tag ? `<span class="badge-soft badge-soft-user">${h(p.tag)}</span>` : '<span style="color:var(--text-tertiary);">—</span>'}</td>
+              <td>${statusBadge(p)}</td>
+              <td>
+                <div style="display:flex;gap:4px;justify-content:flex-end;">
+                  <button class="btn btn-sm" onclick='openPackageEditModal(${pdata})'>✏️ 编辑</button>
+                  <button class="btn btn-sm danger" onclick='deletePackage(${pid})'>🗑 删除</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+/** 加载套餐列表数据（含下架套餐）：GET /api/admin/packages */
+async function loadPackagesAdminData() {
+  const mount = $('#packagesBody');
+  if (mount) mount.innerHTML = '<div class="loading"><span class="spinner"></span>加载套餐列表...</div>';
+  try {
+    const resp = await adminFetch('/api/admin/packages');
+    if (!(resp && resp.ok)) {
+      if (mount) mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">套餐加载失败：${h((resp && resp.msg) || '未知错误')}</div>`;
+      return;
+    }
+    const items = (resp.data && resp.data.items) || [];
+    renderPackagesPanel(items);
+  } catch (e) {
+    if (mount) mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">套餐加载异常：${h(e.message || e)}</div>`;
+  }
+}
+
+// ============================================================
+// 弹窗：套餐编辑（新增 / 编辑共用）
+// ============================================================
+
+/**
+ * 打开套餐编辑弹窗
+ * @param {Object|null} pkgData - 已有套餐数据→编辑模式；null→新增模式
+ * 举例：
+ *   新增：openPackageEditModal(null)  → ID 输入框可填，调 POST /api/admin/packages/create
+ *   编辑：openPackageEditModal({packageId:'pro',...}) → ID 只读，调 POST /api/admin/packages/pro/update
+ */
+function openPackageEditModal(pkgData) {
+  const isEdit = !!(pkgData && pkgData.packageId);
+  // 填充表单字段
+  $('#pkgEditTitle').textContent = isEdit ? '📦 编辑套餐' : '📦 新增套餐';
+  $('#pkg-packageId').value = (pkgData && pkgData.packageId) || '';
+  $('#pkg-packageId').readOnly = isEdit;            // 编辑模式 ID 只读
+  $('#pkg-title').value = (pkgData && pkgData.title) || '';
+  $('#pkg-credits').value = (pkgData && pkgData.credits) || 0;
+  $('#pkg-bonusCredits').value = (pkgData && pkgData.bonusCredits) || 0;
+  $('#pkg-priceYuan').value = (pkgData && typeof pkgData.priceYuan === 'number') ? pkgData.priceYuan : 0;
+  $('#pkg-tag').value = (pkgData && pkgData.tag) || '';
+  $('#pkg-description').value = (pkgData && pkgData.description) || '';
+  $('#pkg-sortOrder').value = (pkgData && pkgData.sortOrder) || 0;
+  $('#pkg-isActive').checked = pkgData ? pkgData.isActive !== false : true;
+
+  $('#packageEditModal').classList.add('show');
+
+  // 绑定提交按钮（每次打开重绑）
+  const submit = $('#pkg-submit');
+  submit.onclick = async () => {
+    // 收集表单字段（与后端字段名一致）
+    const payload = {
+      packageId: $('#pkg-packageId').value.trim(),
+      title: $('#pkg-title').value.trim(),
+      credits: Number($('#pkg-credits').value) || 0,
+      bonusCredits: Number($('#pkg-bonusCredits').value) || 0,
+      priceYuan: Number($('#pkg-priceYuan').value) || 0,
+      tag: $('#pkg-tag').value.trim(),
+      description: $('#pkg-description').value.trim(),
+      sortOrder: Number($('#pkg-sortOrder').value) || 0,
+      isActive: $('#pkg-isActive').checked
+    };
+    // 基础前端校验
+    if (!payload.title) { showToast('请填写标题', 'error'); return; }
+    if (!isEdit && !payload.packageId) { showToast('请填写套餐 ID', 'error'); return; }
+    if (!(payload.credits >= 0)) { showToast('基础积分需为非负整数', 'error'); return; }
+    if (!(payload.priceYuan >= 0)) { showToast('价格需为非负数', 'error'); return; }
+
+    submit.disabled = true;
+    submit.textContent = '保存中…';
+    try {
+      // 新增 → POST /api/admin/packages/create
+      // 编辑 → POST /api/admin/packages/:id/update
+      const url = isEdit
+        ? `/api/admin/packages/${encodeURIComponent(payload.packageId)}/update`
+        : '/api/admin/packages/create';
+      const resp = await adminFetch(url, { method: 'POST', body: payload });
+      if (resp.ok) {
+        showToast(isEdit ? '✅ 套餐已更新' : '✅ 套餐已创建', 'ok');
+        closeModal('packageEditModal');
+        await loadPackagesAdminData();
+      } else {
+        showToast('❌ ' + ((resp.data && resp.data.msg) || '保存失败'), 'error');
+      }
+    } catch (e) {
+      showToast('❌ 网络错误：' + (e.message || e), 'error');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = '保存套餐';
+    }
+  };
+}
+
+/**
+ * 删除套餐（带二次确认）
+ * @param {string} pkgId - 套餐 ID
+ */
+async function deletePackage(pkgId) {
+  if (!pkgId) return;
+  if (!window.confirm(`确认删除套餐「${pkgId}」吗？该操作通常不可恢复。`)) return;
+  try {
+    // 调用 POST /api/admin/packages/:id/delete
+    const resp = await adminFetch(`/api/admin/packages/${encodeURIComponent(pkgId)}/delete`, { method: 'POST' });
+    if (resp.ok) {
+      showToast(`✅ 套餐「${pkgId}」已删除`, 'ok');
+      await loadPackagesAdminData();
+    } else {
+      showToast('❌ ' + ((resp.data && resp.data.msg) || '删除失败'), 'error');
+    }
+  } catch (e) {
+    showToast('❌ 网络错误：' + (e.message || e), 'error');
+  }
+}
+
+// ============================================================
+// 菜单 6：兑换码管理（生成 / 筛选 / 删除）
+// ============================================================
+
+// 兑换码筛选状态（status / batchId），切换菜单或生成成功后会重置
+let _redeemFilter = { status: '', batchId: '' };
+
+/**
+ * 渲染兑换码管理面板 HTML
+ * 含：① 统计卡片（未使用 / 已使用 / 已过期，数量+总积分）
+ *     ②「批量生成」按钮
+ *     ③ 筛选下拉（状态 / 批次）
+ *     ④ 兑换码列表表格（兑换码 / 积分数 / 状态 / 批次 / 创建时间 / 使用者 / 过期时间 / 操作）
+ */
+function renderRedeemAdminHTML() {
+  return `
+    <div class="panel" id="redeemPanel">
+      <div class="panel-toolbar">
+        <div>
+          <h1>兑换码管理 🎫</h1>
+          <div class="plan-info">
+            <span>批量生成 / 筛选 / 删除兑换码。状态：绿色=未使用，灰色=已使用，红色=已过期。</span>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick='openRedeemGenerateModal()'>＋ 批量生成</button>
+      </div>
+
+      <!-- ① 统计卡片：未使用 / 已使用 / 已过期 -->
+      <div class="stats-grid" id="redeemStatsBody">
+        <div class="stat-card">
+          <div class="stat-label"><span>未使用</span><span>🟢</span></div>
+          <div class="stat-value mono"><span id="rs-unused-count">—</span><span class="unit">个</span></div>
+          <div class="stat-sub">合计 <span class="positive" id="rs-unused-credits">—</span> 积分</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label"><span>已使用</span><span>⚪</span></div>
+          <div class="stat-value mono"><span id="rs-used-count">—</span><span class="unit">个</span></div>
+          <div class="stat-sub">合计 <span id="rs-used-credits">—</span> 积分</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label"><span>已过期</span><span>🔴</span></div>
+          <div class="stat-value mono"><span id="rs-expired-count">—</span><span class="unit">个</span></div>
+          <div class="stat-sub">合计 <span class="negative" id="rs-expired-credits">—</span> 积分</div>
+        </div>
+      </div>
+
+      <!-- ③ 筛选条：状态 + 批次 -->
+      <div class="search-bar" style="margin-bottom:16px;gap:8px;">
+        <select class="modal-form-input" id="redeem-filter-status" onchange="changeRedeemFilter()" style="width:auto;min-width:140px;">
+          <option value="">全部状态</option>
+          <option value="unused">未使用</option>
+          <option value="used">已使用</option>
+          <option value="expired">已过期</option>
+        </select>
+        <select class="modal-form-input" id="redeem-filter-batch" onchange="changeRedeemFilter()" style="width:auto;min-width:200px;">
+          <option value="">全部批次</option>
+        </select>
+        <span class="search-hint" id="redeem-count-hint"></span>
+      </div>
+
+      <!-- ④ 兑换码列表 -->
+      <div class="table-container">
+        <div class="table-scroll" id="redeemBody">
+          <div class="loading"><span class="spinner"></span>加载兑换码列表...</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 加载兑换码管理数据（进入菜单时调用）
+ * 并行调 GET /api/admin/redeem/stats 和 GET /api/admin/redeem/list?limit=50
+ * 渲染统计卡片 + 列表
+ */
+async function loadRedeemAdminData() {
+  // 进入/刷新兑换码菜单：重置筛选状态
+  _redeemFilter = { status: '', batchId: '' };
+  const statusSel = $('#redeem-filter-status');
+  if (statusSel) statusSel.value = '';
+  // 并行加载统计与列表（limit=50）
+  await Promise.all([loadRedeemStats(), loadRedeemList()]);
+}
+
+/** 加载兑换码统计：GET /api/admin/redeem/stats → 渲染 3 个统计卡片 */
+async function loadRedeemStats() {
+  try {
+    const resp = await adminFetch('/api/admin/redeem/stats');
+    renderRedeemStats(resp);
+  } catch (_) {
+    // 统计加载失败静默处理，列表仍可用
+  }
+}
+
+/**
+ * 渲染兑换码统计卡片
+ * @param {Object} resp - adminFetch 返回值，data.stats = {unused:{count,credits}, used:{...}, expired:{...}}
+ */
+function renderRedeemStats(resp) {
+  const stats = (resp && resp.ok && resp.data && resp.data.stats) || {};
+  // 通用填充：根据 key 写入对应统计卡片的数量与积分
+  const fill = (key) => {
+    const s = stats[key] || {};
+    const c = $('#rs-' + key + '-count');
+    const cr = $('#rs-' + key + '-credits');
+    if (c) c.textContent = fmtNum(s.count || 0);
+    if (cr) cr.textContent = fmtNum(s.credits || 0);
+  };
+  fill('unused');
+  fill('used');
+  fill('expired');
+}
+
+/** 加载兑换码列表（按当前筛选 _redeemFilter）：GET /api/admin/redeem/list?limit=&status=&batchId= */
+async function loadRedeemList() {
+  const mount = $('#redeemBody');
+  if (mount) mount.innerHTML = '<div class="loading"><span class="spinner"></span>加载兑换码列表...</div>';
+  // 构造查询参数（limit 固定 50，status / batchId 可选）
+  const params = new URLSearchParams();
+  params.set('limit', '50');
+  if (_redeemFilter.status) params.set('status', _redeemFilter.status);
+  if (_redeemFilter.batchId) params.set('batchId', _redeemFilter.batchId);
+  try {
+    const resp = await adminFetch('/api/admin/redeem/list?' + params.toString());
+    renderRedeemList(resp);
+  } catch (e) {
+    if (mount) mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">兑换码加载异常：${h(e.message || e)}</div>`;
+  }
+}
+
+/**
+ * 渲染兑换码列表表格
+ * @param {Object} resp - adminFetch 返回值，data = {total, page, limit, items:[...]}
+ */
+function renderRedeemList(resp) {
+  const mount = $('#redeemBody');
+  if (!mount) return;
+  if (!(resp && resp.ok)) {
+    mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">兑换码加载失败：${h((resp && resp.msg) || '未知错误')}</div>`;
+    return;
+  }
+  const data = resp.data || {};
+  const items = data.items || [];
+  const total = data.total || items.length || 0;
+  // 更新计数提示
+  const hint = $('#redeem-count-hint');
+  if (hint) hint.textContent = `共 ${fmtNum(total)} 条`;
+  // 刷新批次下拉（保留当前选中值）
+  renderRedeemBatchOptions(items);
+  if (!items.length) {
+    mount.innerHTML = '<div class="empty-state">暂无兑换码，点击右上角「批量生成」</div>';
+    return;
+  }
+  // 状态徽章：unused=绿 / used=灰 / expired=红
+  const badgeFor = (status) => {
+    const s = String(status || '').toLowerCase();
+    if (s === 'unused')  return '<span class="badge-soft badge-active">未使用</span>';
+    if (s === 'used')    return '<span class="badge-soft badge-inactive">已使用</span>';
+    if (s === 'expired') return '<span class="badge-soft" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);">已过期</span>';
+    return `<span class="badge-soft badge-inactive">${h(s || '未知')}</span>`;
+  };
+  mount.innerHTML = `
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>兑换码</th>
+          <th style="text-align:right;">积分数</th>
+          <th>状态</th>
+          <th>批次</th>
+          <th>创建时间</th>
+          <th>使用者</th>
+          <th>过期时间</th>
+          <th style="text-align:right;">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(r => {
+          // 兑换码序列化（HTML 转义后嵌入 onclick），供删除按钮使用
+          const code = h(JSON.stringify(r.code || ''));
+          // 使用者优先展示邮箱，其次 usedBy，无则 —
+          const usedBy = r.usedByEmail ? h(r.usedByEmail) : (r.usedBy ? h(r.usedBy) : '—');
+          return `
+            <tr>
+              <td class="mono" style="font-size:12px;font-weight:600;">${h(r.code || '')}</td>
+              <td style="text-align:right;" class="mono">${fmtNum(r.credits || 0)}</td>
+              <td>${badgeFor(r.status)}</td>
+              <td class="mono" style="font-size:11px;">${h(r.batchId || '—')}</td>
+              <td style="font-size:12px;">${fmtTs(r.createdAt || 0)}</td>
+              <td style="font-size:12px;">${usedBy}</td>
+              <td style="font-size:12px;">${fmtTs(r.expireAt || 0)}</td>
+              <td>
+                <div style="display:flex;gap:4px;justify-content:flex-end;">
+                  <button class="btn btn-sm danger" onclick='deleteRedeemAdmin(${code})'>🗑 删除</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+/**
+ * 刷新批次筛选下拉选项（从当前列表 items 中去重收集 batchId）
+ * 保留当前选中值 _redeemFilter.batchId；若选中值已不在列表中则回退为「全部批次」
+ * @param {Array} items - 当前列表项
+ */
+function renderRedeemBatchOptions(items) {
+  const sel = $('#redeem-filter-batch');
+  if (!sel) return;
+  // 去重收集批次号
+  const seen = new Set();
+  const opts = [];
+  (items || []).forEach(it => {
+    const b = it && it.batchId;
+    if (b && !seen.has(b)) {
+      seen.add(b);
+      opts.push(b);
+    }
+  });
+  const current = _redeemFilter.batchId || '';
+  // 重建下拉选项，标记当前选中
+  sel.innerHTML = '<option value="">全部批次</option>' + opts.map(b =>
+    `<option value="${h(b)}" ${b === current ? 'selected' : ''}>${h(b)}</option>`
+  ).join('');
+  // 若选中值不在列表中，回退为空并同步状态
+  if (current && !seen.has(current)) {
+    sel.value = '';
+    _redeemFilter.batchId = '';
+  } else {
+    sel.value = current;
+  }
+}
+
+/** 筛选下拉变更回调：按 status / batchId 重新加载列表 */
+function changeRedeemFilter() {
+  const statusSel = $('#redeem-filter-status');
+  const batchSel = $('#redeem-filter-batch');
+  _redeemFilter.status = statusSel ? statusSel.value : '';
+  _redeemFilter.batchId = batchSel ? batchSel.value : '';
+  // 统计不依赖筛选，仅重新加载列表
+  loadRedeemList();
+}
+
+/**
+ * 打开批量生成兑换码弹窗（重置表单为默认值，隐藏上次结果）
+ */
+function openRedeemGenerateModal() {
+  // 重置表单为默认值
+  $('#rg-count').value = '10';
+  $('#rg-credits').value = '100';
+  $('#rg-expireDays').value = '30';
+  $('#rg-note').value = '';
+  // 隐藏上次生成结果
+  const wrap = $('#rg-result-wrap');
+  if (wrap) wrap.style.display = 'none';
+  $('#rg-codes').value = '';
+  $('#redeemGenerateModal').classList.add('show');
+  // 绑定生成按钮（每次打开重绑，避免重复触发）
+  const submit = $('#rg-submit');
+  submit.onclick = submitRedeemGenerate;
+  // 绑定复制按钮（每次打开重绑）
+  const copyBtn = $('#rg-copy-btn');
+  if (copyBtn) copyBtn.onclick = copyRedeemCodesToClipboard;
+}
+
+/**
+ * 提交批量生成：POST /api/admin/redeem/create body:{count,credits,expireDays,note}
+ * 成功后在弹窗内显示生成的兑换码列表并刷新统计/列表
+ */
+async function submitRedeemGenerate() {
+  const submit = $('#rg-submit');
+  // 收集表单字段
+  const payload = {
+    count: Number($('#rg-count').value) || 0,
+    credits: Number($('#rg-credits').value) || 0,
+    expireDays: Number($('#rg-expireDays').value) || 0,
+    note: ($('#rg-note').value || '').trim()
+  };
+  // 基础前端校验
+  if (!(payload.count >= 1)) { showToast('生成数量需≥1', 'error'); return; }
+  if (payload.count > 500) { showToast('一次最多生成 500 个', 'error'); return; }
+  if (!(payload.credits >= 1)) { showToast('单码积分需≥1', 'error'); return; }
+  if (!(payload.expireDays >= 1)) { showToast('过期天数需≥1', 'error'); return; }
+
+  submit.disabled = true;
+  submit.textContent = '生成中…';
+  try {
+    const resp = await adminFetch('/api/admin/redeem/create', { method: 'POST', body: payload });
+    if (resp.ok && resp.data) {
+      const d = resp.data;
+      const codes = d.codes || [];
+      const batchId = d.batchId || '';
+      showToast(`✅ 已生成 ${codes.length} 个兑换码`, 'ok');
+      // 在弹窗内显示生成结果（供复制）
+      $('#rg-batch-id').textContent = batchId;
+      $('#rg-count-out').textContent = String(codes.length);
+      $('#rg-codes').value = codes.join('\n');
+      const wrap = $('#rg-result-wrap');
+      if (wrap) wrap.style.display = '';
+      // 生成成功后：选中新批次并刷新统计 + 列表
+      _redeemFilter = { status: '', batchId: batchId };
+      const statusSel = $('#redeem-filter-status');
+      if (statusSel) statusSel.value = '';
+      await Promise.all([loadRedeemStats(), loadRedeemList()]);
+    } else {
+      showToast('❌ ' + ((resp.data && resp.data.msg) || '生成失败'), 'error');
+    }
+  } catch (e) {
+    showToast('❌ 网络错误：' + (e.message || e), 'error');
+  } finally {
+    submit.disabled = false;
+    submit.textContent = '生成兑换码';
+  }
+}
+
+/** 复制生成结果区的兑换码到剪贴板（带降级方案） */
+async function copyRedeemCodesToClipboard() {
+  const ta = $('#rg-codes');
+  if (!ta || !ta.value) return;
+  try {
+    await navigator.clipboard.writeText(ta.value);
+    showToast('✅ 已复制 ' + ta.value.split('\n').filter(Boolean).length + ' 个兑换码', 'ok');
+  } catch (e) {
+    // 降级：选中文本框并执行复制命令
+    ta.select();
+    document.execCommand('copy');
+    showToast('✅ 已复制', 'ok');
+  }
+}
+
+/**
+ * 删除兑换码（带二次确认）
+ * POST /api/admin/redeem/delete body:{code}
+ * @param {string} code - 兑换码
+ */
+async function deleteRedeemAdmin(code) {
+  if (!code) return;
+  if (!window.confirm(`确认删除兑换码「${code}」吗？`)) return;
+  try {
+    const resp = await adminFetch('/api/admin/redeem/delete', { method: 'POST', body: { code } });
+    if (resp.ok) {
+      showToast(`✅ 兑换码「${code}」已删除`, 'ok');
+      // 删除后刷新统计 + 列表（保留当前筛选）
+      await Promise.all([loadRedeemStats(), loadRedeemList()]);
+    } else {
+      showToast('❌ ' + ((resp.data && resp.data.msg) || '删除失败'), 'error');
+    }
+  } catch (e) {
+    showToast('❌ 网络错误：' + (e.message || e), 'error');
+  }
+}
+
+// ============================================================
+// 菜单 7：公告管理（增删改查）
+// ============================================================
+
+/**
+ * 渲染公告管理面板 HTML
+ * 含：①「新增公告」按钮
+ *     ② 公告列表表格（标题 / 分类 / 状态 / 浏览数 / 创建时间 / 操作-编辑/删除）
+ */
+function renderNewsAdminHTML() {
+  return `
+    <div class="panel" id="newsPanel">
+      <div class="panel-toolbar">
+        <div>
+          <h1>公告管理 📢</h1>
+          <div class="plan-info">
+            <span>新增 / 编辑 / 删除公告。分类：系统 / 活动 / 更新；可置顶、可发布/草稿。</span>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick='openNewsEditModal(null)'>＋ 新增公告</button>
+      </div>
+      <div class="table-container">
+        <div class="table-scroll" id="newsBody">
+          <div class="loading"><span class="spinner"></span>加载公告列表...</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/** 加载公告列表数据：GET /api/admin/news/list?limit=50 */
+async function loadNewsAdminData() {
+  const mount = $('#newsBody');
+  if (mount) mount.innerHTML = '<div class="loading"><span class="spinner"></span>加载公告列表...</div>';
+  try {
+    const resp = await adminFetch('/api/admin/news/list?limit=50');
+    if (!(resp && resp.ok)) {
+      if (mount) mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">公告加载失败：${h((resp && resp.msg) || '未知错误')}</div>`;
+      return;
+    }
+    const items = (resp.data && resp.data.items) || [];
+    renderNewsPanel(items);
+  } catch (e) {
+    if (mount) mount.innerHTML = `<div class="empty-state" style="color:var(--danger);">公告加载异常：${h(e.message || e)}</div>`;
+  }
+}
+
+/**
+ * 渲染公告列表表格
+ * @param {Array} items - 公告数组，每项含 newsId/title/category/isPinned/isPublished/viewCount/createdAt 等
+ */
+function renderNewsPanel(items) {
+  const mount = $('#newsBody');
+  if (!mount) return;
+  if (!Array.isArray(items) || !items.length) {
+    mount.innerHTML = '<div class="empty-state">暂无公告，点击右上角「新增公告」</div>';
+    return;
+  }
+  // 分类中文映射：system→系统 / activity→活动 / update→更新
+  const catText = (c) => c === 'system' ? '系统'
+    : c === 'activity' ? '活动'
+    : c === 'update' ? '更新'
+    : (c || '—');
+  // 状态徽章：置顶=黄，已发布=绿，草稿=灰
+  const statusBadges = (n) => {
+    let html = '';
+    if (n.isPinned) html += '<span class="badge-soft badge-pending">置顶</span> ';
+    html += n.isPublished
+      ? '<span class="badge-soft badge-active">已发布</span>'
+      : '<span class="badge-soft badge-inactive">草稿</span>';
+    return html;
+  };
+  mount.innerHTML = `
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>标题</th>
+          <th>分类</th>
+          <th>状态</th>
+          <th style="text-align:right;">浏览数</th>
+          <th>创建时间</th>
+          <th style="text-align:right;">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(n => {
+          // 序列化公告对象（HTML 转义后嵌入 onclick），传给 openNewsEditModal
+          const ndata = h(JSON.stringify({
+            newsId: n.newsId || '',
+            title: n.title || '',
+            content: n.content || '',
+            category: n.category || 'system',
+            isPinned: !!n.isPinned,
+            isPublished: !!n.isPublished
+          }));
+          const nid = h(JSON.stringify(n.newsId || ''));
+          return `
+            <tr>
+              <td style="font-weight:600;">${h(n.title || '')}</td>
+              <td><span class="badge-soft badge-soft-user">${h(catText(n.category))}</span></td>
+              <td>${statusBadges(n)}</td>
+              <td style="text-align:right;" class="mono">${fmtNum(n.viewCount || 0)}</td>
+              <td style="font-size:12px;">${fmtTs(n.createdAt || 0)}</td>
+              <td>
+                <div style="display:flex;gap:4px;justify-content:flex-end;">
+                  <button class="btn btn-sm" onclick='openNewsEditModal(${ndata})'>✏️ 编辑</button>
+                  <button class="btn btn-sm danger" onclick='deleteNews(${nid})'>🗑 删除</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+/**
+ * 打开公告编辑弹窗（新增 / 编辑共用）
+ * @param {Object|null} newsData - 已有公告→编辑模式；null→新增模式
+ * 举例：
+ *   新增：openNewsEditModal(null) → newsId 为空，调 POST /api/admin/news/create
+ *   编辑：openNewsEditModal({newsId:12,...}) → newsId 只读，调 POST /api/admin/news/update
+ */
+function openNewsEditModal(newsData) {
+  const isEdit = !!(newsData && newsData.newsId);
+  // 填充表单字段
+  $('#newsEditTitle').textContent = isEdit ? '📢 编辑公告' : '📢 新增公告';
+  $('#news-newsId').value = (newsData && newsData.newsId) || '';
+  $('#news-title').value = (newsData && newsData.title) || '';
+  $('#news-content').value = (newsData && newsData.content) || '';
+  $('#news-category').value = (newsData && newsData.category) || 'system';
+  $('#news-isPinned').checked = !!(newsData && newsData.isPinned);
+  // 新增默认草稿（未发布）；编辑按已有状态
+  $('#news-isPublished').checked = isEdit ? !!(newsData && newsData.isPublished) : false;
+  $('#newsEditModal').classList.add('show');
+  // 绑定保存按钮（每次打开重绑，避免重复触发）
+  const submit = $('#news-submit');
+  submit.onclick = submitNewsEdit;
+}
+
+/**
+ * 提交公告保存
+ * 新增 → POST /api/admin/news/create body:{title,content,category,isPinned,isPublished}
+ * 编辑 → POST /api/admin/news/update body:{newsId,title,content,category,isPinned,isPublished}
+ */
+async function submitNewsEdit() {
+  const submit = $('#news-submit');
+  const newsId = $('#news-newsId').value.trim();
+  const isEdit = !!newsId;
+  // 收集表单字段
+  const title = $('#news-title').value.trim();
+  const content = $('#news-content').value.trim();
+  const category = $('#news-category').value || 'system';
+  const isPinned = $('#news-isPinned').checked;
+  const isPublished = $('#news-isPublished').checked;
+  // 基础校验
+  if (!title) { showToast('请填写标题', 'error'); return; }
+  if (!content) { showToast('请填写正文', 'error'); return; }
+
+  // 新增不带 newsId（由后端生成），编辑需带 newsId
+  const body = isEdit
+    ? { newsId, title, content, category, isPinned, isPublished }
+    : { title, content, category, isPinned, isPublished };
+  const url = isEdit ? '/api/admin/news/update' : '/api/admin/news/create';
+
+  submit.disabled = true;
+  submit.textContent = '保存中…';
+  try {
+    const resp = await adminFetch(url, { method: 'POST', body });
+    if (resp.ok) {
+      showToast(isEdit ? '✅ 公告已更新' : '✅ 公告已创建', 'ok');
+      closeModal('newsEditModal');
+      await loadNewsAdminData();
+    } else {
+      showToast('❌ ' + ((resp.data && resp.data.msg) || '保存失败'), 'error');
+    }
+  } catch (e) {
+    showToast('❌ 网络错误：' + (e.message || e), 'error');
+  } finally {
+    submit.disabled = false;
+    submit.textContent = '保存公告';
+  }
+}
+
+/**
+ * 删除公告（带二次确认）
+ * POST /api/admin/news/delete body:{newsId}
+ * @param {string|number} newsId - 公告 ID
+ */
+async function deleteNews(newsId) {
+  if (!newsId) return;
+  if (!window.confirm('确认删除该公告吗？该操作不可恢复。')) return;
+  try {
+    const resp = await adminFetch('/api/admin/news/delete', { method: 'POST', body: { newsId } });
+    if (resp.ok) {
+      showToast('✅ 公告已删除', 'ok');
+      await loadNewsAdminData();
+    } else {
+      showToast('❌ ' + ((resp.data && resp.data.msg) || '删除失败'), 'error');
+    }
+  } catch (e) {
+    showToast('❌ 网络错误：' + (e.message || e), 'error');
+  }
+}
+
+// ============================================================
+// 弹窗：重置密码
+// ============================================================
+
+/**
+ * 打开重置密码弹窗
+ * @param {string} accountId - 目标账号 ID
+ * @param {string} email - 目标用户邮箱（仅用于显示）
+ */
+function openResetPasswordModal(accountId, email) {
+  $('#rp-user-line').textContent = `${email || ''} （${accountId || ''}）`;
+  $('#rp-newPassword').value = '';
+  $('#resetPasswordModal').classList.add('show');
+  // 自动聚焦
+  setTimeout(() => $('#rp-newPassword') && $('#rp-newPassword').focus(), 100);
+
+  const submit = $('#rp-submit');
+  submit.onclick = async () => {
+    const pwd = String($('#rp-newPassword').value || '');
+    if (pwd.length < 6) {
+      showToast('新密码至少 6 位', 'error');
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = '提交中…';
+    try {
+      // POST /api/admin/accounts/:id/reset-password  body: { newPassword }
+      const resp = await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountId)}/reset-password`, {
+        method: 'POST',
+        body: { newPassword: pwd }
+      });
+      if (resp.ok) {
+        showToast('✅ 密码已重置', 'ok');
+        closeModal('resetPasswordModal');
+      } else {
+        showToast('❌ ' + ((resp.data && resp.data.msg) || '重置失败'), 'error');
+      }
+    } catch (e) {
+      showToast('❌ 网络错误：' + (e.message || e), 'error');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = '确认重置';
+    }
+  };
+}
+
+// ============================================================
+// 弹窗：禁用账号 + 启用账号 + 设为管理员
+// ============================================================
+
+/**
+ * 打开禁用账号弹窗（启用操作不走弹窗，直接 enableAccount）
+ * @param {string} accountId - 目标账号 ID
+ * @param {string} email - 目标用户邮箱（仅用于显示）
+ */
+function openDisableModal(accountId, email) {
+  $('#dis-user-line').textContent = `${email || ''} （${accountId || ''}）`;
+  $('#dis-reason').value = '';
+  $('#dis-reason-cnt').textContent = '0';
+  $('#disableModal').classList.add('show');
+
+  // 字数计数
+  const reasonInput = $('#dis-reason');
+  reasonInput.oninput = () => {
+    $('#dis-reason-cnt').textContent = String(reasonInput.value.length || 0);
+  };
+
+  const submit = $('#dis-submit');
+  submit.onclick = async () => {
+    const reason = String($('#dis-reason').value || '').trim();
+    if (!reason) {
+      showToast('请填写禁用原因（用于审计）', 'error');
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = '提交中…';
+    try {
+      // POST /api/admin/accounts/:id/disable  body: { disabled: true, reason }
+      const resp = await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountId)}/disable`, {
+        method: 'POST',
+        body: { disabled: true, reason }
+      });
+      if (resp.ok) {
+        showToast('✅ 账号已禁用', 'ok');
+        closeModal('disableModal');
+        await refreshCurrentMenu();
+      } else {
+        showToast('❌ ' + ((resp.data && resp.data.msg) || '禁用失败'), 'error');
+      }
+    } catch (e) {
+      showToast('❌ 网络错误：' + (e.message || e), 'error');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = '确认禁用';
+    }
+  };
+}
+
+/**
+ * 启用账号（直接调 API，无需弹窗）
+ * @param {string} accountId - 目标账号 ID
+ */
+async function enableAccount(accountId) {
+  if (!accountId) return;
+  if (!window.confirm('确认启用该账号？')) return;
+  try {
+    // body: { disabled: false } —— 与禁用走同一接口
+    const resp = await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountId)}/disable`, {
+      method: 'POST',
+      body: { disabled: false }
+    });
+    if (resp.ok) {
+      showToast('✅ 账号已启用', 'ok');
+      await refreshCurrentMenu();
+    } else {
+      showToast('❌ ' + ((resp.data && resp.data.msg) || '启用失败'), 'error');
+    }
+  } catch (e) {
+    showToast('❌ 网络错误：' + (e.message || e), 'error');
+  }
+}
+
+/**
+ * 设为管理员 / 取消管理员
+ * @param {string} accountId - 目标账号 ID
+ * @param {boolean} isAdmin - true=设为管理员，false=取消管理员
+ */
+async function setAdmin(accountId, isAdmin) {
+  if (!accountId) return;
+  const verb = isAdmin ? '设为管理员' : '取消管理员';
+  if (!window.confirm(`确认${verb}？`)) return;
+  try {
+    // POST /api/admin/accounts/:id/set-admin  body: { isAdmin: true/false }
+    const resp = await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountId)}/set-admin`, {
+      method: 'POST',
+      body: { isAdmin: !!isAdmin }
+    });
+    if (resp.ok) {
+      showToast(`✅ 已${verb}`, 'ok');
+      await refreshCurrentMenu();
+    } else {
+      showToast('❌ ' + ((resp.data && resp.data.msg) || '操作失败'), 'error');
+    }
+  } catch (e) {
+    showToast('❌ 网络错误：' + (e.message || e), 'error');
+  }
+}
+
+// ============================================================
+// 启动：校验登录状态 → 渲染管理后台或登录表单
+// ============================================================
+(async function boot() {
+  try {
+    const resp = await adminFetch('/api/auth/me');
+    const me = resp.data;
+    if (!(me && me.loggedIn && me.user)) {
+      renderLoginForm();
+      return;
+    }
+    if (me.user.isAdmin !== true) {
+      renderLoginForm('当前账号不是管理员，无权访问管理后台');
+      return;
+    }
+    bootAdminLayout(me.user);
+  } catch (e) {
+    const layout = $('#adminLayout');
+    layout.classList.remove('hidden');
+    layout.innerHTML = `<div class="admin-login"><div class="lock-icon">⚠️</div><h2>无法连接管理服务</h2><p style="color:var(--danger);margin-top:8px;">${h(e.message || e)}</p></div>`;
+  }
+})();
+</script>
+</body>
+</html>

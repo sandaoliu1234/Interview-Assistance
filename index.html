@@ -39,6 +39,25 @@
         </div>
       </div>
       <div class="header-right">
+        <!-- ★ 账号入口：未登录显示「🔒 登录」，已登录显示首字头像 + 下拉菜单 -->
+        <button id="loginBtn" class="icon-btn login-btn" title="登录账号" type="button">🔒 登录</button>
+        <div id="userArea" class="user-area hidden">
+          <button id="userAvatarBtn" class="user-avatar" type="button" title="账号管理">U</button>
+          <div id="userDropdown" class="user-dropdown hidden">
+            <div class="ud-header">
+              <div class="ud-avatar" id="udAvatarBig">U</div>
+              <div class="ud-meta">
+                <div class="ud-name" id="udDisplayName">—</div>
+                <div class="ud-email" id="udUserEmail">—</div>
+              </div>
+            </div>
+            <div class="ud-divider"></div>
+            <div class="ud-item" data-act="profile" type="button">👤 个人中心</div>
+            <div class="ud-item" data-act="settings" type="button">⚙️ 账号设置</div>
+            <div class="ud-divider"></div>
+            <div class="ud-item danger" data-act="logout" type="button">🚪 退出登录</div>
+          </div>
+        </div>
         <!-- 历史记录侧栏：按钮顺序 👁️ 快速隐藏 / 📋 历史 / ⚙️ 设置，最常用的在左边方便点 -->
         <button id="quickHideBtn" class="icon-btn" title="快速隐藏 (Ctrl+Shift+H)" type="button">👁️</button>
         <button id="openHistoryBtn" class="icon-btn" title="历史记录 (Ctrl+H)" type="button">📋</button>
@@ -46,8 +65,11 @@
       </div>
     </header>
 
-    <!-- 主视图 #viewHome：包裹原三 Tab + 三 main + history 侧栏 + 底部操作栏；SPA 路由通过 viewRouter 切换 show/hidden -->
-    <section class="view-panel" id="viewHome" data-view="home">
+    <!-- 主视图 #viewHome：包裹原三 Tab + 三 main + history 侧栏 + 底部操作栏；SPA 路由通过 viewRouter 切换 show/hidden
+         ★ 闪屏修复：启动时默认加 hidden，让首帧不显示 Copilot。
+         renderer.init() 内同步初始化 AuthUI：若已登录 → viewRouter.init() 再显示；若未登录 → 保持 authPage 打开。
+         这样用户第一眼看到的就是登录页（或正确的主页面），不会"先闪 Copilot 再切登录"。 -->
+    <section class="view-panel hidden" id="viewHome" data-view="home">
 
     <!-- 模式切换：Copilot / 模拟面试 / 简历优化（与 HireMe 保持一致） -->
     <nav class="mode-tabs" id="modeTabs">
@@ -564,25 +586,196 @@
       <!-- 面试底部横幅 toast：执行操作后的反馈（⚠️ 删除了底部操作栏的 ⏹ / 🆕；📚 挪到卡片区；toast 仍然保留） -->
       <div class="bottom-toast hidden" id="bottomToast" role="status" aria-live="polite"></div>
 
-      <!-- ★ 面试结束横幅：浮动答题面板被用户点击右上角 × 关闭时，主窗口弹此 banner；
-            提供两个操作：「查看本场面试记录」(跳详情) / 「开启新的面试」(startNewSession) -->
-      <div class="end-session-banner hidden" id="endSessionBanner" role="dialog" aria-modal="true" aria-labelledby="endSessionBannerTitle">
-        <button class="esb-close" id="esbClose" type="button" title="关闭">&times;</button>
-        <div class="esb-head">
-          <div class="esb-icon">✅</div>
-          <div>
-            <div class="esb-title" id="endSessionBannerTitle">本场面试已结束</div>
-            <div class="esb-sub" id="endSessionBannerSub">—</div>
-          </div>
-        </div>
-        <div class="esb-actions">
-          <button class="esb-btn esb-btn-view"   id="esbViewDetailBtn" type="button">🔍 查看本场面试记录</button>
-          <button class="esb-btn esb-btn-new"    id="esbNewSessionBtn" type="button">🆕 开启新的面试</button>
+    </section>
+    <!-- #viewHome 结束 -->
+
+    <!-- 账号 / 登录 全屏视图（方案B：主窗口内 SPA 全屏切换，不是遮罩弹窗）
+         ★ 闪屏修复：启动时移除 hidden，作为首帧显示的页面。
+         只有在 initAuthUI 判定用户已登录后，才会通过 closeLoginModal() 隐藏并显示 #viewHome。 -->
+    <section class="view-panel auth-page" id="authPage" data-view="auth">
+      <!-- 顶部栏：仅标题（无返回按钮——必须登录才能进入主窗口） -->
+      <div class="auth-page-topbar">
+        <div class="auth-page-title">
+          <span class="auth-page-logo">🎧</span>
+          <strong>HireMe 面试助手</strong>
+          <span class="auth-page-subtitle">· 账号</span>
         </div>
       </div>
 
+      <!-- 主体：居中卡片容器（双列/单列自适应） -->
+      <div class="auth-page-body">
+        <div class="auth-page-center">
+
+          <!-- ============ 登录 + 初始化管理员 ============ -->
+          <div id="loginPageCard" class="auth-card auth-card-primary">
+            <div class="auth-card-header">
+              <!-- 左侧说明：在卡片内展示，不搞外部装饰 -->
+              <div class="auth-hero">
+                <div class="auth-hero-avatar">👤</div>
+                <h2 id="loginPageTitle" class="auth-hero-title">🔐 登录 HireMe</h2>
+                <p class="auth-hero-sub">
+                  登录后，你的简历、面试记录、知识库将按账号独立存储，
+                  <br />多人共用同一台设备也不会相互串数据。
+                </p>
+              </div>
+              <div class="auth-card-divider" aria-hidden="true"></div>
+
+              <!-- ① 普通登录表单 -->
+              <div id="panelLogin" class="auth-panel">
+                <div class="auth-card-form">
+                  <form id="loginForm" class="auth-form" autocomplete="on" novalidate>
+                    <label class="auth-field-label" for="loginEmail">邮箱 <span class="required">*</span></label>
+                    <input type="email" id="loginEmail" class="auth-input" placeholder="you@example.com" autocomplete="email" spellcheck="false" autocapitalize="none" required />
+
+                    <label class="auth-field-label" for="loginPwd">密码 <span class="required">*</span></label>
+                    <input type="password" id="loginPwd" class="auth-input" placeholder="请输入本地账号密码" autocomplete="current-password" required />
+
+                    <div id="loginError" class="auth-error hidden"></div>
+
+                    <button id="loginSubmitBtn" class="primary-btn auth-submit" type="submit">🔓 登录</button>
+
+                    <div class="auth-foot">
+                      <a href="javascript:;" id="forgotLink" class="auth-link">忘记密码？重置 →</a>
+                    </div>
+                  </form>
+                </div>
+              </div>
+
+              <!-- ② 初始化第一个管理员（冷启动） -->
+              <div id="panelInitAdmin" class="auth-panel hidden">
+                <div class="init-admin-notice notice-box">
+                  ⚠️ 此界面仅在本地尚未创建任何账号时出现，创建成功后将永久隐藏。<br />
+                  您创建的第一个账号将成为本地超级管理员；后续如需创建更多账号，请通过宣传网站导出或手动编辑 <code>accounts.json</code>。
+                </div>
+                <div class="auth-card-form">
+                  <form id="initAdminForm" class="auth-form" autocomplete="on" novalidate>
+                    <label class="auth-field-label" for="initEmail">邮箱 <span class="required">*</span></label>
+                    <input type="email" id="initEmail" class="auth-input" placeholder="you@example.com" autocomplete="email" spellcheck="false" autocapitalize="none" required />
+
+                    <label class="auth-field-label" for="initDisplayName">显示名 / 昵称 <span class="required">*</span></label>
+                    <input type="text" id="initDisplayName" class="auth-input" placeholder="用于头像旁边显示，如 张三" autocomplete="name" required />
+
+                    <div class="auth-row">
+                      <div>
+                        <label class="auth-field-label" for="initPwd">密码 <span class="required">*</span></label>
+                        <input type="password" id="initPwd" class="auth-input" placeholder="至少 6 位" autocomplete="new-password" required />
+                      </div>
+                      <div>
+                        <label class="auth-field-label" for="initPwd2">确认密码 <span class="required">*</span></label>
+                        <input type="password" id="initPwd2" class="auth-input" placeholder="再输一次" autocomplete="new-password" required />
+                      </div>
+                    </div>
+
+                    <div id="initAdminError" class="auth-error hidden"></div>
+
+                    <button id="initAdminSubmitBtn" class="primary-btn auth-submit" type="submit">🌱 创建并登录</button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============ 忘记密码三步：独立卡片，按需切换显示 ============ -->
+          <div id="forgotPageCard" class="auth-card hidden">
+            <div class="auth-card-header forgot-layout">
+              <div class="forgot-step-wrapper">
+                <div class="forgot-hero">
+                  <div class="forgot-hero-icon">🔁</div>
+                  <h2 class="forgot-hero-title">找回本地账号密码</h2>
+                  <p class="forgot-hero-sub">
+                    桌面端不连接邮箱服务器，下面会在本机生成一个<strong>一次性重置码</strong>。
+                    <br />您可以自己复制使用，或把重置码发给本机管理员协助修改。
+                  </p>
+                </div>
+
+                <!-- 步骤条 -->
+                <div class="forgot-step-bar">
+                  <div class="step-pill active" data-step="1"><span class="step-index">1</span><span class="step-text">提交邮箱</span></div>
+                  <div class="step-pill" data-step="2"><span class="step-index">2</span><span class="step-text">验证重置码</span></div>
+                  <div class="step-pill" data-step="3"><span class="step-index">3</span><span class="step-text">完成</span></div>
+                </div>
+
+                <!-- 步骤 1：输入邮箱 → 生成重置码 -->
+                <div id="forgotStep1" class="forgot-step-box">
+                  <form id="forgotStep1Form" class="auth-form" novalidate>
+                    <label class="auth-field-label" for="forgotEmail">注册邮箱 <span class="required">*</span></label>
+                    <input type="email" id="forgotEmail" class="auth-input" placeholder="你注册时使用的邮箱" autocomplete="email" spellcheck="false" autocapitalize="none" required />
+                    <div id="forgotError" class="auth-error hidden"></div>
+                    <div class="auth-footer">
+                      <button id="forgotBack1" type="button" class="secondary-btn">⬅ 返回登录</button>
+                      <button id="forgotStep1Next" type="submit" class="primary-btn auth-submit">📮 获取重置码</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- 步骤 2：输入重置码 + 新密码 → 执行重置 -->
+                <div id="forgotStep2" class="forgot-step-box hidden">
+                  <div id="forgotResetCodeDisplay" class="reset-code-box hidden"></div>
+                  <form id="forgotStep2Form" class="auth-form" novalidate>
+                    <label class="auth-field-label" for="forgotResetInput">重置码 <span class="required">*</span></label>
+                    <input type="text" id="forgotResetInput" class="auth-input" placeholder="8 位大写字母+数字" spellcheck="false" autocapitalize="characters" required />
+
+                    <div class="auth-row">
+                      <div>
+                        <label class="auth-field-label" for="forgotNewPwd">新密码 <span class="required">*</span></label>
+                        <input type="password" id="forgotNewPwd" class="auth-input" placeholder="至少 6 位" autocomplete="new-password" required />
+                      </div>
+                      <div>
+                        <label class="auth-field-label" for="forgotNewPwd2">确认新密码 <span class="required">*</span></label>
+                        <input type="password" id="forgotNewPwd2" class="auth-input" placeholder="再输一次" autocomplete="new-password" required />
+                      </div>
+                    </div>
+
+                    <div id="forgotError2" class="auth-error hidden"></div>
+                    <div class="auth-footer">
+                      <button id="forgotBack2" type="button" class="secondary-btn">⬅ 上一步</button>
+                      <button id="forgotStep2Submit" type="submit" class="primary-btn auth-submit">🔄 重置并登录</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- 步骤 3：重置成功 -->
+                <div id="forgotStep3" class="forgot-step-box hidden forgot-step-final">
+                  <div class="forgot-success-box">
+                    <div class="forgot-success-circle">✅</div>
+                    <h3 class="forgot-success-title">密码已重置</h3>
+                    <p class="forgot-success-desc">新密码已生效，您可以直接返回登录界面重新登录。</p>
+                    <button id="forgotGoLogin" type="button" class="primary-btn auth-submit">🔓 去登录</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============ 合并游客数据：独立卡片 ============ -->
+          <div id="mergePageCard" class="auth-card hidden merge-card">
+            <div class="auth-card-header">
+              <div class="merge-hero">
+                <div class="merge-hero-icon">🧩</div>
+                <h2 class="merge-hero-title">登录成功，是否合并游客数据？</h2>
+                <p class="merge-hero-sub">
+                  检测到您在未登录状态下（游客模式）已经使用过 HireMe，例如已有面试记录、上传过简历。<br />
+                  您可以选择是否合并到当前登录账号下。
+                </p>
+              </div>
+              <div class="merge-stats-box">
+                <h4>将合并以下数据：</h4>
+                <ul id="mergeStatsList" class="merge-stats-list">
+                  <!-- JS 动态填入统计：N 场面试记录 / X 字简历 / Y 字知识库 -->
+                </ul>
+                <p class="merge-warn">合并完成后，<strong>游客模式下的数据将被清空</strong>，无法恢复。</p>
+              </div>
+              <div class="auth-footer">
+                <button type="button" id="mergeSkipBtn" class="secondary-btn">⏭️ 跳过，保持独立</button>
+                <button type="button" id="mergeDoBtn" class="primary-btn auth-submit">✅ 合并数据</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
     </section>
-    <!-- #viewHome 结束 -->
+    <!-- #authPage 结束 -->
 
     <!-- 面试记录列表视图：viewRouter.go('list') 显示 -->
     <section class="view-panel hidden" id="viewSessionsList" data-view="sessions-list">
@@ -620,6 +813,79 @@
       <div class="session-detail-empty hidden" id="sessionDetailEmpty">该场面试还没有任何对话轮次。</div>
     </section>
 
+    <!-- ★ 面试结束总结页：浮动答题面板被用户点击右上角 × 关闭时，主窗口切换到此页面；
+         显示面试时长、问题数、AI 建议数、保存提示、评分、推荐、复盘与开始新面试入口 -->
+    <section class="view-panel hidden" id="endSessionView" data-view="end">
+      <header class="session-view-header">
+        <button class="back-btn" id="esvBackHomeBtn" type="button" title="返回首页">← 返回首页</button>
+        <div class="session-detail-titlewrap">
+          <h2 class="session-view-title">面试总结</h2>
+          <div class="session-detail-meta" id="esvSessionMeta"></div>
+        </div>
+        <div class="session-detail-toolspacer"></div>
+      </header>
+
+      <div class="end-session-body">
+        <div class="end-session-hero">
+          <div class="end-session-icon">🎉</div>
+          <h1 class="end-session-title">面试已结束</h1>
+          <p class="end-session-subtitle">以下是本次面试的总结</p>
+        </div>
+
+        <div class="end-session-stats">
+          <div class="end-stat-card">
+            <div class="end-stat-value" id="esvDuration">—</div>
+            <div class="end-stat-label">面试时长</div>
+          </div>
+          <div class="end-stat-card">
+            <div class="end-stat-value" id="esvQuestionCount">0</div>
+            <div class="end-stat-label">检测到问题</div>
+          </div>
+          <div class="end-stat-card">
+            <div class="end-stat-value" id="esvAnswerCount">0</div>
+            <div class="end-stat-label">AI 建议</div>
+          </div>
+        </div>
+
+        <div class="end-session-info">
+          <span class="end-info-dot"></span>
+          <p>面试记录已保存到本机，可在「<strong>面试记录</strong>」中查看完整转写和 AI 复盘。</p>
+        </div>
+
+        <div class="end-session-rating">
+          <div class="end-rating-label">这次 Copilot 对你有帮助吗？</div>
+          <div class="end-rating-stars" id="esvRatingStars" data-rating="0">
+            <button type="button" data-star="1">☆</button>
+            <button type="button" data-star="2">☆</button>
+            <button type="button" data-star="3">☆</button>
+            <button type="button" data-star="4">☆</button>
+            <button type="button" data-star="5">☆</button>
+          </div>
+          <div class="end-rating-hint" id="esvRatingHint">点击星星评分</div>
+        </div>
+
+        <div class="end-session-invite">
+          <div class="end-invite-head">
+            <span class="end-invite-icon">🎁</span>
+            <div>
+              <div class="end-invite-title">推荐给朋友</div>
+              <div class="end-invite-desc">觉得好用？分享给正在准备面试的朋友，每成功推荐一位可获得奖励！</div>
+            </div>
+          </div>
+          <button class="secondary-btn end-invite-btn" id="esvCopyInviteBtn" type="button">复制推荐链接</button>
+        </div>
+
+        <div class="end-session-actions">
+          <button class="secondary-btn end-action-btn" id="esvReviewBtn" type="button">✨ 面试复盘</button>
+          <button class="primary-btn end-action-btn" id="esvNewSessionBtn" type="button">开始新的面试</button>
+        </div>
+
+        <div class="end-session-link">
+          <button class="end-text-link" id="esvViewDetailBtn" type="button">查看本场面试记录 →</button>
+        </div>
+      </div>
+    </section>
+
   </div>
   <!-- .app-container 结束 -->
 
@@ -649,6 +915,12 @@
           <div class="setting-item">
             <button id="testHideBtn" class="secondary-btn" type="button">测试隐藏窗口</button>
             <span class="setting-hint">点击后窗口会隐藏3秒</span>
+          </div>
+          <div class="setting-item">
+            <label><input type="checkbox" id="captureHideToggle" checked> 截图/录屏不可见（本地可见，捕获端看不到）</label>
+          </div>
+          <div class="setting-item">
+            <span class="setting-hint">开启后，本程序所有窗口（主窗口、答题面板、模拟面试浮窗）在截屏、录屏、屏幕共享里都不可见，但你自己屏幕上正常显示。关闭可用于自己录演示视频。</span>
           </div>
         </div>
 
@@ -790,6 +1062,160 @@
         </div>
       </div>
       <div id="auditContainer" class="audit-container"></div>
+    </div>
+  </div>
+
+  <!-- ============ 登录 / 初始化管理员 弹窗 ============ -->
+  <div id="loginModal" class="modal auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
+    <div class="modal-content modal-login-card">
+      <div class="modal-header">
+        <h2 id="loginModalTitle">🔐 登录 HireMe</h2>
+        <button id="closeLoginBtn" class="close-btn" type="button" aria-label="关闭登录">&times;</button>
+      </div>
+
+      <!-- 面板 1：普通登录表单（已有账号时显示） -->
+      <div id="loginPanel" class="modal-body auth-panel">
+        <form id="loginForm" autocomplete="off">
+          <div class="form-row">
+            <label for="loginEmail">邮箱</label>
+            <input type="email" id="loginEmail" class="form-input" placeholder="请输入注册邮箱" autocomplete="username">
+          </div>
+          <div class="form-row">
+            <label for="loginPwd">密码</label>
+            <input type="password" id="loginPwd" class="form-input" placeholder="请输入密码" autocomplete="current-password">
+          </div>
+          <div id="loginError" class="auth-error hidden" role="alert"></div>
+          <div class="modal-footer auth-footer">
+            <button type="submit" id="loginSubmitBtn" class="primary-btn auth-submit">登 录</button>
+          </div>
+          <div class="auth-links">
+            <a id="forgotLink" href="javascript:void(0)" class="auth-link">忘记密码？</a>
+          </div>
+        </form>
+      </div>
+
+      <!-- 面板 2：初始化 · 创建第一个管理员账号（仅 hasAnyAccount === false 时显示） -->
+      <div id="initAdminPanel" class="modal-body auth-panel hidden">
+        <div class="init-notice-box" role="note">
+          <strong>⚠️ 此界面仅在本地尚未创建任何账号时出现，创建成功后将永久隐藏。</strong><br>
+          您创建的第一个账号将成为本地超级管理员；后续如需创建更多账号，请通过宣传网站导出或手动编辑 accounts.json。
+        </div>
+        <form id="initAdminForm" autocomplete="off">
+          <div class="form-row">
+            <label for="initEmail">邮箱 <span class="required">*</span></label>
+            <input type="email" id="initEmail" class="form-input" placeholder="you@example.com" autocomplete="username">
+          </div>
+          <div class="form-row">
+            <label for="initDisplayName">显示名 / 昵称 <span class="required">*</span></label>
+            <input type="text" id="initDisplayName" class="form-input" placeholder="用于头像旁边显示，如 张三">
+          </div>
+          <div class="form-row two-col">
+            <div>
+              <label for="initPwd">密码 <span class="required">*</span></label>
+              <input type="password" id="initPwd" class="form-input" placeholder="至少 6 位" autocomplete="new-password">
+            </div>
+            <div>
+              <label for="initPwd2">确认密码 <span class="required">*</span></label>
+              <input type="password" id="initPwd2" class="form-input" placeholder="再输一次" autocomplete="new-password">
+            </div>
+          </div>
+          <div id="initAdminError" class="auth-error hidden" role="alert"></div>
+          <div class="modal-footer auth-footer">
+            <button type="submit" id="initAdminSubmitBtn" class="primary-btn auth-submit">创建并登录</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 忘记密码 弹窗（三步 + 步骤条） ============ -->
+  <div id="forgotPwdModal" class="modal auth-modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-content modal-forgot-card">
+      <div class="modal-header">
+        <h2>🔑 找回密码</h2>
+        <button id="closeForgotBtn" class="close-btn" type="button" aria-label="关闭">&times;</button>
+      </div>
+      <!-- 步骤条 -->
+      <div class="step-pill-row">
+        <span class="step-pill active" data-step="1">① 输入邮箱</span>
+        <span class="step-line"></span>
+        <span class="step-pill" data-step="2">② 重置码 + 新密码</span>
+        <span class="step-line"></span>
+        <span class="step-pill" data-step="3">③ 完成</span>
+      </div>
+      <!-- Step 1：邮箱 -->
+      <div id="forgotStep1" class="modal-body auth-panel">
+        <p class="forgot-hint">请输入您注册时使用的邮箱，系统会在本机生成一个一次性 8 位重置码供您设置新密码（桌面端不发送邮件）。</p>
+        <form id="forgotStep1Form" autocomplete="off">
+          <div class="form-row">
+            <label for="forgotEmail">邮箱 <span class="required">*</span></label>
+            <input type="email" id="forgotEmail" class="form-input" placeholder="you@example.com">
+          </div>
+          <div id="forgotError" class="auth-error hidden" role="alert"></div>
+          <div class="modal-footer auth-footer">
+            <button type="button" id="forgotBack1" class="secondary-btn hidden">返回登录</button>
+            <button type="submit" id="forgotStep1Next" class="primary-btn auth-submit">下一步：获取重置码</button>
+          </div>
+        </form>
+      </div>
+      <!-- Step 2：重置码 + 两次新密码 -->
+      <div id="forgotStep2" class="modal-body auth-panel hidden">
+        <div class="reset-code-box" id="forgotResetCodeDisplay">
+          <!-- JS 填入复制框 -->
+        </div>
+        <form id="forgotStep2Form" autocomplete="off">
+          <div class="form-row">
+            <label for="forgotResetInput">请输入 8 位重置码 <span class="required">*</span></label>
+            <input type="text" id="forgotResetInput" class="form-input" maxlength="10" placeholder="例如：HJKLM234" autocomplete="off">
+          </div>
+          <div class="form-row two-col">
+            <div>
+              <label for="forgotNewPwd">新密码 <span class="required">*</span></label>
+              <input type="password" id="forgotNewPwd" class="form-input" placeholder="至少 6 位" autocomplete="new-password">
+            </div>
+            <div>
+              <label for="forgotNewPwd2">确认新密码 <span class="required">*</span></label>
+              <input type="password" id="forgotNewPwd2" class="form-input" placeholder="再输一次" autocomplete="new-password">
+            </div>
+          </div>
+          <div id="forgotError2" class="auth-error hidden" role="alert"></div>
+          <div class="modal-footer auth-footer">
+            <button type="button" id="forgotBack2" class="secondary-btn">返回上一步</button>
+            <button type="submit" id="forgotStep2Submit" class="primary-btn auth-submit">重置密码</button>
+          </div>
+        </form>
+      </div>
+      <!-- Step 3：成功 -->
+      <div id="forgotStep3" class="modal-body auth-panel hidden">
+        <div class="forgot-success">
+          <div class="success-icon">✅</div>
+          <h3>密码重置成功</h3>
+          <p>您的密码已更新，可使用新密码登录。</p>
+          <div class="modal-footer auth-footer forgot-finish">
+            <button type="button" id="forgotGoLogin" class="primary-btn auth-submit">返回登录</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 合并游客数据到当前账号 弹窗 ============ -->
+  <div id="mergeGuestDialog" class="modal auth-modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-content merge-card">
+      <div class="modal-header">
+        <h2>🧳 是否合并游客数据？</h2>
+      </div>
+      <div class="modal-body merge-body">
+        <p>检测到您在<strong>游客模式</strong>下存在以下数据，是否将这些数据合并到当前登录账号？</p>
+        <ul class="merge-stats" id="mergeStatsList">
+          <!-- JS 动态填入统计：N 场面试记录 / X 字简历 / Y 字知识库 -->
+        </ul>
+        <p class="merge-warn">合并完成后，<strong>游客模式下的数据将被清空</strong>，无法恢复。</p>
+      </div>
+      <div class="modal-footer auth-footer">
+        <button type="button" id="mergeSkipBtn" class="secondary-btn">⏭️ 跳过，保持独立</button>
+        <button type="button" id="mergeDoBtn" class="primary-btn auth-submit">✅ 合并数据</button>
+      </div>
     </div>
   </div>
 

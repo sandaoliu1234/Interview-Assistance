@@ -1,0 +1,22 @@
+{
+  "name": "@hireme/landing",
+  "version": "0.2.0",
+  "private": true,
+  "description": "HireMe AI 面试助手 - 宣传站点 + 用户控制台 + 管理后台（双服务架构，数据存储使用 SQLite）",
+  "main": "index.js",
+  "packageManager": "npm@>=10.0.0 <12.0.0",
+  "engines": {
+    "node": ">=20.17.0 <23.0.0",
+    "npm": ">=10.0.0 <12.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "user": "node user-server.js",
+    "admin": "node admin-server.js",
+    "migrate": "node migrate-json-to-db.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "11.7.0"
+  }
+}

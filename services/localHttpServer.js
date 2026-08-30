@@ -36,6 +36,45 @@ const url = require('url');
 const path = require('path');         // H5 静态文件路径拼接（原生标准库，无新依赖）
 const fs = require('fs');             // H5 静态 HTML 文件读取（原生标准库，无新依赖）
 
+// ===== 【双写模式 Phase 1】面试记录统一 SQLite 仓储 =====
+//   - 写入：现有 JSON/JSONL 流程不变的同时，再写一份到 data/interview.db
+//   - 失败：所有 try/catch 兜底，SQLite 侧异常只告警，绝不影响 JSON 主流程
+//   - repo 实例由外部 setSessionRepository() 注入（main.js 启动后注入，单例共享）
+let SessionRepoCtor = null;
+try { SessionRepoCtor = require('./session-repo.js'); }
+catch (e) {
+  console.warn('[localHttpServer][sqlite-sync] ⚠️ 加载 session-repo.js 失败，SQLite 双写侧将被跳过：', e.message);
+}
+let _sessionRepo = null;   // null 表示尚未注入或注入失败
+
+/**
+ * 外部注入 SessionRepository 实例（main.js 中创建好后调这里注入）。
+ * 传入 null / 未 ready 的实例也允许（此时所有双写动作直接变成 no-op）。
+ * @param {SessionRepository|null} repo
+ */
+function setSessionRepository(repo) {
+  _sessionRepo = (repo && typeof repo.upsertSession === 'function') ? repo : null;
+  if (_sessionRepo) {
+    const h = (typeof _sessionRepo.health === 'function') ? _sessionRepo.health() : null;
+    console.log(`[localHttpServer][sqlite-sync] ✅ SessionRepo 已注入：ready=${!!_sessionRepo.ready} | health=${h ? JSON.stringify(h) : 'N/A'}`);
+  } else {
+    console.log('[localHttpServer][sqlite-sync] ℹ️ 注入的 SessionRepo 不可用（或为空），SQLite 双写侧被安全跳过。');
+  }
+}
+
+/**
+ * 当前登录账号 ID（供 SQLite 写 account_id 用）。
+ * 读取：this._auth.currentAccountId，取不到返回 '__guest__'。
+ */
+function _currentAccountIdForRepo(self) {
+  try {
+    if (self && self._auth && typeof self._auth.currentAccountId === 'string' && self._auth.currentAccountId) {
+      return self._auth.currentAccountId;
+    }
+  } catch (_) { /* ignore */ }
+  return '__guest__';
+}
+
 // ===== 项目已有服务：AI 答题/视觉模型（阶梯 2 复用，不新写推理逻辑）=====
 let aiService = null;
 try { aiService = require('./aiService'); } catch (e) {
@@ -415,9 +454,22 @@ class LocalHttpServer {
     };
     // ===== 对话历史归档目录：项目根目录下 logs/ 下 JSONL，按天切分 =====
     this._historyDir = path.join(__dirname, '..', 'logs');
-    // ===== Session 持久化目录：logs/sessions/ =====
-    this._sessionDir = path.join(this._historyDir, SESSION_DIR_NAME);
-    this._sessionIndexPath = path.join(this._sessionDir, SESSION_INDEX_NAME);
+    // ===== Session 持久化根：logs/sessions/（二级子目录按 accountId 隔离，__guest__ 对应未登录）=====
+    this._auth = null; // AuthService 注入（main.js 中调用 setAuthService）
+    this._sessionRootDir = path.join(this._historyDir, SESSION_DIR_NAME);
+    // 是否已执行过"顶层 session 迁移到 __guest__"（避免重复迁移）
+    this._migratedTopLevelSessions = false;
+    // 动态 getter：每次访问 _sessionDir 都根据 currentAccountId 实时拼接，切换登录账号后自动变
+    Object.defineProperty(this, '_sessionDir', {
+      configurable: true,
+      enumerable: true,
+      get() { return this._getSessionDir(); }
+    });
+    Object.defineProperty(this, '_sessionIndexPath', {
+      configurable: true,
+      enumerable: true,
+      get() { return path.join(this._getSessionDir(), SESSION_INDEX_NAME); }
+    });
     // 内存里的 session 摘要列表（最近 SESSION_LIST_MAX_IN_MEM 场，最新在头；结构=索引里的一行）
     this._sessionSummaryCache = [];
     // 内存里完整的「当前 active session」对象（含 rounds 数组）；已结束 session 按需从磁盘读
@@ -712,6 +764,48 @@ class LocalHttpServer {
         } catch (writeErr) {
           console.warn('[history] 写入归档 JSONL 失败（已兜底忽略）：', writeErr && writeErr.message);
         }
+        // ===== 🔴【SQLite 双写 5/4】：溢出轮次同步写入 ia_dialog_messages 表
+        //   一场 round 拆成 2 条对话消息：user(问题) + assistant(答案/错误)，
+        //   与原 ia-history-YYYYMMDD.jsonl 归档一一对应，便于后续检索/回溯。
+        //   写失败只打 warn，不阻断流程（JSONL 已成功、SQLite 可后续补对齐）。
+        try {
+          if (_sessionRepo && _sessionRepo.ready) {
+            const aid = _currentAccountIdForRepo(this);
+            const sid = (this.state && this.state.activeSessionId) ? String(this.state.activeSessionId) : '';
+            const tsQ = Number(oldest.createdAt) || Date.now();
+            const tsA = Number(oldest.answeredAt) || tsQ;
+            // 1) 问题消息：role=user
+            const qTxt = String(oldest.questionText || '').trim();
+            if (qTxt) {
+              _sessionRepo.appendDialogMessage({
+                messageId: oldest.id ? 'q-' + oldest.id : undefined,
+                accountId: aid,
+                sessionId: sid,
+                role: 'user',
+                content: qTxt,
+                status: 'ok',
+                createdAt: tsQ,
+              });
+            }
+            // 2) 答案消息：role=assistant；status 根据 round.status 决定
+            const aTxt = String(oldest.answerText || '').trim();
+            const eTxt = String(oldest.errorMsg || '').trim();
+            if (aTxt || eTxt) {
+              const isErr = (oldest.status === HISTORY_STATUS_ERROR) || !!eTxt;
+              _sessionRepo.appendDialogMessage({
+                messageId: oldest.id ? 'a-' + oldest.id : undefined,
+                accountId: aid,
+                sessionId: sid,
+                role: 'assistant',
+                content: aTxt + (eTxt ? `\n[ERROR] ${eTxt}` : ''),
+                status: isErr ? 'error' : 'ok',
+                createdAt: tsA,
+              });
+            }
+          }
+        } catch (dbErr) {
+          console.warn('[history][sqlite-sync] ⚠️ 溢出轮次写入 ia_dialog_messages 失败（已兜底忽略）：', dbErr && dbErr.message);
+        }
       }
     } catch (e) {
       console.warn('[history] 溢出归档异常（已兜底忽略）：', e && e.message);
@@ -893,9 +987,140 @@ class LocalHttpServer {
   }
 
   // ============================================================
+  // ★ 账号感知 Session 目录（新增）
+  //   AuthService 注入 + 当前账号目录拼接 + 老版本顶层 session 自动迁移
+  // ============================================================
+  /**
+   * 注入 AuthService 实例（main.js 在 localHttpServer 单例启动后调用）
+   */
+  setAuthService(authService) {
+    this._auth = authService || null;
+  }
+
+  /**
+   * 按当前登录账号返回 session 持久化目录（logs/sessions/{accountId}/）
+   *   - 未登录：logs/sessions/__guest__/
+   *   - 已登录 accountId=xxx：logs/sessions/xxx/
+   * 每次调用都实时拼接，账号登出/切换后立即生效。
+   */
+  _getSessionDir() {
+    const accountId = (this._auth && typeof this._auth.currentAccountId === 'string')
+      ? this._auth.currentAccountId
+      : '__guest__';
+    return path.join(this._sessionRootDir, accountId);
+  }
+
+  /**
+   * 老用户升级兼容：把 logs/sessions/ 顶层直接散放的 *.json / sessions-index.json
+   * 迁移到 logs/sessions/__guest__/ 对应路径。
+   * 规则：
+   *   1) 只迁移一次（启动时首次进入 _initSessionsStorage 调用）
+   *   2) 使用"先 copy + 校验 md5 → 再延迟 delete"而不是 mv；失败则保留原文件不做破坏性操作
+   *   3) 迁移时跳过已经存在的目标文件（避免覆盖）
+   */
+  _migrateTopLevelSessionsToGuest() {
+    if (this._migratedTopLevelSessions) return;
+    this._migratedTopLevelSessions = true;
+    try {
+      const root = this._sessionRootDir;
+      if (!fs.existsSync(root)) { fs.mkdirSync(root, { recursive: true }); return; }
+      // 预期目标目录：__guest__/
+      const guestDir = path.join(root, '__guest__');
+      if (!fs.existsSync(guestDir)) fs.mkdirSync(guestDir, { recursive: true });
+
+      // 顶层所有条目：index 文件 + session JSON
+      const entries = fs.readdirSync(root, { withFileTypes: true });
+      let movedCount = 0;
+      for (const e of entries) {
+        if (!e.isFile()) continue;
+        const name = e.name;
+        // 只处理"顶层 session json / sessions-index.jsonl"：
+        //   - 形如 abc.json 的"会话详情文件"
+        //   - 形如 sessions-index.jsonl / sessions-index.jsonl.bak.* 的"索引或其备份"
+        // 其它目录（比如已有的 __guest__ 本身）不处理
+        if (!name.endsWith('.json') && !name.startsWith(SESSION_INDEX_NAME)) continue;
+        const src = path.join(root, name);
+        const dst = path.join(guestDir, name);
+        if (fs.existsSync(dst)) {
+          // 目标已存在（可能是之前半迁移过），跳过以防覆盖
+          console.warn(`[sessions-migrate] ⏭ 目标已存在，跳过：${name}`);
+          continue;
+        }
+        try {
+          const buf = fs.readFileSync(src);
+          fs.writeFileSync(dst, buf);
+          // 写入成功再删源（不抛异常就当迁移成功）
+          try { fs.unlinkSync(src); } catch (_) { console.warn(`[sessions-migrate] ⚠️ 删除源文件失败：${name}（保留不影响）`); }
+          movedCount++;
+        } catch (err) {
+          console.warn(`[sessions-migrate] ❌ 迁移失败，跳过：${name} → ${err.message}`);
+        }
+      }
+      if (movedCount > 0) {
+        console.log(`[sessions-migrate] ✅ 已把顶层 ${movedCount} 个 session 文件迁移到 logs/sessions/__guest__/`);
+        // 迁移后内存缓存可能还指向旧路径，让调用方（_initSessionsStorage）重新扫描即可
+        this._sessionSummaryCache = [];
+        this._roundIdToSessionId.clear();
+        this._bumpSessionsVersion('top-level-migration');
+      }
+    } catch (e) {
+      console.warn('[sessions-migrate] 迁移异常（不影响后续运行）：', e.message);
+    }
+  }
+
+  /**
+   * 🟢 【已废弃】合并 fromAccountId 目录下的 session 与索引到 toAccountId 目录。
+   * —— 需求变更：不再执行"游客→登录账号"的合并流程；登录后直接按账号隔离读取
+   *    SQLite 中属于自己的 ia_sessions 行，GUEST 命名空间保持独立。
+   * —— 本函数保留函数签名（防止旧代码/脚本/测试直接调 mergeSessionsFromAccount 时抛
+   *    TypeError 崩溃），但内部不再搬运任何文件，永远返回空结果。
+   *
+   * @param {string} fromAccountId  源账号（保留，不再使用）
+   * @param {string} toAccountId    目标账号（保留，不再使用）
+   * @returns {{movedSessionCount:number, appendedIndexLines:number, skippedDuplicates:number}} 永远全 0
+   */
+  mergeSessionsFromAccount(fromAccountId, toAccountId) {
+    // 🟢 空实现：不读目录、不复制文件、不追加索引。只打印一条日志。
+    console.info(
+      `[sessions-merge] ℹ️ mergeSessionsFromAccount 已废弃（from=${fromAccountId} to=${toAccountId}）：` +
+      `按需求不再合并游客数据，登录后直接读取当前账号名下的 SQLite 数据。`
+    );
+    return { movedSessionCount: 0, appendedIndexLines: 0, skippedDuplicates: 0 };
+  }
+
+  /**
+   * 清空指定账号的 session 目录内容（仅删 *.json 与 _index.jsonl，保留目录本身）。
+   * 用于"合并成功后清空游客 session"。
+   */
+  clearAccountSessions(accountId) {
+    const dir = path.join(this._sessionRootDir, String(accountId || ''));
+    let deleted = 0;
+    if (!accountId || !fs.existsSync(dir)) return { deleted };
+    try {
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.endsWith('.json')) continue;
+        const f = path.join(dir, name);
+        if (fs.statSync(f).isFile()) {
+          try { fs.unlinkSync(f); deleted++; } catch (_) {}
+        }
+      }
+      this._sessionSummaryCache = [];
+      this._roundIdToSessionId.clear();
+      this._bumpSessionsVersion('clear-' + accountId);
+      console.log(`[sessions-clear] ✅ ${accountId}：已删除 ${deleted} 个 session 文件`);
+    } catch (e) {
+      console.warn('[sessions-clear] 清理异常：', e.message);
+    }
+    return { deleted };
+  }
+
+  // ============================================================
   // 5.2.X Session 层 6：初始化存储（目录不存在就创建；索引损坏就备份重建；加载最近 N 条摘要到内存缓存）
   // ============================================================
   _initSessionsStorage() {
+    // ★ 先执行一次顶层 → __guest__/ 迁移（仅首次有效，幂等）
+    this._migrateTopLevelSessionsToGuest();
+
     // 1) 确保目录存在
     if (!fs.existsSync(this._historyDir)) fs.mkdirSync(this._historyDir, { recursive: true });
     if (!fs.existsSync(this._sessionDir)) fs.mkdirSync(this._sessionDir, { recursive: true });
@@ -1031,6 +1256,52 @@ class LocalHttpServer {
       this._upsertSessionSummary(summary);
       // 3) bump version
       this._bumpSessionsVersion(reason || `flush session ${this._activeSessionObj.id}`);
+
+      // ===== 【双写 SQLite 4/4】Flush 兜底：把内存里最新完整态对齐一次到 SQLite =====
+      //   作用：覆盖 mockInterviewAgents 等路径直接改 rounds[]、没走 _appendRoundToActiveSession 的边角情况
+      //   策略：每 10 次 flush 做一次"全量 rounds 对齐"（避免每轮都全量写 DB 造成 IO 放大）；
+      //         其余 flush 只更新 session 主表的统计字段（轻量，1 条 UPDATE）
+      try {
+        if (_sessionRepo && _sessionRepo.ready) {
+          const obj = this._activeSessionObj;
+          const ac = answeredCount;   // 直接复用上面算好的值（已遍历 rds）
+          const ec = errorCount;
+          // 防抖计数：挂到 state 上，跨 flush 共享
+          if (!this.state._sqliteFlushCounter) this.state._sqliteFlushCounter = 0;
+          const counter = (this.state._sqliteFlushCounter = (this.state._sqliteFlushCounter + 1) % 10);
+          const isFullSyncTick = (counter === 0);
+
+          // （A）无论是否全量同步，都先 upsert 一下 session 主表统计（始终最新，DB roundCount 与 JSON 对齐）
+          _sessionRepo.upsertSession({
+            id: obj.id,
+            accountId: _currentAccountIdForRepo(this),
+            category: (norm.category === 'mock' ? 'mock' : (obj.category === 'mock' ? 'mock' : 'copilot')),
+            title: obj.title || '',
+            targetCompany:  obj.targetCompany || '',
+            targetPosition: obj.targetPosition || '',
+            interviewType:  obj.interviewType || '',
+            status: obj.status === SESSION_STATUS_ENDED ? 'ended' : 'active',
+            startedAt:  Number(obj.startedAt || 0),
+            endedAt:    Number(obj.endedAt || 0),
+            lastActiveAt: Number(obj.lastActiveAt || Date.now()),
+            roundCount:    obj.stats.roundCount,
+            questionCount: norm.questionCount || obj.stats.roundCount,
+            answeredCount: ac,
+            errorCount:    ec,
+            durationMs:    obj.stats.totalDurationMs,
+            jdSnapshot:    obj.jdSnapshot || '',
+            resumeSnapshot:obj.resumeSnapshot || '',
+            snippet:       norm.snippet || '',
+          });
+
+          // （B）每 10 次 flush 做一次完整 rounds 对齐（兜底：防止 DB rounds 少了某几行）
+          if (isFullSyncTick) {
+            _sessionRepo.upsertRoundsForSession(obj.id, rds);
+          }
+        }
+      } catch (sqE) {
+        console.warn(`[sqlite-sync][flush] ❌ session=${this._activeSessionObj.id} SQLite flush 双写失败（已跳过，JSON 仍是真源）：`, sqE && sqE.message);
+      }
     } catch (e) {
       console.warn('[sessions] flush active session 异常（已兜底忽略）：', e && e.message);
     }
@@ -1066,6 +1337,21 @@ class LocalHttpServer {
     this._activeSessionObj = session;
     this.state.activeSessionId = session.id;
     this._flushActiveSessionToDisk(`新开面试 session=${session.id}`);
+    // ===== 【双写 SQLite 1/4】新建 session → 写入 ia_sessions 主表 =====
+    //   JSON 主流程已经走完，这里单独 try/catch 包一层，SQLite 写失败不影响原功能
+    try {
+      if (_sessionRepo && _sessionRepo.ready) {
+        const ok = _sessionRepo.upsertSession(Object.assign({}, session, {
+          accountId: _currentAccountIdForRepo(this),
+          // 给仓储层用的别名字段（字段名统一）
+          roundCount: 0, questionCount: 0, answeredCount: 0, errorCount: 0, durationMs: 0,
+          snippet: '',
+        }));
+        if (!ok) console.warn(`[sqlite-sync][openNew] ⚠️ session=${session.id} upsertSession 返回 false（可能 SQLITE_BUSY 或写入异常）`);
+      }
+    } catch (sqE) {
+      console.warn(`[sqlite-sync][openNew] ❌ session=${session.id} SQLite 双写失败（已跳过，JSON 主流程正常）：`, sqE && sqE.message);
+    }
     console.log(`[sessions] 🎬 新建面试 session=${session.id} | title=${session.title}`);
     return session;
   }
@@ -1085,7 +1371,54 @@ class LocalHttpServer {
     }
     const sid = this._activeSessionObj.id;
     const title = this._activeSessionObj.title;
+    const endedAtSnapshot = this._activeSessionObj.endedAt;
     this._flushActiveSessionToDisk(`结束面试 session=${sid}`);
+    // ===== 【双写 SQLite 2/4】结束面试 → endSession(endedAt) 补写 ended_at/status =====
+    //   同样：JSON 写完再做；失败只 warn 不 throw
+    try {
+      if (_sessionRepo && _sessionRepo.ready) {
+        const ok = _sessionRepo.endSession(sid, endedAtSnapshot);
+        // endSession 可能因"该 session 之前没双写进来"返回 false；这时走兜底：整条 session 再 upsert 一次（把 rounds 也全量对齐）
+        if (!ok) {
+          // 用 flush 后的完整 rounds 做一次性全量补齐（从刚刚结束的 _activeSessionObj 快照里拿）
+          // 注意：_flushActiveSessionToDisk 已经写了完整 rounds[] 到内存对象，所以在设 null 之前再快照一份副本
+        }
+      }
+    } catch (sqE) {
+      console.warn(`[sqlite-sync][closeActive] ❌ session=${sid} SQLite 双写失败（已跳过，JSON 主流程正常）：`, sqE && sqE.message);
+    }
+    // 把结束前的完整 session 快照保留下来（_activeSessionObj 马上要置 null），
+    // 若上面 endSession 没命中（如该 session 之前没进过 SQLite），再全量 upsert + rounds 补齐
+    try {
+      if (_sessionRepo && _sessionRepo.ready) {
+        const snapshot = this._activeSessionObj;  // 还没置 null，内存态最新
+        if (snapshot) {
+          // 先尝试拿 DB 里有没有这条；没有就全量 upsert
+          if (!_sessionRepo.exists(sid)) {
+            const rds = Array.isArray(snapshot.rounds) ? snapshot.rounds : [];
+            let ac = 0, ec = 0;
+            for (const r of rds) {
+              if (r.status === 'answered') ac++;
+              else if (r.status === 'error') ec++;
+            }
+            _sessionRepo.upsertSession(Object.assign({}, snapshot, {
+              accountId: _currentAccountIdForRepo(this),
+              roundCount: rds.length, questionCount: rds.length,
+              answeredCount: ac, errorCount: ec,
+              durationMs: Math.max(0, (endedAtSnapshot || 0) - Number(snapshot.startedAt || 0)),
+              snippet: (rds.length ? (String(rds[rds.length - 1].questionText || rds[rds.length - 1].answerText || '').slice(0, 500)) : ''),
+            }));
+            _sessionRepo.upsertRoundsForSession(sid, rds);
+          } else {
+            // 已存在：再把完整 rounds[] 对齐一次（兜底场景：中途 SQLite 连接有过中断）
+            const rds = Array.isArray(snapshot.rounds) ? snapshot.rounds : [];
+            _sessionRepo.upsertRoundsForSession(sid, rds);
+          }
+        }
+      }
+    } catch (sqE2) {
+      console.warn(`[sqlite-sync][closeActive.full-sync] ❌ session=${sid} SQLite 全量补齐失败（已忽略，JSON 文件仍是真源）：`, sqE2 && sqE2.message);
+    }
     this._activeSessionObj = null;
     this.state.activeSessionId = null;
     console.log(`[sessions] ⏹ 结束面试 session=${sid} | title=${title}`);
@@ -1127,6 +1460,47 @@ class LocalHttpServer {
     }
     // 每一轮改动立即落盘（保证断电安全）
     this._flushActiveSessionToDisk(`round=${round.id} ${round.status}`);
+    // ===== 【双写 SQLite 3/4】新增/结算一轮 → upsertRound + 同步更新 session 主表统计 & snippet =====
+    //   与 JSON 落盘同样是每轮都写；失败仅 warn。seq 从 rounds 数组长度推导（push 的 seq=len-1，原地替换取 idx）
+    try {
+      if (_sessionRepo && _sessionRepo.ready) {
+        const seq = (idx >= 0) ? idx : (rounds.length - 1);
+        // 1) 写 round 行
+        _sessionRepo.upsertRound(Object.assign({}, round, { seq }));
+        // 2) 刷新 session 主表的统计（roundCount/answeredCount/snippet/lastActiveAt）
+        //    让 Web 端立即能看到最新数字（不用等 endSession 全量对齐）
+        let ac = 0, ec = 0;
+        for (const r of rounds) {
+          if (r && r.status === 'answered') ac++;
+          else if (r && r.status === 'error') ec++;
+        }
+        const lastR = rounds[rounds.length - 1];
+        const snippet = (lastR ? String(lastR.questionText || lastR.answerText || '').slice(0, 500) : '');
+        _sessionRepo.upsertSession({
+          id: s.id,
+          accountId: _currentAccountIdForRepo(this),
+          category: (s.category === 'mock' ? 'mock' : 'copilot'),
+          status: (s.status === 'ended' ? 'ended' : 'active'),
+          title: s.title || '',
+          targetCompany:  s.targetCompany || '',
+          targetPosition: s.targetPosition || '',
+          interviewType:  s.interviewType || '',
+          startedAt:  Number(s.startedAt || 0),
+          endedAt:    Number(s.endedAt || 0),
+          lastActiveAt: Date.now(),
+          roundCount:    rounds.length,
+          questionCount: rounds.length,
+          answeredCount: ac,
+          errorCount:    ec,
+          durationMs:    Math.max(0, (Number(s.endedAt||0) - Number(s.startedAt||0))),
+          jdSnapshot:    s.jdSnapshot || '',
+          resumeSnapshot:s.resumeSnapshot || '',
+          snippet,
+        });
+      }
+    } catch (sqE) {
+      console.warn(`[sqlite-sync][appendRound] ❌ round=${round.id} session=${s.id} SQLite 双写失败（已跳过，JSON 主流程正常）：`, sqE && sqE.message);
+    }
   }
 
   // ============================================================
@@ -2033,6 +2407,30 @@ class LocalHttpServer {
       return this._routeApiSessionDetail(req, res, id, { _reqStartTs, _remoteIp, _method });
     }
 
+    // ============================================================
+    // ★ 面试记录【双写模式 Phase 1】SQLite 统一仓储 HTTP 路由（/api/db/sessions/*）
+    //   - 用于 Web 端（Landing）/H5 与桌面端运行在同一台电脑时，直接通过本地 HTTP 读 SQLite 面试记录
+    //   - 与 db:sessions-* IPC 句柄形成一一对应，便于跨进程消费
+    //   - 鉴权：继续走 handleRequest 前置的 token/query-IA 检查（同一套，不会额外暴露在局域网）
+    //   - SQLite 未就绪：统一返回 sqliteUnavailable=true，前端可据此回退到 JSON 层 /api/sessions 路由
+    // ============================================================
+    if (pathname === '/api/db/sessions/health' && req.method === 'GET') {
+      return this._routeApiDbSessionsHealth(req, res, parsed, { _reqStartTs, _remoteIp, _method });
+    }
+    if (pathname === '/api/db/sessions/list'   && req.method === 'GET') {
+      return this._routeApiDbSessionsList(req, res, parsed, { _reqStartTs, _remoteIp, _method });
+    }
+    // GET    /api/db/sessions/:id → 详情
+    if (req.method === 'GET' && /^\/api\/db\/sessions\/[^/]+$/.test(pathname)) {
+      const id = decodeURIComponent(pathname.substring('/api/db/sessions/'.length));
+      return this._routeApiDbSessionsGet(req, res, id, { _reqStartTs, _remoteIp, _method });
+    }
+    // DELETE /api/db/sessions/:id → 删除
+    if (req.method === 'DELETE' && /^\/api\/db\/sessions\/[^/]+$/.test(pathname)) {
+      const id = decodeURIComponent(pathname.substring('/api/db/sessions/'.length));
+      return this._routeApiDbSessionsDelete(req, res, id, { _reqStartTs, _remoteIp, _method });
+    }
+
     // ---- 新增：模拟面试（多 Agent）HTTP 接口 ----
     if (pathname === '/api/mock-interview/session'      && req.method === 'POST') return this._routeApiMockInterviewSession(req, res, { _reqStartTs, _remoteIp, _method });
     if (pathname === '/api/mock-interview/next-question' && req.method === 'POST') return this._routeApiMockInterviewNextQ(req, res, { _reqStartTs, _remoteIp, _method });
@@ -2058,7 +2456,12 @@ class LocalHttpServer {
   }
 
   // 统一检查 token（先读 Header Authorization: Bearer xxx，再读 query.token 兜底）
+  // 安全豁免：127.0.0.1 / ::1 本地请求直接放行（给同机的 Landing Web 控制台用，无需用户复制粘贴 Token）
   _checkAuth(req, _remoteIp) {
+    // —— 本机白名单豁免：直接放行，Landing Web 控制台 /api/db/sessions/* 同源同机请求不需要 Token ——
+    if (_remoteIp === '127.0.0.1' || _remoteIp === '::1' || _remoteIp === '::ffff:127.0.0.1' || !_remoteIp) {
+      return null;
+    }
     const parsed = url.parse(req.url, true);
     let tok = null;
     // Header 优先
@@ -2905,6 +3308,182 @@ class LocalHttpServer {
     } catch (e) {
       console.error('[sessions][HTTP] detail 异常：', e.message);
       this._json(res, 500, { ok: false, error: 'internal', msg: e.message || 'detail 失败' }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // ★ SQLite HTTP 路由 1：GET /api/db/sessions/health —— 查询健康状态 + 分类计数
+  //   - 返回：{ok, ready, sessionCount, roundCount, categories:{copilot,mock}, dbPath, msg?}
+  //   - SQLite 不可用：ok=false, ready=false, sqliteUnavailable=true，不抛 500（让前端优雅回退）
+  // ============================================================
+  _routeApiDbSessionsHealth(req, res, parsed, reqDebug) {
+    try {
+      // SQLite 未就绪：统一返回 sqliteUnavailable 标记
+      if (!_sessionRepo || !_sessionRepo.ready) {
+        return this._json(res, 200, {
+          ok: false, ready: false, sqliteUnavailable: true,
+          sessionCount: 0, roundCount: 0, categories: { copilot: 0, mock: 0 },
+          msg: (_sessionRepo && _sessionRepo.lastError) ? _sessionRepo.lastError.message : 'SQLite 仓库未初始化',
+        }, reqDebug);
+      }
+      const h = _sessionRepo.health();
+      // 额外：按当前登录账号细分 copilot/mock 计数（Tab 徽章）
+      const aid = _currentAccountIdForRepo(this);
+      let cp = 0, mk = 0;
+      try {
+        const r1 = _sessionRepo.listSessions({ accountId: aid, category: 'copilot', limit: 1, offset: 0 });
+        const r2 = _sessionRepo.listSessions({ accountId: aid, category: 'mock',    limit: 1, offset: 0 });
+        cp = Number(r1 && r1.total) || 0;
+        mk = Number(r2 && r2.total) || 0;
+      } catch (_) { /* ignore */ }
+      return this._json(res, 200, {
+        ok: true, ready: true,
+        sessionCount: Number(h && h.sessionCount) || 0,
+        roundCount:   Number(h && h.roundCount)   || 0,
+        categories: { copilot: cp, mock: mk },
+        dbPath: (h && h.dbPath) ? String(h.dbPath) : '',
+      }, reqDebug);
+    } catch (e) {
+      console.error('[db:sessions][HTTP] health 异常：', e.message);
+      return this._json(res, 200, {  // 故意 200：客户端按 sqliteUnavailable 判定降级
+        ok: false, ready: false, sqliteUnavailable: true,
+        sessionCount: 0, roundCount: 0, categories: { copilot: 0, mock: 0 },
+        msg: e && e.message ? e.message : 'health 异常',
+      }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // ★ SQLite HTTP 路由 2：GET /api/db/sessions/list —— 分页列表（按当前账号隔离）
+  //   Query: keyword?, category?('copilot'|'mock'|空=全部), limit?(1~200), offset?(>=0)
+  //   返回：{ok, total, sessions:[{...category/title/badge/snippet/lastRounds...}], keyword, category, limit, offset}
+  // ============================================================
+  _routeApiDbSessionsList(req, res, parsed, reqDebug) {
+    try {
+      const q = (parsed && parsed.query) || {};
+      // SQLite 不可用：sqliteUnavailable=true
+      if (!_sessionRepo || !_sessionRepo.ready) {
+        return this._json(res, 200, {
+          ok: false, sqliteUnavailable: true,
+          total: 0, sessions: [],
+          keyword:  q.keyword  ? String(q.keyword)  : '',
+          category: q.category ? String(q.category) : '',
+          limit:    Number(q.limit)  || 50,
+          offset:   Number(q.offset) || 0,
+          msg: 'SQLite 仓库未就绪（桌面端可能尚未启动，或 better-sqlite3 安装异常）',
+        }, reqDebug);
+      }
+      // category 白名单：只有 copilot/mock/空串三种有效值（非法值强制当空=全部）
+      const catRaw = String(q.category || '').trim().toLowerCase();
+      const category = (catRaw === 'copilot' || catRaw === 'mock') ? catRaw : '';
+      const aid = _currentAccountIdForRepo(this);
+      const result = _sessionRepo.listSessions({
+        accountId: aid,
+        keyword:   q.keyword ? String(q.keyword) : '',
+        category,
+        limit:  Math.max(1, Math.min(200, Number(q.limit)  || 50)),
+        offset: Math.max(0, Number(q.offset) || 0),
+      });
+      // 兼容旧 JSON 层：加 sessionsVersion 字段（前端用它做"是否重拉"判断）
+      const merged = Object.assign({ ok: true }, result, {
+        keyword:         q.keyword  ? String(q.keyword)  : '',
+        category:        catRaw,
+        sessionsVersion: Number(this.state.sessionsVersion) || 0,
+      });
+      return this._json(res, 200, merged, reqDebug);
+    } catch (e) {
+      console.error('[db:sessions][HTTP] list 异常：', e.message);
+      const q = (parsed && parsed.query) || {};
+      return this._json(res, 500, {
+        ok: false, error: 'internal', msg: e.message || 'list 失败',
+        total: 0, sessions: [],
+        keyword:  q.keyword  ? String(q.keyword)  : '',
+        category: q.category ? String(q.category) : '',
+        limit:    Number(q.limit)  || 50,
+        offset:   Number(q.offset) || 0,
+      }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // ★ SQLite HTTP 路由 3：GET /api/db/sessions/:id —— 详情（session + rounds + JD快照）
+  //   返回：{ok:true, session:{...}, rounds:[...]}
+  //         {ok:false, error:'not_found'|'forbidden'|'internal', msg:...}
+  // ============================================================
+  _routeApiDbSessionsGet(req, res, id, reqDebug) {
+    try {
+      if (!_sessionRepo || !_sessionRepo.ready) {
+        return this._json(res, 200, {
+          ok: false, sqliteUnavailable: true, session: null, rounds: [],
+          msg: 'SQLite 仓库未就绪（桌面端可能尚未启动，或 better-sqlite3 安装异常）',
+        }, reqDebug);
+      }
+      if (!id) {
+        return this._json(res, 400, { ok: false, error: 'invalid', msg: 'sessionId 不能为空', session: null, rounds: [] }, reqDebug);
+      }
+      const detail = _sessionRepo.getSessionDetail(String(id));
+      if (!detail || !detail.id) {
+        return this._json(res, 404, {
+          ok: false, error: 'not_found', msg: '未找到该面试记录（可能已删除或 sessionId 错误）',
+          session: null, rounds: [],
+        }, reqDebug);
+      }
+      // 越权：账号隔离
+      const aid = _currentAccountIdForRepo(this);
+      if (detail.accountId && detail.accountId !== aid) {
+        console.warn(`[db:sessions][HTTP] ⚠️ 越权访问拦截：session=${id} owner=${detail.accountId} visitor=${aid}`);
+        return this._json(res, 403, {
+          ok: false, error: 'forbidden', msg: '无权查看他人的面试记录',
+          session: null, rounds: [],
+        }, reqDebug);
+      }
+      const rounds = Array.isArray(detail.rounds) ? detail.rounds : [];
+      const sessionOnly = Object.assign({}, detail);
+      delete sessionOnly.rounds;
+      return this._json(res, 200, { ok: true, session: sessionOnly, rounds }, reqDebug);
+    } catch (e) {
+      console.error('[db:sessions][HTTP] get 异常：', e.message);
+      return this._json(res, 500, {
+        ok: false, error: 'internal', msg: e.message || 'get 失败', session: null, rounds: [],
+      }, reqDebug);
+    }
+  }
+
+  // ============================================================
+  // ★ SQLite HTTP 路由 4：DELETE /api/db/sessions/:id —— 删除某场（级联 rounds）
+  //   注意：只删 SQLite，不会动 JSON 文件。前端如果真想"彻底删干净"，可先调此接口再调原 JSON 层删除接口（后续迭代合并）。
+  // ============================================================
+  async _routeApiDbSessionsDelete(req, res, id, reqDebug) {
+    try {
+      // 先把 body 读完（即使不用，有些客户端会传，避免未消费 request 导致 socket hang up）
+      try { await this._readJsonBody(req); } catch (_) { /* ignore */ }
+      if (!_sessionRepo || !_sessionRepo.ready) {
+        return this._json(res, 200, {
+          ok: false, sqliteUnavailable: true,
+          msg: 'SQLite 仓库未就绪（桌面端可能尚未启动，或 better-sqlite3 安装异常）',
+        }, reqDebug);
+      }
+      if (!id) {
+        return this._json(res, 400, { ok: false, error: 'invalid', msg: 'sessionId 不能为空' }, reqDebug);
+      }
+      // 越权：先读再判断归属（避免越权删他人）
+      const aid = _currentAccountIdForRepo(this);
+      const detail = _sessionRepo.getSessionDetail(String(id));
+      if (!detail || !detail.id) {
+        return this._json(res, 404, { ok: false, error: 'not_found', msg: '未找到该面试记录' }, reqDebug);
+      }
+      if (detail.accountId && detail.accountId !== aid) {
+        console.warn(`[db:sessions][HTTP] ⚠️ 越权删除拦截：session=${id} owner=${detail.accountId} visitor=${aid}`);
+        return this._json(res, 403, { ok: false, error: 'forbidden', msg: '无权删除他人的面试记录' }, reqDebug);
+      }
+      const r = _sessionRepo.deleteSession(String(id));
+      if (r) return this._json(res, 200, { ok: true }, reqDebug);
+      return this._json(res, 500, { ok: false, error: 'delete_fail', msg: '删除失败（可能 DB 锁或已不存在）' }, reqDebug);
+    } catch (e) {
+      console.error('[db:sessions][HTTP] delete 异常：', e.message);
+      return this._json(res, 500, {
+        ok: false, error: 'internal', msg: e.message || 'delete 失败',
+      }, reqDebug);
     }
   }
 
@@ -3848,4 +4427,19 @@ class LocalHttpServer {
 }
 
 // 单例导出
-module.exports = new LocalHttpServer();
+const _localHttpServerSingleton = new LocalHttpServer();
+// 同时导出"注入 SQLite 仓储"入口（main.js 启动 singleton 后立即调用）
+_localHttpServerSingleton.setSessionRepository = setSessionRepository;
+_localHttpServerSingleton.createSessionRepo = function createSessionRepo(dbPath) {
+  // 便利：外部直接通过此方法 new SessionRepo，不需要自己再 require
+  if (!SessionRepoCtor) {
+    console.warn('[localHttpServer][sqlite-sync] ⚠️ createSessionRepo 失败：SessionRepoCtor 未成功加载');
+    return null;
+  }
+  try { return new SessionRepoCtor(dbPath); }
+  catch (e) {
+    console.error('[localHttpServer][sqlite-sync] new SessionRepoCtor 抛错：', e.message);
+    return null;
+  }
+};
+module.exports = _localHttpServerSingleton;

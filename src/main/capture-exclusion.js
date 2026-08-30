@@ -119,9 +119,31 @@ function applyCaptureExclusion(browserWindow, enabled) {
   }
 }
 
+/**
+ * 对一组窗口「统一」施加/取消「从屏幕捕获排除」。
+ * 用于实现「本 App 全部窗口都对截图/录屏不可见」：主窗口、答题面板、
+ * 模拟面试浮窗、声源选择器每个都需单独设置亲和性，单设一个窗口是不够的。
+ * @param {Electron.BrowserWindow[]} windows 窗口数组
+ * @param {boolean} enabled true=全部排除；false=全部恢复
+ * @returns {{total:number, ok:number}} total=参与窗口数，ok=成功数
+ */
+function applyExclusionToAll(windows, enabled) {
+  if (!Array.isArray(windows)) return { total: 0, ok: 0 };
+  let total = 0;
+  let ok = 0;
+  for (const w of windows) {
+    // 跳过空引用/已销毁窗口，避免 koffi/setContentProtection 抛错
+    if (!w || w.isDestroyed()) continue;
+    total += 1;
+    if (applyCaptureExclusion(w, enabled)) ok += 1;
+  }
+  return { total, ok };
+}
+
 module.exports = {
   setExcludeFromCapture,
   applyCaptureExclusion,
+  applyExclusionToAll,
   ensureFunc,
   // 暴露常量便于调试/展示
   WDA_NONE,

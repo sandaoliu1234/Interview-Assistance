@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>登录 / 注册 · HireMe AI 面试助手</title>
+<meta name="description" content="登录或注册 HireMe，开启你的 AI 面试之旅。" />
+<link rel="stylesheet" href="/styles.css" />
+<style>
+  /* 登录/注册页：全屏居中 + 背景装饰 */
+  .auth-page {
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    background:
+      radial-gradient(1000px 500px at 20% -100px, rgba(59,130,246,0.22), transparent 60%),
+      radial-gradient(900px 500px at 90% 120%, rgba(99,102,241,0.22), transparent 60%),
+      #0b0f17;
+  }
+  .auth-main {
+    flex: 1 1 auto;
+    display: flex; align-items: center; justify-content: center;
+    padding: 28px 20px 40px;
+  }
+  .auth-card {
+    width: 100%; max-width: 440px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    padding: 30px 28px 28px;
+  }
+  .auth-card-head { text-align: center; margin-bottom: 22px; }
+  .auth-card-head .brand-big {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 20px; font-weight: 800; color: #fff;
+    margin-bottom: 6px;
+  }
+  .auth-card-head .desc { color: var(--text-secondary); font-size: 13px; }
+  .form-tips {
+    background: var(--bg-card);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    font-size: 12px; color: var(--text-secondary);
+    line-height: 1.6;
+    margin-top: 4px;
+  }
+  .form-tips strong { color: var(--accent-ink); }
+  .back-home {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--text-secondary); font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .back-home:hover { color: #fff; text-decoration: none; }
+</style>
+</head>
+<body class="auth-page">
+
+<!-- 简化版顶部导航：只保留品牌和回首页 -->
+<header class="navbar" style="border-bottom: 1px solid var(--border);">
+  <div class="container navbar-inner">
+    <a href="/index.html" class="brand">
+      <span class="brand-mark">HireMe</span>
+      <span class="brand-sub">AI 面试助手</span>
+    </a>
+    <div class="nav-actions" id="navActions">
+      <a href="/index.html" class="btn btn-ghost">← 返回首页</a>
+    </div>
+  </div>
+</header>
+
+<main class="auth-main">
+  <section class="auth-card" id="authBox" aria-labelledby="authTitle">
+
+    <div class="auth-card-head">
+      <div class="brand-big" id="authTitle">
+        <span class="brand-mark">HireMe</span>
+        <span style="color:var(--text-secondary); font-weight:500;">欢迎回来</span>
+      </div>
+      <div class="desc">真实面试 AI 辅助 · AI 陪练模拟面试 · ATS 简历优化</div>
+    </div>
+
+    <!-- Tab 切换：登录 / 注册 -->
+    <div class="auth-tabs" role="tablist">
+      <button type="button" class="auth-tab" role="tab" data-tab="login" aria-selected="false">登录账号</button>
+      <button type="button" class="auth-tab" role="tab" data-tab="register" aria-selected="false">创建账号</button>
+    </div>
+
+    <!-- ============ 登录表单 ============ -->
+    <form id="loginForm" class="form" novalidate autocomplete="on">
+      <div class="form-group">
+        <label class="form-label" for="loginEmail">邮箱 <span class="req">*</span></label>
+        <input
+          id="loginEmail"
+          name="email"
+          class="form-input"
+          type="email"
+          autocomplete="email"
+          placeholder="you@example.com"
+          required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="loginPassword">密码 <span class="req">*</span></label>
+        <input
+          id="loginPassword"
+          name="password"
+          class="form-input"
+          type="password"
+          autocomplete="current-password"
+          placeholder="请输入密码"
+          minlength="6"
+          required />
+      </div>
+      <div class="form-error" id="loginErr" role="alert" aria-live="polite"></div>
+      <button type="submit" class="btn btn-primary form-submit-btn">登录</button>
+      <div class="form-switch">
+        还没有账号？<button type="button" id="gotoRegisterLink">点此创建</button>
+      </div>
+      <div class="form-tips">
+        💡 提示：账号<strong>默认存储在本机</strong>（landing/data/accounts.json），
+        与桌面端账号库相互独立；后续上线云端后可一键同步。
+      </div>
+    </form>
+
+    <!-- ============ 注册表单 ============ -->
+    <form id="registerForm" class="form" novalidate autocomplete="on" style="display:none;">
+      <div class="form-group">
+        <label class="form-label" for="registerEmail">邮箱 <span class="req">*</span></label>
+        <input
+          id="registerEmail"
+          name="email"
+          class="form-input"
+          type="email"
+          autocomplete="email"
+          placeholder="you@example.com"
+          required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="registerDisplayName">昵称（可选）</label>
+        <input
+          id="registerDisplayName"
+          name="displayName"
+          class="form-input"
+          type="text"
+          autocomplete="nickname"
+          placeholder="比如：小明同学（不填则用邮箱前缀）" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="registerPassword">设置密码 <span class="req">*</span></label>
+        <input
+          id="registerPassword"
+          name="password"
+          class="form-input"
+          type="password"
+          autocomplete="new-password"
+          placeholder="至少 6 个字符"
+          minlength="6"
+          required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="registerPassword2">确认密码 <span class="req">*</span></label>
+        <input
+          id="registerPassword2"
+          name="password2"
+          class="form-input"
+          type="password"
+          autocomplete="new-password"
+          placeholder="再次输入密码"
+          minlength="6"
+          required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="registerInviteCode">邀请码（可选）</label>
+        <input
+          id="registerInviteCode"
+          name="inviteCode"
+          class="form-input"
+          type="text"
+          placeholder="填邀请码注册，双方各得 50 积分"
+          autocomplete="off"
+          style="text-transform: uppercase;" />
+      </div>
+      <div class="form-error" id="registerErr" role="alert" aria-live="polite"></div>
+      <button type="submit" class="btn btn-primary form-submit-btn">创建账号</button>
+      <div class="form-switch">
+        已经有账号？<button type="button" id="gotoLoginLink">去登录</button>
+      </div>
+      <div class="form-tips">
+        ✅ 注册即自动登录；密码采用<strong> PBKDF2-SHA256（10 万次迭代）</strong>加盐哈希，
+        不以明文存储。
+      </div>
+    </form>
+
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="copy">© <span id="yearNow"></span> HireMe AI 面试助手</div>
+    <div class="copy">账号数据保存在本机 · 可随时删除</div>
+  </div>
+</footer>
+
+<!-- Toast 容器 -->
+<div class="toast-wrap" id="toastWrap" role="status" aria-live="polite"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,4494 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>我的控制台 · 即答侠 AI 面试助手</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <!-- Tailwind CSS 用于 Copilot/Mock/Resume 面板样式 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* ============ 控制台专属布局样式 ============ */
+
+      /* 页面整体：flex 布局，左侧固定导航 */
+      .console-layout {
+        display: flex;
+        min-height: 100vh;
+        background: var(--bg-page);
+      }
+
+      /* ---------- 左侧导航栏 ---------- */
+      .console-sidebar {
+        width: 240px;
+        background: var(--bg-elevated);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .sidebar-brand {
+        padding: 20px 20px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+      }
+
+      .sidebar-brand .brand-mark {
+        width: 36px;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+        border-radius: 10px;
+        background: var(--accent-gradient);
+        color: #fff;
+        font-weight: 800;
+      }
+
+      .sidebar-brand .brand-name {
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+
+      .sidebar-brand .brand-icon {
+        margin-left: auto;
+        font-size: 18px;
+        color: var(--text-tertiary);
+        cursor: pointer;
+        transition: color 0.2s;
+      }
+
+      .sidebar-brand .brand-icon:hover {
+        color: var(--text-primary);
+      }
+
+      .sidebar-menu {
+        flex: 1;
+        padding: 12px 10px;
+        overflow-y: auto;
+      }
+
+      .sidebar-menu::-webkit-scrollbar {
+        width: 4px;
+      }
+
+      .sidebar-menu::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      .sidebar-menu::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 2px;
+      }
+
+      .menu-group {
+        margin-bottom: 4px;
+      }
+
+      .menu-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 9px 12px;
+        border-radius: 8px;
+        color: var(--text-secondary);
+        font-size: 14px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        text-decoration: none;
+        position: relative;
+        margin-bottom: 2px;
+      }
+
+      .menu-item:hover {
+        background: var(--bg-card);
+        color: var(--text-primary);
+        text-decoration: none;
+      }
+
+      .menu-item.active {
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 500;
+      }
+
+      .menu-item .menu-icon {
+        font-size: 17px;
+        width: 20px;
+        text-align: center;
+        flex-shrink: 0;
+      }
+
+      .menu-item .menu-text {
+        flex: 1;
+      }
+
+      .menu-item .badge {
+        padding: 2px 7px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 600;
+        line-height: 1;
+      }
+
+      .badge.hot {
+        background: rgba(239, 68, 68, 0.15);
+        color: #ef4444;
+      }
+      .badge.new {
+        background: rgba(34, 197, 94, 0.15);
+        color: #22c55e;
+      }
+      .badge.double {
+        background: rgba(245, 158, 11, 0.15);
+        color: #f59e0b;
+      }
+      .badge.earn {
+        background: rgba(99, 102, 241, 0.15);
+        color: #818cf8;
+      }
+
+      .sidebar-footer {
+        padding: 12px 10px;
+        border-top: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+
+      .sidebar-user {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+        border-radius: 10px;
+        margin-bottom: 4px;
+      }
+
+      .sidebar-user .avatar {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: var(--accent-gradient);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        color: #fff;
+        font-size: 14px;
+        flex-shrink: 0;
+      }
+
+      .sidebar-user .user-info {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .sidebar-user .user-name {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .sidebar-user .user-email {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .logout-menu-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 9px 12px;
+        border-radius: 8px;
+        color: var(--text-secondary);
+        font-size: 14px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        border: none;
+        background: transparent;
+        width: 100%;
+        font-family: inherit;
+      }
+
+      .logout-menu-item:hover {
+        background: rgba(239, 68, 68, 0.1);
+        color: #ef4444;
+      }
+
+      .logout-menu-item .menu-icon {
+        font-size: 17px;
+        width: 20px;
+        text-align: center;
+      }
+
+      /* ---------- 主内容区 ---------- */
+      .console-main {
+        flex: 1;
+        margin-left: 240px;
+        padding: 24px 32px 80px;
+        min-height: 100vh;
+      }
+
+      .main-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 24px;
+      }
+
+      .welcome-section h1 {
+        font-size: 24px;
+        font-weight: 700;
+        margin: 0 0 6px;
+        color: var(--text-primary);
+      }
+
+      .welcome-section .plan-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        color: var(--text-secondary);
+      }
+
+      .plan-badge {
+        padding: 2px 10px;
+        border-radius: 6px;
+        background: var(--bg-card);
+        color: var(--text-secondary);
+        font-weight: 600;
+        font-size: 12px;
+        border: 1px solid var(--border);
+      }
+
+      .upgrade-link {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 500;
+      }
+
+      .upgrade-link:hover {
+        text-decoration: underline;
+      }
+
+      .credits-section {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .credits-display {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 14px;
+        color: var(--text-secondary);
+      }
+
+      .credits-display .icon {
+        font-size: 18px;
+      }
+
+      .credits-display .amount {
+        font-size: 26px;
+        font-weight: 800;
+        background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .credits-actions {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .credits-tag {
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      .credits-tag.today {
+        background: var(--bg-card);
+        color: var(--text-secondary);
+        border: 1px solid var(--border);
+      }
+
+      .credits-tag.streak {
+        background: rgba(251, 146, 60, 0.15);
+        color: #fb923c;
+      }
+
+      .credits-link {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 500;
+        padding: 4px 10px;
+      }
+
+      .credits-link:hover {
+        text-decoration: underline;
+      }
+
+      /* ---------- 签到进度条 ---------- */
+      .checkin-section {
+        margin-bottom: 28px;
+      }
+
+      .checkin-bar {
+        display: flex;
+        align-items: center;
+        position: relative;
+        padding: 0 4px;
+      }
+
+      .checkin-dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--border);
+        border: 2px solid var(--bg-page);
+        transition: all 0.3s;
+        flex-shrink: 0;
+        position: relative;
+        z-index: 1;
+      }
+
+      .checkin-dot.checked {
+        background: var(--success);
+        border-color: var(--bg-page);
+      }
+
+      .checkin-dot.current {
+        background: var(--accent);
+        border-color: var(--bg-page);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+      }
+
+      .checkin-segment {
+        flex: 1;
+        height: 2px;
+        background: var(--border);
+        position: relative;
+        min-width: 20px;
+      }
+
+      .checkin-segment.filled {
+        background: var(--accent);
+      }
+
+      .checkin-rewards {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 10px;
+        padding: 0 4px;
+      }
+
+      .checkin-reward {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        flex: 1;
+        text-align: center;
+      }
+
+      .checkin-reward .day-label {
+        font-size: 11px;
+        color: var(--text-tertiary);
+      }
+
+      .checkin-reward .reward-amount {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+
+      .checkin-reward .reward-amount.done {
+        color: var(--success);
+      }
+
+      .checkin-reward:last-child {
+        flex: 0;
+      }
+
+      .checkin-progress-info {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 8px;
+      }
+
+      .checkin-progress-info .progress-text {
+        font-size: 12px;
+        color: var(--text-tertiary);
+      }
+
+      /* 签到按钮 */
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        padding: 6px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          opacity 0.2s,
+          transform 0.1s;
+      }
+      .btn-primary:hover {
+        opacity: 0.9;
+      }
+      .btn-primary:active {
+        transform: scale(0.97);
+      }
+      .btn-primary:disabled {
+        background: var(--border);
+        cursor: not-allowed;
+        opacity: 1;
+      }
+      .btn-primary.btn-sm {
+        padding: 6px 14px;
+        font-size: 12px;
+      }
+
+      /* ---------- 数据统计卡片 ---------- */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin-bottom: 28px;
+      }
+
+      .stat-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 20px;
+        transition: all 0.2s;
+      }
+
+      .stat-card:hover {
+        border-color: var(--border-active);
+        transform: translateY(-1px);
+      }
+
+      .stat-card .stat-label {
+        font-size: 14px;
+        color: var(--text-secondary);
+        margin-bottom: 12px;
+      }
+
+      .stat-card .stat-value {
+        font-size: 32px;
+        font-weight: 800;
+        color: var(--text-primary);
+        line-height: 1;
+        display: flex;
+        align-items: baseline;
+      }
+
+      .stat-card .stat-value .unit {
+        font-size: 16px;
+        color: var(--text-tertiary);
+        margin-left: 4px;
+        font-weight: 500;
+      }
+
+      /* ---------- 区域标题 ---------- */
+      .section-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0 0 14px;
+      }
+
+      /* ---------- 快捷操作 ---------- */
+      .quick-actions {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin-bottom: 28px;
+      }
+
+      .action-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 20px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        cursor: pointer;
+        transition: all 0.2s;
+        text-decoration: none;
+        color: inherit;
+      }
+
+      .action-card:hover {
+        border-color: var(--border-active);
+        transform: translateY(-1px);
+      }
+
+      .action-icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        flex-shrink: 0;
+      }
+
+      .action-icon.blue {
+        background: rgba(59, 130, 246, 0.15);
+      }
+      .action-icon.purple {
+        background: rgba(139, 92, 246, 0.15);
+      }
+      .action-icon.orange {
+        background: rgba(251, 146, 60, 0.15);
+      }
+
+      .action-info {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .action-info .action-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 3px;
+      }
+
+      .action-info .action-desc {
+        font-size: 12px;
+        color: var(--text-tertiary);
+      }
+
+      .action-arrow {
+        font-size: 16px;
+        color: var(--text-tertiary);
+        flex-shrink: 0;
+      }
+
+      /* ---------- 最近活动 ---------- */
+      .recent-section {
+        margin-bottom: 28px;
+      }
+
+      .activity-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .activity-item {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px 18px;
+        transition: all 0.2s;
+      }
+
+      .activity-item:hover {
+        border-color: var(--border-active);
+      }
+
+      .activity-icon {
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        background: var(--bg-elevated);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        flex-shrink: 0;
+      }
+
+      .activity-info {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .activity-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 3px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .activity-meta {
+        font-size: 12px;
+        color: var(--text-tertiary);
+      }
+
+      .activity-count {
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--accent);
+        margin-right: 12px;
+        flex-shrink: 0;
+      }
+
+      .activity-date {
+        font-size: 13px;
+        color: var(--text-tertiary);
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+
+      .activity-empty {
+        text-align: center;
+        padding: 40px;
+        color: var(--text-tertiary);
+      }
+
+      /* ---------- 邀请好友卡片 ---------- */
+      .invite-card {
+        background: linear-gradient(
+          135deg,
+          rgba(99, 102, 241, 0.08) 0%,
+          rgba(59, 130, 246, 0.08) 100%
+        );
+        border: 1px solid rgba(99, 102, 241, 0.25);
+        border-radius: 14px;
+        padding: 20px 22px;
+      }
+
+      .invite-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 16px;
+      }
+
+      .invite-icon-lg {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        background: rgba(99, 102, 241, 0.2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        flex-shrink: 0;
+      }
+
+      .invite-header-info {
+        flex: 1;
+        min-width: 0;
+      }
+      .invite-title-lg {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+      }
+      .invite-desc-lg {
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+
+      .invite-code-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+
+      .invite-code-box {
+        flex: 1;
+        min-width: 200px;
+        /* 修复：暗色背景下纯白半透明 + 浅色数字对比度极低 → 改为深灰底（与 invite-card 保持统一，对比度 ≥4.5:1） */
+        background: rgba(30, 32, 45, 0.65);
+        border: 1px dashed rgba(99, 102, 241, 0.5);
+        border-radius: 8px;
+        padding: 8px 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .invite-code-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        white-space: nowrap;
+      }
+      .invite-code-value {
+        font-size: 18px;
+        font-weight: 700;
+        color: #818cf8;
+        letter-spacing: 1.5px;
+        font-family: "Courier New", monospace;
+      }
+
+      /* 轮廓按钮 */
+      .btn-outline {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        padding: 6px 14px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .btn-outline:hover {
+        background: rgba(99, 102, 241, 0.08);
+      }
+      .btn-outline:active {
+        transform: scale(0.97);
+      }
+
+      .invite-stats-row {
+        display: flex;
+        gap: 24px;
+        margin-bottom: 16px;
+        padding: 12px 16px;
+        /* 修复：半透明白底会让深色主题下数字颜色显得"糊" → 改深灰底，保证数字可读性 */
+        background: rgba(30, 32, 45, 0.65);
+        border-radius: 8px;
+        border: 1px solid rgba(99, 102, 241, 0.2);
+      }
+
+      .invite-stat {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .invite-stat .stat-num {
+        font-size: 22px;
+        font-weight: 800;
+        /* 修复：原 --accent 在深色半透明白底上对比度不够 → 用更明亮的蓝紫色 + 白描边，同时保证暗色/浅色底都能看清 */
+        color: #a5b4fc;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+      }
+      /* 修复：stat-label 原 text-tertiary (#9aa4b2) 在深灰卡片上对比度不足 → 升级到 text-secondary */
+      .invite-stat .stat-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-top: 2px;
+      }
+
+      .invite-records-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 10px;
+      }
+      .invite-records-empty {
+        font-size: 13px;
+        color: var(--text-tertiary);
+        text-align: center;
+        padding: 16px 0;
+      }
+      .invite-records-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .invite-record-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        /* 修复：邀请记录项同样半透明白底对比度不足 → 改深灰底，与统计行保持一致 */
+        background: rgba(30, 32, 45, 0.65);
+        border: 1px solid rgba(99, 102, 241, 0.15);
+        border-radius: 6px;
+        font-size: 13px;
+      }
+      .invite-record-item .invitee-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .invite-record-item .invitee-email {
+        color: var(--text-secondary);
+      }
+      .invite-record-item .reward-badge {
+        background: rgba(34, 197, 94, 0.15);
+        color: #16a34a;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 4px;
+      }
+      .invite-record-item .invite-date {
+        font-size: 12px;
+        color: var(--text-tertiary);
+      }
+
+      /* ---------- 面板通用样式 ---------- */
+      .panel {
+        display: block;
+      }
+      .panel.hidden {
+        display: none;
+      }
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 16px;
+      }
+      .panel-title {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+
+      /* ---------- 数据表格 ---------- */
+      .data-table-wrap {
+        background: var(--bg-card);
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid var(--border-light);
+      }
+      .data-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      .data-table thead {
+        background: rgba(99, 102, 241, 0.06);
+      }
+      .data-table th {
+        padding: 10px 14px;
+        text-align: left;
+        font-weight: 600;
+        color: var(--text-secondary);
+        border-bottom: 1px solid var(--border-light);
+        white-space: nowrap;
+      }
+      .data-table td {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border-light);
+        color: var(--text-primary);
+      }
+      .data-table tbody tr:hover {
+        background: rgba(99, 102, 241, 0.04);
+      }
+      .data-table .table-empty {
+        text-align: center;
+        color: var(--text-tertiary);
+        padding: 28px 0;
+      }
+      /* 流水变动金额正负色 */
+      .flow-delta.positive {
+        color: #16a34a;
+        font-weight: 600;
+      }
+      .flow-delta.negative {
+        color: #dc2626;
+        font-weight: 600;
+      }
+      /* 订单状态徽章 */
+      .status-badge {
+        padding: 2px 10px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .status-badge.paid {
+        background: rgba(34, 197, 94, 0.15);
+        color: #16a34a;
+      }
+      .status-badge.pending {
+        background: rgba(245, 158, 11, 0.15);
+        color: #d97706;
+      }
+      .status-badge.cancelled {
+        background: rgba(107, 114, 128, 0.15);
+        color: #6b7280;
+      }
+
+      /* ---------- 分页 ---------- */
+      .pagination {
+        display: flex;
+        gap: 6px;
+        justify-content: center;
+        margin-top: 14px;
+      }
+      .pagination button {
+        border: 1px solid var(--border-light);
+        background: var(--bg-card);
+        color: var(--text-secondary);
+        border-radius: 6px;
+        padding: 4px 12px;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .pagination button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .pagination button.active {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      .pagination button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      /* ---------- 个人设置 ---------- */
+      .settings-section {
+        background: var(--bg-card);
+        border-radius: 12px;
+        padding: 20px 24px;
+        margin-bottom: 16px;
+        border: 1px solid var(--border-light);
+      }
+      .settings-section-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 14px;
+      }
+      .settings-form {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-width: 400px;
+      }
+      .settings-form .form-label {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin-bottom: 4px;
+        display: block;
+      }
+      .settings-form .form-input {
+        width: 100%;
+        padding: 8px 12px;
+        border: 1px solid var(--border-light);
+        border-radius: 6px;
+        font-size: 14px;
+        color: var(--text-primary);
+        background: var(--bg-card);
+      }
+      .settings-form .form-input:disabled {
+        color: var(--text-tertiary);
+        background: rgba(0, 0, 0, 0.03);
+      }
+
+      /* ---------- 浮动按钮 ---------- */
+      .floating-btn {
+        position: fixed;
+        right: 28px;
+        bottom: 28px;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        background: var(--accent-gradient);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 22px;
+        cursor: pointer;
+        box-shadow: 0 6px 24px rgba(59, 130, 246, 0.4);
+        transition: all 0.2s;
+        border: none;
+        color: #fff;
+        z-index: 100;
+      }
+
+      .floating-btn:hover {
+        transform: scale(1.08);
+      }
+
+      /* ---------- 未登录提示 ---------- */
+      .console-unauth {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 20px;
+        text-align: center;
+        padding: 60px 24px;
+        background: var(--bg-page);
+      }
+
+      .console-unauth .lock-icon {
+        font-size: 64px;
+      }
+
+      .console-unauth h2 {
+        font-size: 24px;
+        margin: 0;
+        color: var(--text-primary);
+      }
+
+      .console-unauth p {
+        color: var(--text-secondary);
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .console-unauth .btn-group {
+        display: flex;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      /* ---------- 响应式适配 ---------- */
+      @media (max-width: 1024px) {
+        .stats-grid,
+        .quick-actions {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      @media (max-width: 768px) {
+        .console-layout {
+          flex-direction: column;
+        }
+
+        .console-sidebar {
+          width: 100%;
+          height: auto;
+          position: relative;
+        }
+
+        .console-main {
+          margin-left: 0;
+          padding: 16px;
+        }
+
+        .stats-grid,
+        .quick-actions {
+          grid-template-columns: 1fr;
+        }
+
+        .main-header {
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        .credits-section {
+          flex-wrap: wrap;
+        }
+      }
+
+      /* ============================================================
+   充值积分面板专用样式（与参考站 UI 对齐）
+   ============================================================ */
+      /* 顶部返回按钮（整页式） */
+      .credit-back-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--text-secondary);
+        font-size: 14px;
+        margin-bottom: 16px;
+        text-decoration: none;
+        transition: color 0.15s;
+      }
+      .credit-back-link:hover {
+        color: var(--accent);
+      }
+
+      /* 购买积分页标题 */
+      .credit-page-title {
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 6px;
+      }
+      .credit-page-subtitle {
+        color: var(--text-tertiary);
+        font-size: 14px;
+        margin-bottom: 28px;
+      }
+
+      /* 当前余额条（参考图：暗色渐变黄边+大数字） */
+      .credit-balance-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 20px 28px;
+        border-radius: 14px;
+        background: linear-gradient(90deg, #2a1f0d 0%, #1f1a0d 100%);
+        border: 1px solid rgba(234, 179, 8, 0.35);
+        margin-bottom: 24px;
+      }
+      .credit-balance-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: #facc15;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .credit-balance-label .bal-icon {
+        width: 26px;
+        height: 26px;
+        border-radius: 999px;
+        background: rgba(234, 179, 8, 0.15);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+      }
+      .credit-balance-num {
+        font-size: 30px;
+        font-weight: 800;
+        color: #facc15;
+        letter-spacing: 0.5px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* 积分说明卡片 */
+      .credit-note-box {
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: 14px;
+        padding: 18px 20px;
+        margin-bottom: 28px;
+      }
+      .credit-note-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-primary);
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+      .credit-note-head .note-icon {
+        color: var(--accent);
+      }
+      .credit-note-text {
+        color: var(--text-secondary);
+        font-size: 13px;
+        line-height: 1.7;
+        margin-bottom: 10px;
+      }
+      .credit-price-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        color: var(--text-secondary);
+        font-size: 13px;
+      }
+      .credit-price-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .credit-price-item .ppi-icon {
+        color: var(--text-tertiary);
+      }
+      .credit-price-item strong {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+
+      /* 套餐选择标题 */
+      .credit-section-title {
+        color: var(--text-primary);
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 14px;
+      }
+
+      /* 套餐卡片列表 */
+      .credit-pack-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-bottom: 20px;
+      }
+      .credit-pack-card {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px 22px;
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: 14px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .credit-pack-card:hover {
+        border-color: var(--accent-soft);
+        transform: translateY(-1px);
+      }
+      .credit-pack-card.selected {
+        border-color: var(--accent);
+        background: rgba(139, 92, 246, 0.05);
+        box-shadow: 0 6px 18px rgba(139, 92, 246, 0.12);
+      }
+      /* 左侧：图标 + 积分 + 赠送徽章 */
+      .credit-pack-left {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        flex: 1;
+        min-width: 0;
+      }
+      .credit-pack-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        background: linear-gradient(
+          135deg,
+          rgba(99, 102, 241, 0.15),
+          rgba(139, 92, 246, 0.15)
+        );
+        color: var(--accent);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        flex-shrink: 0;
+      }
+      .credit-pack-main {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+      .credit-pack-main .title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        color: var(--text-primary);
+        font-size: 16px;
+        font-weight: 700;
+      }
+      .credit-pack-main .bonus-tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: rgba(234, 179, 8, 0.15);
+        color: #ca8a04;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      /* 右侧：价格 + 单价 + 徽章 */
+      .credit-pack-right {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+        flex-shrink: 0;
+      }
+      .credit-pack-price {
+        color: var(--text-primary);
+        font-size: 18px;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+      }
+      .credit-pack-price .yuan {
+        color: var(--accent);
+      }
+      .credit-pack-unit {
+        color: var(--text-tertiary);
+        font-size: 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .credit-pack-unit .save-tag {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: rgba(34, 197, 94, 0.15);
+        color: #16a34a;
+        font-weight: 600;
+        font-size: 10px;
+      }
+      /* 卡右上角徽章：热门 / 最划算 / 首充 */
+      .credit-pack-corner {
+        position: absolute;
+        top: -1px;
+        right: 18px;
+        transform: translateY(-50%);
+        padding: 3px 9px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #fff;
+        border-radius: 999px;
+        letter-spacing: 0.3px;
+      }
+      .credit-pack-corner.hot {
+        background: linear-gradient(135deg, #a855f7, #6366f1);
+      }
+      .credit-pack-corner.best {
+        background: linear-gradient(135deg, #f59e0b, #ef4444);
+      }
+      .credit-pack-corner.first {
+        background: linear-gradient(135deg, #10b981, #6366f1);
+      }
+
+      /* 立即支付按钮（底部 sticky） */
+      .credit-pay-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 22px;
+        border-radius: 14px;
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        margin-top: 16px;
+      }
+      .credit-pay-bar .pay-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .credit-pay-bar .pay-summary .label {
+        color: var(--text-tertiary);
+        font-size: 12px;
+      }
+      .credit-pay-bar .pay-summary .value {
+        color: var(--text-primary);
+        font-size: 18px;
+        font-weight: 800;
+      }
+      .credit-pay-bar .pay-summary .value .accent {
+        color: var(--accent);
+      }
+      .credit-pay-btn {
+        padding: 10px 24px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        box-shadow: 0 6px 14px rgba(99, 102, 241, 0.28);
+      }
+      .credit-pay-btn:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(99, 102, 241, 0.36);
+      }
+      .credit-pay-btn:disabled {
+        background: var(--bg-muted);
+        color: var(--text-tertiary);
+        box-shadow: none;
+        cursor: not-allowed;
+      }
+
+      /* ============================================================
+   面试 Copilot 页面样式（参考图 2026-08-29 新版）
+   ============================================================ */
+
+      /* ---------- 公共：板块标题 ---------- */
+      .cop-section-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin: 0 0 14px;
+      }
+
+      .cop-section-head {
+        margin: 22px 2px 18px;
+      }
+      .cop-main-title {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: 0.2px;
+        color: #fff;
+      }
+      .cop-main-sub {
+        margin: 6px 0 0;
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+
+      /* ---------- 3 步引导条（与图一致：深灰+青绿圆角卡） ---------- */
+      .cop-guide {
+        border-radius: 14px;
+        background: linear-gradient(
+          180deg,
+          rgba(6, 78, 59, 0.35) 0%,
+          rgba(16, 185, 129, 0.12) 100%
+        );
+        border: 1px solid rgba(16, 185, 129, 0.35);
+        padding: 18px 20px;
+        position: relative;
+      }
+      .cop-guide-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .cop-guide-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: #ecfeff;
+        font-size: 15px;
+        font-weight: 700;
+      }
+      .cop-guide-title-ico {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(16, 185, 129, 0.22);
+      }
+      .cop-guide-close {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.6);
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+      }
+      .cop-guide-close:hover {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .cop-guide-subtitle {
+        margin-top: 4px;
+        font-size: 12px;
+        color: rgba(209, 250, 229, 0.85);
+      }
+
+      .cop-guide-progress {
+        margin: 14px 0 12px;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      .cop-guide-progress-bar {
+        width: 0%; /* L1327：进度初始=0%，由 JS 依据完成步/3 动态设置（完成 n 步 → n/3*100） */
+        height: 100%;
+        background: linear-gradient(90deg, #10b981, #34d399);
+        border-radius: inherit;
+        transition: width 0.35s ease;
+      }
+
+      /* 3 步手风琴：完成态(🟢) / 未完成态(⚫) 两套样式 —— 由 JS 动态加 .done / .pending 类，
+   不再在 HTML 上写死颜色 */
+      .cop-steps {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .cop-step {
+        border-radius: 10px;
+        padding: 10px 14px;
+        border: 1px solid;
+        transition:
+          background 0.2s,
+          border-color 0.2s;
+      }
+      .cop-step.done {
+        background: rgba(6, 78, 59, 0.35);
+        border-color: rgba(16, 185, 129, 0.28);
+      }
+      .cop-step.done .cop-step-title {
+        color: #ecfdf5;
+      }
+      .cop-step.done .cop-step-desc {
+        color: rgba(209, 250, 229, 0.85);
+      }
+      .cop-step.pending {
+        background: rgba(30, 41, 59, 0.45);
+        border-color: rgba(148, 163, 184, 0.25);
+      }
+      .cop-step.pending .cop-step-title {
+        color: rgba(226, 232, 240, 0.92);
+      }
+      .cop-step.pending .cop-step-desc {
+        color: rgba(148, 163, 184, 0.8);
+      }
+      .cop-step summary {
+        list-style: none;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .cop-step summary::-webkit-details-marker {
+        display: none;
+      }
+      .cop-step-ico {
+        font-size: 14px;
+      }
+      .cop-step-ico.done {
+        filter: drop-shadow(0 1px 1px rgba(16, 185, 129, 0.35));
+      }
+      .cop-step-text {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .cop-step-title {
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .cop-step-desc {
+        font-size: 12px;
+      }
+      .cop-step-chevron {
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 14px;
+        transition: transform 0.15s;
+      }
+      .cop-step[open] .cop-step-chevron {
+        transform: rotate(180deg);
+      }
+      .cop-step-body {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px dashed rgba(148, 163, 184, 0.22);
+        font-size: 13px;
+        line-height: 1.75;
+        color: rgba(209, 250, 229, 0.92);
+      }
+      .cop-step.pending .cop-step-body {
+        color: rgba(226, 232, 240, 0.9);
+      }
+
+      .cop-guide-foot {
+        margin-top: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .cop-guide-congrats {
+        font-size: 12px;
+        color: #fde68a;
+        font-weight: 600;
+      }
+      .cop-guide-hide-btn {
+        background: transparent;
+        color: rgba(255, 255, 255, 0.7);
+        border: none;
+        font-size: 12px;
+        cursor: pointer;
+        padding: 4px 10px;
+        border-radius: 6px;
+      }
+      .cop-guide-hide-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+      }
+
+      /* ---------- 网页版 Copilot 大卡片 ---------- */
+      .cop-web-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: 16px;
+        padding: 18px 20px 22px;
+        margin-bottom: 28px;
+      }
+      .cop-web-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .cop-web-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+      .cop-web-dot {
+        width: 8px;
+        height: 8px;
+        background: #34d399;
+        box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.22);
+        border-radius: 50%;
+      }
+      .cop-web-beta {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        background: #1d4ed8;
+        color: #dbeafe;
+        padding: 1px 7px;
+        border-radius: 6px;
+        letter-spacing: 0.4px;
+      }
+      .cop-web-lang {
+        background: var(--bg-muted);
+        color: var(--text-primary);
+        border: 1px solid var(--border-light);
+        border-radius: 8px;
+        padding: 5px 10px;
+        font-size: 12px;
+      }
+
+      .cop-web-warn {
+        background: rgba(251, 191, 36, 0.08);
+        border: 1px solid rgba(251, 191, 36, 0.35);
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 12px;
+        line-height: 1.75;
+        color: #fde68a;
+        margin-bottom: 18px;
+      }
+
+      /* 添加简历/JD 折叠 */
+      .cop-resume-toggle {
+        background: transparent;
+        border-radius: 10px;
+        padding: 2px 0;
+        margin-bottom: 14px;
+      }
+      .cop-resume-toggle summary {
+        list-style: none;
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--text-secondary);
+        font-weight: 600;
+        user-select: none;
+        padding: 4px 0;
+      }
+      .cop-resume-toggle summary::-webkit-details-marker {
+        display: none;
+      }
+      .cop-resume-sub {
+        color: var(--text-tertiary);
+        font-weight: 500;
+        margin-left: 4px;
+      }
+
+      /* 简历 + JD 并列两栏（与你截图一致） */
+      .cop-resume-grid {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .cop-textarea {
+        width: 100%;
+        min-height: 210px;
+        resize: vertical;
+        border-radius: 10px;
+        background: var(--bg-muted);
+        border: 1px solid var(--border-light);
+        color: var(--text-primary);
+        font-size: 13px;
+        line-height: 1.75;
+        padding: 12px 14px;
+        outline: none;
+        transition: border-color 0.15s;
+        white-space: pre;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+      }
+      .cop-textarea::placeholder {
+        color: var(--text-tertiary);
+      }
+      .cop-textarea:focus {
+        border-color: rgba(99, 102, 241, 0.6);
+      }
+      .cop-resume-left .cop-textarea {
+        border-top-left-radius: 12px;
+        border-bottom-left-radius: 12px;
+      }
+      .cop-resume-right .cop-textarea {
+        border-top-right-radius: 12px;
+        border-bottom-right-radius: 12px;
+      }
+
+      /* 中间：麦区 + 开始按钮 */
+      .cop-center {
+        margin-top: 18px;
+      }
+      .cop-mic-area {
+        padding: 18px 12px 14px;
+        text-align: center;
+        border-radius: 12px;
+        background: radial-gradient(
+          50% 50% at 50% 10%,
+          rgba(99, 102, 241, 0.15) 0%,
+          transparent 70%
+        );
+      }
+      .cop-mic-ico {
+        font-size: 22px;
+        color: rgba(226, 232, 240, 0.92);
+        margin-bottom: 10px;
+      }
+      .cop-mic-text-main {
+        color: var(--text-secondary);
+        font-size: 13px;
+        margin: 0 0 4px;
+      }
+      .cop-mic-text-sub {
+        color: var(--text-tertiary);
+        font-size: 12px;
+        margin: 0;
+      }
+      .cop-center-bottom {
+        display: flex;
+        justify-content: flex-start;
+        padding: 12px 4px 4px;
+      }
+      .cop-start-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 26px;
+        border-radius: 999px;
+        border: none;
+        color: #fff;
+        font-size: 14px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        box-shadow: 0 10px 28px rgba(99, 102, 241, 0.35);
+        cursor: pointer;
+        transition:
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .cop-start-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 32px rgba(139, 92, 246, 0.45);
+      }
+      .cop-start-btn:active {
+        transform: translateY(0);
+      }
+      .cop-start-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.22);
+      }
+
+      /* ---------- 下载桌面端 4 卡片 + v0.3.44 ---------- */
+      .cop-download-section {
+        margin-bottom: 26px;
+      }
+      .cop-download-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+      .cop-dl-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: 12px;
+        padding: 12px 14px;
+        cursor: pointer;
+        transition:
+          border-color 0.15s,
+          background 0.15s,
+          transform 0.12s;
+        text-align: left;
+        color: inherit;
+      }
+      .cop-dl-card:hover {
+        border-color: rgba(99, 102, 241, 0.55);
+        background: rgba(99, 102, 241, 0.08);
+        transform: translateY(-1px);
+      }
+      .cop-dl-left {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+      .cop-dl-ico {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        flex-shrink: 0;
+      }
+      .cop-ico-apple {
+        background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+      }
+      .cop-ico-windows {
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+      }
+      .cop-dl-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .cop-dl-name {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+        white-space: nowrap;
+      }
+      .cop-dl-desc {
+        font-size: 12px;
+        color: var(--text-tertiary);
+      }
+      .cop-dl-dl {
+        color: var(--text-tertiary);
+        font-size: 18px;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+      .cop-dl-version {
+        margin-top: 10px;
+        font-size: 11px;
+        color: var(--text-tertiary);
+        letter-spacing: 0.4px;
+      }
+
+      /* macOS 安装提示（黄色边框） */
+      .cop-mac-install {
+        margin-top: 14px;
+        background: rgba(146, 64, 14, 0.12);
+        border: 1px solid rgba(245, 158, 11, 0.35);
+        border-radius: 10px;
+        padding: 12px 14px;
+      }
+      .cop-mac-title {
+        color: #fdba74;
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      .cop-mac-list {
+        color: rgba(254, 243, 199, 0.9);
+        font-size: 12px;
+        line-height: 1.85;
+        white-space: pre-line;
+      }
+
+      /* ---------- 桌面端核心能力 4 格（2x2） ---------- */
+      .cop-core {
+        margin-bottom: 22px;
+      }
+      .cop-core-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 14px;
+      }
+      .cop-core-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: 12px;
+        padding: 16px 16px 18px;
+      }
+      .cop-core-ico {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 10px;
+        color: #fff;
+      }
+      /* 4 个核心能力图标对应颜色（与你截图一一对应） */
+      .cop-core-ico-audio {
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      } /* 紫蓝显示器 */
+      .cop-core-ico-ghost {
+        background: linear-gradient(135deg, #3b82f6, #2563eb);
+      } /* 蓝色盾牌 */
+      .cop-core-ico-fast {
+        background: linear-gradient(135deg, #10b981, #059669);
+      } /* 绿色闪电 */
+      .cop-core-ico-platform {
+        background: linear-gradient(135deg, #6366f1, #4f46e5);
+      } /* 深紫地球 */
+
+      .cop-core-name {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+      }
+      .cop-core-desc {
+        font-size: 12px;
+        line-height: 1.75;
+        color: var(--text-secondary);
+      }
+
+      /* ---------- 为什么需要桌面端 ---------- */
+      .cop-why {
+        background: rgba(30, 41, 59, 0.45);
+        border: 1px solid rgba(99, 102, 241, 0.28);
+        border-radius: 14px;
+        padding: 18px 20px 20px;
+      }
+      .cop-why-title {
+        color: #93c5fd;
+        font-size: 16px;
+        font-weight: 800;
+        margin: 0 0 6px;
+      }
+      .cop-why-sub {
+        margin: 0 0 16px;
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+      .cop-why-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        padding: 10px 0;
+        border-bottom: 1px dashed rgba(148, 163, 184, 0.18);
+      }
+      .cop-why-item:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+      .cop-why-item:first-child {
+        padding-top: 0;
+      }
+      .cop-why-ico {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(99, 102, 241, 0.18);
+        color: #fff;
+        font-size: 14px;
+        flex-shrink: 0;
+      }
+      .cop-why-ico-audio {
+        background: rgba(52, 211, 153, 0.18);
+      }
+      .cop-why-ico-ghost {
+        background: rgba(59, 130, 246, 0.18);
+      }
+      .cop-why-ico-standalone {
+        background: rgba(251, 191, 36, 0.16);
+      }
+
+      .cop-why-item-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 3px;
+      }
+      .cop-why-item-desc {
+        font-size: 12px;
+        line-height: 1.75;
+        color: var(--text-secondary);
+      }
+
+      /* ---------- 响应式：< 960px ---------- */
+      @media (max-width: 960px) {
+        .cop-resume-grid {
+          grid-template-columns: 1fr;
+        }
+        .cop-download-grid {
+          grid-template-columns: 1fr;
+        }
+        .cop-core-grid {
+          grid-template-columns: 1fr;
+        }
+        .cop-guide-foot {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+
+      /* ============================================================
+   邀请有礼：overview 横条 + invitePanel 全套样式
+   ============================================================ */
+
+      /* ---------- 总览页精简版邀请横条（图 1） ---------- */
+      .invite-promo-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px 22px;
+        margin-bottom: 24px;
+        border-radius: 14px;
+        background: linear-gradient(
+          90deg,
+          rgba(99, 102, 241, 0.14) 0%,
+          rgba(139, 92, 246, 0.18) 50%,
+          rgba(217, 70, 239, 0.1) 100%
+        );
+        border: 1px solid rgba(139, 92, 246, 0.35);
+        text-decoration: none;
+        color: inherit;
+        transition: all 0.2s ease;
+        cursor: pointer;
+      }
+      .invite-promo-bar:hover {
+        transform: translateY(-1px);
+        border-color: rgba(167, 139, 250, 0.6);
+        box-shadow: 0 8px 22px rgba(139, 92, 246, 0.2);
+      }
+      .ipb-left {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-width: 0;
+        flex: 1;
+      }
+      .ipb-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        background: linear-gradient(
+          135deg,
+          rgba(59, 130, 246, 0.3),
+          rgba(139, 92, 246, 0.3)
+        );
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        flex-shrink: 0;
+      }
+      .ipb-text {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+      .ipb-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: #e0e7ff; /* 提亮的蓝紫主色标题 */
+      }
+      .ipb-desc {
+        font-size: 13px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+      .ipb-arrow {
+        color: var(--text-tertiary);
+        font-size: 18px;
+        font-weight: 600;
+        transition:
+          transform 0.2s,
+          color 0.2s;
+      }
+      .invite-promo-bar:hover .ipb-arrow {
+        color: var(--accent);
+        transform: translateX(3px);
+      }
+
+      /* ---------- invitePanel 顶部 Hero ---------- */
+      .invite-hero {
+        padding: 22px 26px;
+        border-radius: 16px;
+        background: linear-gradient(
+          120deg,
+          rgba(59, 130, 246, 0.22) 0%,
+          rgba(139, 92, 246, 0.22) 45%,
+          rgba(217, 70, 239, 0.16) 100%
+        );
+        border: 1px solid rgba(139, 92, 246, 0.32);
+        margin-bottom: 24px;
+      }
+      .invite-hero-title {
+        margin: 0 0 8px;
+        font-size: 28px;
+        font-weight: 800;
+        color: #fff;
+        letter-spacing: 0.3px;
+      }
+      .invite-hero-desc {
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.7;
+        color: #c7d2fe;
+      }
+      .invite-hero-desc strong {
+        color: #fff;
+        font-weight: 700;
+      }
+
+      /* ---------- 推广余额条（深绿渐变） ---------- */
+      .promo-balance {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 22px 26px;
+        border-radius: 16px;
+        background: linear-gradient(
+          90deg,
+          rgba(6, 95, 70, 0.55) 0%,
+          rgba(5, 150, 105, 0.38) 100%
+        );
+        border: 1px solid rgba(16, 185, 129, 0.35);
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+      }
+      .pb-label {
+        color: #a7f3d0;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .pb-amount {
+        color: #fff;
+        font-size: 34px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+        font-variant-numeric: tabular-nums;
+      }
+      .pb-amount .pb-yuan {
+        font-size: 22px;
+        font-weight: 700;
+        color: #6ee7b7;
+        margin-right: 2px;
+      }
+      .pb-tip {
+        color: rgba(167, 243, 208, 0.85);
+        font-size: 12px;
+        margin-top: 4px;
+      }
+      .pb-right {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .pb-stat {
+        color: #d1fae5;
+        font-size: 13px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+      .pb-stat strong {
+        color: #fff;
+        font-weight: 700;
+      }
+      .pbsi {
+        opacity: 0.9;
+      }
+
+      /* ---------- 校园大使条 ---------- */
+      .campus-ambassador-bar {
+        padding: 12px 18px;
+        border-radius: 12px;
+        background: linear-gradient(
+          90deg,
+          rgba(139, 92, 246, 0.18) 0%,
+          rgba(168, 85, 247, 0.14) 100%
+        );
+        border: 1px solid rgba(168, 85, 247, 0.3);
+        color: #e9d5ff;
+        font-size: 14px;
+        margin-bottom: 24px;
+      }
+      .campus-ambassador-bar strong {
+        color: #fff;
+        font-weight: 700;
+        margin-left: 2px;
+      }
+
+      /* ---------- 三步奖励卡片 ---------- */
+      .invite-steps-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+      .invite-step {
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: 14px;
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .step-register {
+        border-color: rgba(148, 163, 184, 0.35);
+      }
+      .step-desktop {
+        border-color: rgba(59, 130, 246, 0.45);
+        background: linear-gradient(
+          180deg,
+          rgba(59, 130, 246, 0.08),
+          var(--bg-card)
+        );
+      }
+      .step-paid {
+        border-color: rgba(245, 158, 11, 0.45);
+        background: linear-gradient(
+          180deg,
+          rgba(245, 158, 11, 0.08),
+          var(--bg-card)
+        );
+      }
+      .step-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-primary);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .step-ico {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        background: rgba(148, 163, 184, 0.15);
+      }
+      .step-desktop .step-ico {
+        background: rgba(59, 130, 246, 0.18);
+      }
+      .step-paid .step-ico {
+        background: rgba(245, 158, 11, 0.18);
+      }
+
+      .step-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 13px;
+      }
+      .sl-label {
+        color: var(--text-tertiary);
+      }
+      .sl-val {
+        color: var(--text-primary);
+        font-weight: 600;
+      }
+      .sl-val.earn {
+        color: #10b981;
+        font-weight: 700;
+      }
+      .sl-val.earn.gold {
+        color: #f59e0b;
+        font-weight: 800;
+      }
+
+      /* ---------- 邀请码大卡片 ---------- */
+      .invite-code-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: 16px;
+        padding: 22px 24px;
+        margin-bottom: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .icc-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .icc-title {
+        font-size: 14px;
+        color: var(--text-secondary);
+        font-weight: 600;
+      }
+      .icc-copy-link {
+        background: transparent;
+        color: #60a5fa;
+        border: 1px solid rgba(96, 165, 250, 0.35);
+        border-radius: 8px;
+        padding: 4px 12px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .icc-copy-link:hover {
+        background: rgba(96, 165, 250, 0.12);
+      }
+
+      .icc-code {
+        font-size: 28px;
+        font-weight: 800;
+        color: #fff;
+        letter-spacing: 2.5px;
+        font-family: "Courier New", monospace;
+        padding: 8px 2px;
+      }
+
+      .icc-share-preview-label {
+        font-size: 13px;
+        color: var(--text-secondary);
+        font-weight: 600;
+        margin-top: 6px;
+      }
+      .icc-share-preview {
+        font-size: 13px;
+        line-height: 1.7;
+        color: var(--text-secondary);
+        background: var(--bg-muted);
+        border: 1px solid var(--border-light);
+        border-radius: 10px;
+        padding: 12px 14px;
+      }
+      .icc-share-link {
+        color: #93c5fd;
+        font-family: "Courier New", monospace;
+      }
+
+      .icc-copy-share-btn {
+        padding: 12px 14px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        color: #fff;
+        font-size: 14px;
+        font-weight: 700;
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        box-shadow: 0 6px 18px rgba(59, 130, 246, 0.28);
+      }
+      .icc-copy-share-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 22px rgba(99, 102, 241, 0.34);
+      }
+
+      /* ---------- 用途条 / 反作弊声明 / 底部提示 ---------- */
+      .promo-usage-bar {
+        padding: 12px 18px;
+        border-radius: 10px;
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.25);
+        color: #6ee7b7;
+        font-size: 13px;
+        margin-bottom: 14px;
+      }
+      .promo-warn-bar {
+        padding: 12px 16px;
+        border-radius: 10px;
+        background: rgba(251, 191, 36, 0.06);
+        border: 1px solid rgba(251, 191, 36, 0.2);
+        color: #fcd34d;
+        font-size: 12px;
+        line-height: 1.7;
+        margin-bottom: 28px;
+      }
+      .promo-footer-tip {
+        margin-top: 22px;
+        padding: 12px 16px;
+        border-radius: 10px;
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        color: var(--text-secondary);
+        font-size: 13px;
+        text-align: center;
+      }
+
+      /* ---------- 邀请记录（invitePanel 完整版） ---------- */
+      .invite-records-full {
+        margin-bottom: 10px;
+      }
+      .irf-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin: 0 0 14px;
+      }
+      #invitePanelRecordsList {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .irf-record {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 12px 16px;
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: 10px;
+        flex-wrap: wrap;
+      }
+      .irf-record-left {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .irf-email {
+        color: var(--text-primary);
+        font-size: 14px;
+        font-weight: 600;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+      }
+      .irf-date {
+        color: var(--text-tertiary);
+        font-size: 12px;
+      }
+
+      .irf-badge {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+      .irf-badge.register {
+        color: #60a5fa;
+        background: rgba(96, 165, 250, 0.12);
+        border: 1px solid rgba(96, 165, 250, 0.28);
+      }
+      .irf-badge.desktop {
+        color: #34d399;
+        background: rgba(52, 211, 153, 0.12);
+        border: 1px solid rgba(52, 211, 153, 0.28);
+      }
+      .irf-badge.paid {
+        color: #34d399;
+        background: rgba(52, 211, 153, 0.14);
+        border: 1px solid rgba(52, 211, 153, 0.32);
+        font-weight: 800;
+      }
+      .irf-badge.risk {
+        color: #fbbf24;
+        background: rgba(251, 191, 36, 0.12);
+        border: 1px solid rgba(251, 191, 36, 0.32);
+      }
+
+      /* ---------- 邀请有礼响应式（< 960px） ---------- */
+      @media (max-width: 960px) {
+        .invite-steps-grid {
+          grid-template-columns: 1fr;
+        }
+        .promo-balance {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+        .pb-right {
+          width: 100%;
+        }
+        .pb-stat {
+          justify-content: flex-start;
+        }
+        .ipb-text .ipb-desc {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ============ 页面主体 ============ -->
+    <div class="console-layout" id="consoleLayout">
+      <!-- 未登录：整页提示 -->
+      <div class="console-unauth hidden" id="consoleUnauth">
+        <div class="lock-icon">🔒</div>
+        <h2>请先登录后再使用控制台</h2>
+        <p>购买积分、查看消费明细、管理订单都需要账号身份。</p>
+        <div class="btn-group">
+          <a href="/login.html?tab=login" class="btn btn-primary">登录</a>
+          <a href="/login.html?tab=register" class="btn btn-ghost"
+            >注册新账号</a
+          >
+          <a href="/index.html" class="btn btn-ghost">返回首页</a>
+        </div>
+      </div>
+
+      <!-- 已登录：主布局 -->
+      <div id="consoleMain" class="hidden" style="display: flex; flex: 1">
+        <!-- 左侧导航栏 -->
+        <aside class="console-sidebar">
+          <div class="sidebar-brand">
+            <div class="brand-mark">H</div>
+            <span class="brand-name">即答侠</span>
+            <span class="brand-icon" title="通知">🔔</span>
+          </div>
+
+          <nav class="sidebar-menu" id="sidebarMenu">
+            <div class="menu-group">
+              <a href="#" class="menu-item active" data-menu="overview">
+                <span class="menu-icon">📊</span>
+                <span class="menu-text">总览</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="copilot">
+                <span class="menu-icon">💼</span>
+                <span class="menu-text">面试 Copilot</span>
+                <span class="badge hot">Hot</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="sessions">
+                <span class="menu-icon">📋</span>
+                <span class="menu-text">面试记录</span>
+                <span
+                  class="badge"
+                  id="menuSessionsBadge"
+                  style="
+                    display: none;
+                    background: var(--bg-badge-earn, #10b981);
+                    color: #fff;
+                    font-size: 10px;
+                    padding: 0 5px;
+                    border-radius: 999px;
+                  "
+                  >0</span
+                >
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="mock">
+                <span class="menu-icon">🎯</span>
+                <span class="menu-text">模拟面试</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="resume">
+                <span class="menu-icon">📄</span>
+                <span class="menu-text">简历优化</span>
+              </a>
+            </div>
+
+            <!-- 充值积分菜单（L1022-1027：位于简历优化下方） -->
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="credit">
+                <span class="menu-icon">💳</span>
+                <span class="menu-text">充值积分</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="orders">
+                <span class="menu-icon">💎</span>
+                <span class="menu-text">我的订单</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="flows">
+                <span class="menu-icon">💰</span>
+                <span class="menu-text">积分明细</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="invite">
+                <span class="menu-icon">👥</span>
+                <span class="menu-text">邀请有礼</span>
+                <span class="badge earn">赚</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="redeem">
+                <span class="menu-icon">🎁</span>
+                <span class="menu-text">兑换码</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="news">
+                <span class="menu-icon">💡</span>
+                <span class="menu-text">职场爆料</span>
+                <span class="badge double">双休</span>
+              </a>
+            </div>
+
+            <div class="menu-group">
+              <a href="#" class="menu-item" data-menu="settings">
+                <span class="menu-icon">⚙️</span>
+                <span class="menu-text">个人设置</span>
+              </a>
+            </div>
+          </nav>
+
+          <div class="sidebar-footer">
+            <div class="sidebar-user">
+              <div class="avatar" id="userAvatar">U</div>
+              <div class="user-info">
+                <div class="user-name" id="userName">用户</div>
+                <div class="user-email" id="userEmail">user@example.com</div>
+              </div>
+            </div>
+            <button class="logout-menu-item" id="logoutBtn" type="button">
+              <span class="menu-icon">🚪</span>
+              <span>退出登录</span>
+            </button>
+          </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="console-main">
+          <!-- ========== 总览面板（默认显示） ========== -->
+          <div class="panel" id="overviewPanel">
+            <!-- 顶部欢迎信息和积分 -->
+            <div class="main-header">
+              <div class="welcome-section">
+                <h1 id="welcomeTitle">欢迎回来 👋</h1>
+                <div class="plan-info">
+                  <span>当前方案：</span>
+                  <span class="plan-badge" id="planBadge">Free</span>
+                  <a href="/pricing.html" class="upgrade-link">升级方案 →</a>
+                </div>
+              </div>
+              <div class="credits-section">
+                <div class="credits-display">
+                  <span class="icon">💎</span>
+                  <span class="amount" id="creditsAmount">0</span>
+                  <span>积分</span>
+                </div>
+                <div class="credits-actions">
+                  <span class="credits-tag today" id="todayCreditTag"
+                    >今日已领取</span
+                  >
+                  <span class="credits-tag streak" id="streakTag"
+                    >🔥 1天连签</span
+                  >
+                  <a href="#" class="credits-link" id="buyCreditsLink"
+                    >购买积分 →</a
+                  >
+                </div>
+              </div>
+            </div>
+
+            <!-- 签到进度条 -->
+            <div class="checkin-section">
+              <div class="checkin-bar" id="checkinBar">
+                <!-- 签到进度由 JS 渲染 -->
+              </div>
+              <div class="checkin-rewards" id="checkinRewards">
+                <!-- 签到标签由 JS 渲染 -->
+              </div>
+              <div class="checkin-progress-info">
+                <span class="progress-text" id="checkinProgressText"
+                  >今日签到可获得 +50 积分</span
+                >
+                <button
+                  class="btn-primary btn-sm"
+                  id="checkinBtn"
+                  onclick="window.HireMeDoCheckin && window.HireMeDoCheckin()"
+                >
+                  立即签到
+                </button>
+              </div>
+            </div>
+
+            <!-- 数据统计卡片 -->
+            <div class="stats-grid">
+              <div class="stat-card">
+                <div class="stat-label">模拟面试剩余</div>
+                <div class="stat-value">
+                  <span id="mockRemaining">0</span><span class="unit">/ 0</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Copilot 剩余</div>
+                <div class="stat-value">
+                  <span id="copilotRemaining">0</span
+                  ><span class="unit">/ 0</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">简历分析剩余</div>
+                <div class="stat-value">
+                  <span id="resumeRemaining">0</span
+                  ><span class="unit">/ 0</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 快捷操作 -->
+            <h3 class="section-title">快捷操作</h3>
+            <div class="quick-actions">
+              <a href="#" class="action-card" data-action="download">
+                <div class="action-icon blue">💻</div>
+                <div class="action-info">
+                  <div class="action-title">下载 Copilot 桌面端</div>
+                  <div class="action-desc">获取桌面端，开启真实面试辅助</div>
+                </div>
+                <span class="action-arrow">→</span>
+              </a>
+              <a href="#" class="action-card" data-action="mock">
+                <div class="action-icon purple">🎯</div>
+                <div class="action-info">
+                  <div class="action-title">开始模拟面试</div>
+                  <div class="action-desc">AI 面试官 24 小时陪练</div>
+                </div>
+                <span class="action-arrow">→</span>
+              </a>
+              <a href="#" class="action-card" data-action="resume">
+                <div class="action-icon orange">📄</div>
+                <div class="action-info">
+                  <div class="action-title">优化简历</div>
+                  <div class="action-desc">ATS 评分 + 关键词优化</div>
+                </div>
+                <span class="action-arrow">→</span>
+              </a>
+            </div>
+
+            <!-- 最近活动 -->
+            <div class="recent-section">
+              <h3 class="section-title">最近活动</h3>
+              <div class="activity-list" id="activityList">
+                <!-- 活动列表由 JS 渲染 -->
+              </div>
+            </div>
+
+            <!-- 邀请好友（总览精简横条版 → 点击跳转侧边栏「邀请有礼」完整页） -->
+            <a href="#" id="invitePromoBar" class="invite-promo-bar">
+              <div class="ipb-left">
+                <span class="ipb-icon">🎁</span>
+                <div class="ipb-text">
+                  <div class="ipb-title">邀请好友，赚取积分</div>
+                  <div class="ipb-desc">
+                    好友注册得 50 积分，好友用桌面端你得 3 天 Pro +
+                    ¥5，好友付费得 25% 佣金
+                  </div>
+                </div>
+              </div>
+              <span class="ipb-arrow">→</span>
+            </a>
+          </div>
+          <!-- /overviewPanel -->
+
+          <!-- ========== 邀请有礼面板（从侧边栏 invite 菜单或总览横条进入） ========== -->
+          <div class="panel hidden" id="invitePanel">
+            <!-- Hero 标题区（与你图 2 顶部一致：邀请好友，赚 Pro 会员 + 现金） -->
+            <div class="invite-hero">
+              <h1 class="invite-hero-title">邀请好友，赚 Pro 会员 + 现金</h1>
+              <p class="invite-hero-desc">
+                好友注册得 <strong>50 积分</strong>；好友启动桌面端得
+                <strong>3 天 Pro + ¥5 余额</strong>；好友付费得
+                <strong>30% 佣金</strong>。每人最多推荐不限人（校园大使）。
+              </p>
+            </div>
+
+            <!-- 推广余额条（深绿渐变） -->
+            <div class="promo-balance">
+              <div class="pb-left">
+                <div class="pb-label">💰 推广余额</div>
+                <div class="pb-amount">
+                  <span class="pb-yuan">¥</span
+                  ><span id="promoBalanceAmt">0</span>
+                </div>
+                <div class="pb-tip">邀请好友赚余额，可在购买时抵扣</div>
+              </div>
+              <div class="pb-right">
+                <div class="pb-stat">
+                  <span class="pbsi">👥</span>已邀请
+                  <strong id="promoInvited">0</strong>/∞ 人
+                </div>
+                <div class="pb-stat">
+                  <span class="pbsi">🧾</span
+                  ><strong id="promoPaid">0</strong> 人付费
+                </div>
+                <div class="pb-stat">
+                  <span class="pbsi">💜</span>赚了
+                  <strong id="promoEarned">0</strong> 积分
+                </div>
+              </div>
+            </div>
+
+            <!-- 校园大使条（紫棕渐变横条） -->
+            <div class="campus-ambassador-bar">
+              🎓 <strong>校园大使</strong> — 无限推荐 + 30% 佣金
+            </div>
+
+            <!-- 三步奖励：注册 / 桌面端 / 付费 -->
+            <div class="invite-steps-grid">
+              <div class="invite-step step-register">
+                <div class="step-title">
+                  <span class="step-ico">👤</span>① 好友注册
+                </div>
+                <div class="step-line">
+                  <span class="sl-label">你获得</span
+                  ><span class="sl-val earn">+50 积分</span>
+                </div>
+                <div class="step-line">
+                  <span class="sl-label">好友获得</span
+                  ><span class="sl-val earn">3 天试用</span>
+                </div>
+              </div>
+              <div class="invite-step step-desktop">
+                <div class="step-title">
+                  <span class="step-ico">💻</span>② 好友用桌面端
+                </div>
+                <div class="step-line">
+                  <span class="sl-label">你获得</span
+                  ><span class="sl-val earn">3 天 Pro + ¥5 余额</span>
+                </div>
+                <div class="step-line">
+                  <span class="sl-label">条件</span
+                  ><span class="sl-val">好友需实际启动 Copilot</span>
+                </div>
+              </div>
+              <div class="invite-step step-paid">
+                <div class="step-title">
+                  <span class="step-ico">💳</span>③ 好友付费
+                </div>
+                <div class="step-line">
+                  <span class="sl-label">你获得</span
+                  ><span class="sl-val earn gold">30% 佣金</span>
+                </div>
+                <div class="step-line">
+                  <span class="sl-label">备注</span
+                  ><span class="sl-val">校园大使专属佣金率</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 邀请码 + 分享文案预览 + 一键复制 -->
+            <div class="invite-code-card">
+              <div class="icc-header">
+                <div class="icc-title">你的邀请码</div>
+                <button
+                  class="icc-copy-link"
+                  id="invitePanelCopyCodeBtn"
+                  type="button"
+                >
+                  📋 复制
+                </button>
+              </div>
+              <div class="icc-code" id="invitePanelCodeValue">加载中...</div>
+
+              <div class="icc-share-preview-label">分享文案预览：</div>
+              <div class="icc-share-preview" id="invitePanelSharePreview">
+                面试总被问到不会的问题？试试即答侠 — AI
+                实时面试助手，面试时在旁边悄悄提词，模拟面试、简历优化一站搞定，用了之后面试通过率直接翻倍
+                🚀
+                <br />
+                🔗
+                <span class="icc-share-link" id="invitePanelShareLink"
+                  >https://interviewasssistant.com/zh/register?ref=YOURCODE</span
+                >
+              </div>
+
+              <button
+                class="icc-copy-share-btn"
+                id="invitePanelCopyShareBtn"
+                type="button"
+              >
+                🔗 一键复制分享文案
+              </button>
+            </div>
+
+            <!-- 推广余额用途条 -->
+            <div class="promo-usage-bar">
+              💰 推广余额用途：购买套餐时自动抵扣（显示折后价）
+            </div>
+
+            <!-- 反作弊声明 -->
+            <div class="promo-warn-bar">
+              ⚠️
+              推荐奖励仅限真实推荐。如发现批量注册、虚假推荐等违规行为，我们保留追回已发放奖励（包括
+              Pro 会员天数和推广余额）的权利。
+            </div>
+
+            <!-- 邀请记录 -->
+            <div class="invite-records-full">
+              <h3 class="irf-title">邀请记录</h3>
+              <div class="invite-records-list" id="invitePanelRecordsList">
+                <!-- JS 动态渲染：邮箱 + 日期 + 状态徽章（已注册 / 已用桌面端 / 已付费 / 检测到风险） -->
+                <div class="invite-records-empty">
+                  暂无邀请记录，快去邀请好友吧
+                </div>
+              </div>
+            </div>
+
+            <!-- 底部奖励说明 -->
+            <div class="promo-footer-tip">
+              👇 推荐奖励实时发放。如有疑问请通过客服反馈。
+            </div>
+          </div>
+          <!-- /invitePanel -->
+
+          <!-- ========== 面试 Copilot 面板 ========== -->
+          <div class="panel hidden" id="copilotPanel">
+            <!-- ===== 3 步引导条（可折叠 / 隐藏引导） ===== -->
+            <div id="copilotGuide" class="cop-guide">
+              <!-- 头部：标题 + 关闭 X -->
+              <div class="cop-guide-head">
+                <div class="cop-guide-title">
+                  <span class="cop-guide-title-ico">🖥️</span>
+                  3 步开始你的第一场 AI 面试辅助
+                </div>
+                <button
+                  type="button"
+                  id="copilotGuideClose"
+                  class="cop-guide-close"
+                  title="隐藏引导"
+                >
+                  ×
+                </button>
+              </div>
+              <div class="cop-guide-subtitle">
+                按步骤操作，约 2 分钟即可完成
+              </div>
+
+              <!-- 进度条 -->
+              <div class="cop-guide-progress">
+                <div
+                  class="cop-guide-progress-bar"
+                  id="copGuideProgressBar"
+                ></div>
+              </div>
+
+              <!-- 3 步折叠手风琴 -->
+              <div class="cop-steps">
+                <!-- 第 1 步 -->
+                <details class="cop-step open" open>
+                  <summary>
+                    <span class="cop-step-ico done">🟢</span>
+                    <div class="cop-step-text">
+                      <div class="cop-step-title">第一步：下载桌面端</div>
+                      <div class="cop-step-desc">
+                        面试必备 — 能抓取系统音频，屏幕共享中不可见
+                      </div>
+                    </div>
+                    <span class="cop-step-chevron">⌄</span>
+                  </summary>
+                  <div class="cop-step-body">
+                    下载并安装即答侠桌面端（Win / macOS
+                    双端）。桌面端是完整体验的前提：只有桌面端可以抓取系统音频，避免外放收音；只有桌面端的「隐身浮窗」在屏幕共享中不可见。
+                  </div>
+                </details>
+
+                <!-- 第 2 步 -->
+                <details class="cop-step open" open>
+                  <summary>
+                    <span class="cop-step-ico done">🟢</span>
+                    <div class="cop-step-text">
+                      <div class="cop-step-title">第二步：打开应用并登录</div>
+                      <div class="cop-step-desc">用网站账号登录即可</div>
+                    </div>
+                    <span class="cop-step-chevron">⌄</span>
+                  </summary>
+                  <div class="cop-step-body">
+                    打开桌面端，使用与本控制台一致的邮箱/手机号 +
+                    密码登录；登录后会自动同步你购买的套餐、积分与 Copilot
+                    额度。
+                  </div>
+                </details>
+
+                <!-- 第 3 步 -->
+                <details class="cop-step">
+                  <summary>
+                    <span class="cop-step-ico">⚫</span>
+                    <div class="cop-step-text">
+                      <div class="cop-step-title">第三步：开始面试</div>
+                      <div class="cop-step-desc">进入会议，打开 Copilot</div>
+                    </div>
+                    <span class="cop-step-chevron">⌄</span>
+                  </summary>
+                  <div class="cop-step-body">
+                    打开腾讯会议 / 飞书 / 钉钉 / Zoom / Teams 任一会议 →
+                    在桌面端开启 Copilot → 粘贴 JD（可选）→
+                    点击「开始」即可实时识别并生成答题建议。
+                  </div>
+                </details>
+              </div>
+
+              <!-- 底部：恭喜 + 隐藏引导按钮 -->
+              <div class="cop-guide-foot">
+                <span class="cop-guide-congrats"
+                  >🎉 准备就绪！祝你面试顺利！</span
+                >
+                <button
+                  type="button"
+                  id="copilotHideGuideBtn"
+                  class="cop-guide-hide-btn"
+                >
+                  隐藏引导
+                </button>
+              </div>
+            </div>
+
+            <!-- ===== Interview Copilot 主标题 ===== -->
+            <div class="cop-section-head">
+              <h1 class="cop-main-title">Interview Copilot</h1>
+              <p class="cop-main-sub">
+                AI 实时面试辅助 — 网页版直接用，或下载桌面端获得完整体验
+              </p>
+            </div>
+
+            <!-- ===== 网页版 Copilot 卡片 ===== -->
+            <div class="cop-web-card" id="copilotWebCard">
+              <!-- 卡片头：小圆点 + 标题 + Beta 徽章 + 语言选择 -->
+              <div class="cop-web-head">
+                <div class="cop-web-title">
+                  <span class="cop-web-dot"></span>
+                  <span>网页版 Copilot</span>
+                  <span class="cop-web-beta">Beta</span>
+                </div>
+                <select class="cop-web-lang" id="copilotLangSelect">
+                  <option value="zh">中文</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+
+              <!-- 警告横幅（图里黄色边框条） -->
+              <div class="cop-web-warn">
+                ⚠️
+                网页版为简易体验版，仅支持麦克风输入，无法捕获系统音频。建议外放音箱（不戴耳机）以采集面试官声音。如需完整体验（系统音频
+                + 隐身浮窗），请下载桌面端。
+              </div>
+
+              <!-- 添加简历/JD 折叠条 -->
+              <details class="cop-resume-toggle" id="copilotResumeToggle">
+                <summary>
+                  ⌄ 添加简历 / JD
+                  <span class="cop-resume-sub">（可选，提升 AI 回答质量）</span>
+                </summary>
+                <div class="cop-resume-grid">
+                  <!-- 左：简历（从你截图看就是 textarea 预填了一份简历） -->
+                  <div class="cop-resume-left">
+                    <textarea
+                      id="copilotResumeText"
+                      rows="8"
+                      spellcheck="false"
+                      placeholder="粘贴或输入你的简历内容…"
+                      class="cop-textarea"
+                    ></textarea>
+                  </div>
+                  <!-- 右：JD -->
+                  <div class="cop-resume-right">
+                    <textarea
+                      id="copilotJD"
+                      rows="8"
+                      spellcheck="false"
+                      placeholder="粘贴职位描述 (JD) ..."
+                      class="cop-textarea"
+                    ></textarea>
+                  </div>
+                </div>
+              </details>
+
+              <!-- 中部：麦克风说明 + 开始按钮（紫蓝渐变圆形按钮，与你截图一致） -->
+              <div class="cop-center">
+                <div class="cop-mic-area">
+                  <div class="cop-mic-ico">🎙️</div>
+                  <p class="cop-mic-text-main">
+                    点击「开始」后，对话实时转写并生成 AI 回答建议
+                  </p>
+                  <p class="cop-mic-text-sub">
+                    建议外放（不戴耳机），以同时采集面试官声音
+                  </p>
+                </div>
+
+                <div class="cop-center-bottom">
+                  <button
+                    type="button"
+                    id="copilotStartBtn"
+                    class="cop-start-btn"
+                  >
+                    <span class="cop-start-dot"></span>
+                    开始
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===== 下载桌面端：4 卡片（macOS Apple Silicon / Intel / Windows x64）+ v0.3.44 ===== -->
+            <div class="cop-download-section">
+              <h3 class="cop-section-title">下载桌面端</h3>
+
+              <div class="cop-download-grid">
+                <!-- macOS (Apple Silicon) -->
+                <button class="cop-dl-card" type="button" data-os="mac-silicon">
+                  <div class="cop-dl-left">
+                    <span class="cop-dl-ico cop-ico-apple">
+                      <svg
+                        viewBox="0 0 384 512"
+                        width="22"
+                        height="22"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fill="currentColor"
+                          d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zM238.9 80.3c7.7-9.4 12.8-22.5 11.4-35.7-11.1.5-24.4 7.3-32.2 16.8-7 8.6-13.1 22.5-11.4 35 12.3 1.2 24.4-6 32.2-16.1z"
+                        />
+                      </svg>
+                    </span>
+                    <div class="cop-dl-text">
+                      <div class="cop-dl-name">macOS (Apple Silicon)</div>
+                      <div class="cop-dl-desc">M1/M2/M3/M4 · 144 MB</div>
+                    </div>
+                  </div>
+                  <span class="cop-dl-dl">⬇</span>
+                </button>
+
+                <!-- macOS (Intel) -->
+                <button class="cop-dl-card" type="button" data-os="mac-intel">
+                  <div class="cop-dl-left">
+                    <span class="cop-dl-ico cop-ico-apple">
+                      <svg
+                        viewBox="0 0 384 512"
+                        width="22"
+                        height="22"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fill="currentColor"
+                          d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zM238.9 80.3c7.7-9.4 12.8-22.5 11.4-35.7-11.1.5-24.4 7.3-32.2 16.8-7 8.6-13.1 22.5-11.4 35 12.3 1.2 24.4-6 32.2-16.1z"
+                        />
+                      </svg>
+                    </span>
+                    <div class="cop-dl-text">
+                      <div class="cop-dl-name">macOS (Intel)</div>
+                      <div class="cop-dl-desc">Intel Mac · 150 MB</div>
+                    </div>
+                  </div>
+                  <span class="cop-dl-dl">⬇</span>
+                </button>
+
+                <!-- Windows x64 -->
+                <button class="cop-dl-card" type="button" data-os="windows">
+                  <div class="cop-dl-left">
+                    <span class="cop-dl-ico cop-ico-windows">
+                      <svg
+                        viewBox="0 0 448 512"
+                        width="22"
+                        height="22"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fill="currentColor"
+                          d="M0 93.9l176 24.5v183.1H0V93.9zm192 26.8l256-35.7v218.8H192V120.7zM0 320.4h176v177.3L0 472.5V320.4zm192 0h256v152.1L192 497V320.4z"
+                        />
+                      </svg>
+                    </span>
+                    <div class="cop-dl-text">
+                      <div class="cop-dl-name">Windows (x64)</div>
+                      <div class="cop-dl-desc">Windows 10+ · 113 MB</div>
+                    </div>
+                  </div>
+                  <span class="cop-dl-dl">⬇</span>
+                </button>
+              </div>
+
+              <div class="cop-dl-version">v0.3.44</div>
+
+              <!-- macOS 安装提示（黄棕边框，与截图一致） -->
+              <div class="cop-mac-install">
+                <div class="cop-mac-title">🍎 macOS 安装提示</div>
+                <div class="cop-mac-list">
+                  1. 打开下载的 .dmg 文件 → 将「HireMe
+                  AI」拖入「应用程序」文件夹。 2. 若 macOS
+                  提示无法打开：前往「系统设置 → 隐私与安全性」→
+                  划到底部「安全性」→
+                  将「允许从以下位置下载的应用程序」改为「App Store
+                  和被认可的开发者」→ 下方会显示被阻止的 HireMe
+                  AI，点击「仍要打开」即可。
+                </div>
+              </div>
+            </div>
+
+            <!-- ===== 桌面端核心能力 4 格（2×2，自定义 SVG 图标） ===== -->
+            <div class="cop-core">
+              <h3 class="cop-section-title">桌面端核心能力</h3>
+              <div class="cop-core-grid">
+                <!-- 系统音频捕获（紫色显示器图标） -->
+                <div class="cop-core-card">
+                  <span class="cop-core-ico cop-core-ico-audio">
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="18"
+                      height="18"
+                      aria-hidden="true"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <rect x="2" y="3" width="20" height="14" rx="2" />
+                      <path d="M8 21h8M12 17v4" />
+                      <path
+                        d="M7 10l2 2 5-5"
+                        stroke-linejoin="round"
+                        fill="none"
+                      />
+                    </svg>
+                  </span>
+                  <div class="cop-core-name">系统音频捕获</div>
+                  <div class="cop-core-desc">
+                    直接获取会议软件中面试官的声音，不混入麦克风输入
+                  </div>
+                </div>
+
+                <!-- 隐身模式（蓝色盾牌图标） -->
+                <div class="cop-core-card">
+                  <span class="cop-core-ico cop-core-ico-ghost">
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="18"
+                      height="18"
+                      aria-hidden="true"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path
+                        d="M12 2l8 4v6c0 5-3.5 9.5-8 10-4.5-.5-8-5-8-10V6l8-4z"
+                      />
+                    </svg>
+                  </span>
+                  <div class="cop-core-name">隐身模式</div>
+                  <div class="cop-core-desc">
+                    窗口不会出现在屏幕共享和录屏中，面试官完全看不到
+                  </div>
+                </div>
+
+                <!-- 秒级响应（绿色闪电图标） -->
+                <div class="cop-core-card">
+                  <span class="cop-core-ico cop-core-ico-fast">
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="18"
+                      height="18"
+                      aria-hidden="true"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <polygon
+                        points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"
+                      />
+                    </svg>
+                  </span>
+                  <div class="cop-core-name">秒级响应</div>
+                  <div class="cop-core-desc">
+                    问题识别到建议显示 < 1 秒（约 700ms），AI 流式生成即时可读
+                  </div>
+                </div>
+
+                <!-- 全平台支持（深紫网格地球图标） -->
+                <div class="cop-core-card">
+                  <span class="cop-core-ico cop-core-ico-platform">
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="18"
+                      height="18"
+                      aria-hidden="true"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path
+                        d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"
+                      />
+                    </svg>
+                  </span>
+                  <div class="cop-core-name">全平台支持</div>
+                  <div class="cop-core-desc">
+                    腾讯会议、飞书、钉钉、Zoom、Teams、Google Meet
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===== 为什么需要桌面端（3 条带图标） ===== -->
+            <div class="cop-why">
+              <h3 class="cop-why-title">为什么需要桌面端？</h3>
+              <p class="cop-why-sub">
+                面试 Copilot 需要浏览器无法提供的系统级能力：
+              </p>
+
+              <div class="cop-why-item">
+                <span class="cop-why-ico cop-why-ico-audio">🔊</span>
+                <div>
+                  <div class="cop-why-item-title">系统音频捕获</div>
+                  <div class="cop-why-item-desc">
+                    浏览器无法获取系统音频。桌面端可以直接获取腾讯会议、Zoom、Teams
+                    等软件中面试官的声音，无需外放。
+                  </div>
+                </div>
+              </div>
+
+              <div class="cop-why-item">
+                <span class="cop-why-ico cop-why-ico-ghost">🙈</span>
+                <div>
+                  <div class="cop-why-item-title">隐身窗口</div>
+                  <div class="cop-why-item-desc">
+                    桌面端的隐身浮窗不会出现在屏幕共享和录屏中，面试官完全看不到。浏览器标签页做不到这一点。
+                  </div>
+                </div>
+              </div>
+
+              <div class="cop-why-item">
+                <span class="cop-why-ico cop-why-ico-standalone">🗂️</span>
+                <div>
+                  <div class="cop-why-item-title">独立运行</div>
+                  <div class="cop-why-item-desc">
+                    桌面端作为独立进程运行，不受浏览器标签切换、内存回收的影响，确保面试全程稳定不中断。
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- /copilotPanel -->
+
+          <!-- ========== 模拟面试面板 ========== -->
+          <div class="panel hidden" id="mockPanel">
+            <div class="text-center mb-8">
+              <div
+                class="inline-flex items-center gap-2 bg-green-100 text-green-700 text-xs font-medium px-3 py-1 rounded-full mb-3"
+              >
+                <i class="fa-solid fa-robot"></i>
+                AI 模拟面试
+              </div>
+              <h2 class="text-2xl font-bold text-gray-800 mb-2">
+                选择岗位，开始练习
+              </h2>
+              <p class="text-gray-500 text-sm mb-2">
+                用真实面试场景练习，AI 面试官实时追问，每次都有进步
+              </p>
+              <button
+                class="text-blue-600 hover:text-blue-700 text-xs flex items-center gap-1 mx-auto transition-colors"
+              >
+                <i class="fa-solid fa-arrow-right-arrow-left"></i>
+                切换到旧版（文字模式）
+              </button>
+            </div>
+
+            <!-- 热门岗位 -->
+            <div class="mb-8">
+              <h3
+                class="text-lg font-semibold text-gray-700 mb-4 flex items-center gap-2"
+              >
+                <i class="fa-solid fa-fire text-orange-500"></i>
+                热门岗位
+              </h3>
+              <div id="mockJobList" class="grid grid-cols-3 gap-4 mb-6">
+                <!-- 岗位卡片由 JS 动态生成 -->
+              </div>
+            </div>
+
+            <!-- 自定义岗位 -->
+            <div
+              class="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-5 mb-8 border border-green-100"
+            >
+              <div class="flex items-start gap-4">
+                <div
+                  class="w-12 h-12 rounded-xl bg-green-500 flex items-center justify-center text-white text-xl flex-shrink-0"
+                >
+                  <i class="fa-solid fa-plus"></i>
+                </div>
+                <div class="flex-1">
+                  <h4 class="font-semibold text-gray-800 mb-1">自定义岗位</h4>
+                  <p class="text-xs text-gray-500 mb-3">
+                    列表里没有？输入任意岗位，AI 现场出题
+                  </p>
+                  <div class="flex gap-2">
+                    <input
+                      id="mockCustomJob"
+                      type="text"
+                      placeholder="如：运营总监 / Go 工程师 / UI 设计师"
+                      class="flex-1 border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-green-500"
+                    />
+                    <button
+                      id="mockStartCustomBtn"
+                      class="px-6 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg text-sm font-semibold shadow hover:shadow-md transition-all flex items-center gap-2"
+                    >
+                      <i class="fa-solid fa-play text-xs"></i>
+                      开始练习
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 最近练习 -->
+            <div>
+              <div class="flex items-center justify-between mb-4">
+                <h3
+                  class="text-lg font-semibold text-gray-700 flex items-center gap-2"
+                >
+                  <i class="fa-solid fa-clock text-gray-400"></i>
+                  最近练习
+                </h3>
+                <button
+                  id="mockViewAllBtn"
+                  class="text-sm text-blue-600 hover:text-blue-700 transition-colors flex items-center gap-1"
+                >
+                  查看全部
+                  <i class="fa-solid fa-chevron-right text-xs"></i>
+                </button>
+              </div>
+              <div id="mockHistoryList" class="space-y-3">
+                <!-- 历史记录由 JS 动态生成 -->
+              </div>
+            </div>
+
+            <!-- 底部统计 -->
+            <div class="mt-8 pt-8 border-t border-gray-100">
+              <div class="flex justify-center gap-12">
+                <div class="text-center">
+                  <div class="text-2xl font-bold text-gray-800">1,000+</div>
+                  <div class="text-xs text-gray-500 mt-1">面试题目</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold text-gray-800">9</div>
+                  <div class="text-xs text-gray-500 mt-1">热门岗位</div>
+                </div>
+                <div class="text-center">
+                  <div class="text-2xl font-bold text-gray-800">6</div>
+                  <div class="text-xs text-gray-500 mt-1">评估维度</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 面试对话界面（初始隐藏） -->
+            <div
+              id="mockInterviewUI"
+              class="hidden fixed inset-0 bg-white z-50 flex-col"
+            >
+              <!-- 头部 -->
+              <div
+                class="flex items-center justify-between p-4 border-b border-gray-100"
+              >
+                <div class="flex items-center gap-3">
+                  <button
+                    id="mockExitInterview"
+                    class="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                  >
+                    <i class="fa-solid fa-xmark text-gray-600"></i>
+                  </button>
+                  <h3 id="mockJobTitle" class="font-semibold text-gray-800">
+                    面试对话
+                  </h3>
+                </div>
+                <div class="flex items-center gap-4">
+                  <span id="mockQuestionCount" class="text-sm text-gray-500"
+                    >问题 0/5</span
+                  >
+                  <span id="mockTimer" class="text-sm font-mono text-gray-500"
+                    >00:00</span
+                  >
+                </div>
+              </div>
+
+              <!-- 对话区 -->
+              <div
+                id="mockChatArea"
+                class="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50"
+              >
+                <!-- 对话内容动态生成 -->
+              </div>
+
+              <!-- 输入区 -->
+              <div class="border-t border-gray-100 p-4 bg-white">
+                <div class="flex gap-3">
+                  <button
+                    id="mockMicBtn"
+                    class="w-12 h-12 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 text-white text-lg shadow-md hover:shadow-lg transition-all flex items-center justify-center flex-shrink-0"
+                  >
+                    <i class="fa-solid fa-microphone"></i>
+                  </button>
+                  <textarea
+                    id="mockAnswerInput"
+                    rows="1"
+                    placeholder="说话或输入回答..."
+                    class="flex-1 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-green-500 resize-none"
+                  ></textarea>
+                  <button
+                    id="mockSendBtn"
+                    class="px-5 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors"
+                  >
+                    发送
+                  </button>
+                </div>
+                <p class="text-xs text-gray-400 mt-2 text-center">
+                  按 Enter 发送 · Shift+Enter 换行 · 建议使用麦克风进行语音回答
+                </p>
+              </div>
+            </div>
+          </div>
+          <!-- /mockPanel -->
+
+          <!-- ========== 简历优化面板 ========== -->
+          <div class="panel hidden" id="resumePanel">
+            <div class="text-center mb-8">
+              <div
+                class="inline-flex items-center gap-2 bg-purple-100 text-purple-700 text-xs font-medium px-3 py-1 rounded-full mb-3"
+              >
+                <i class="fa-solid fa-file-alt"></i>
+                AI 简历优化
+              </div>
+              <h2 class="text-2xl font-bold text-gray-800 mb-2">
+                让简历通过率翻倍
+              </h2>
+              <p class="text-gray-500 text-sm">
+                AI 深度分析你的简历，ATS
+                兼容性检测，逐条改写优化，关键词精准匹配目标 JD
+              </p>
+            </div>
+
+            <!-- 简历上传区 -->
+            <div
+              class="bg-gradient-to-b from-purple-50 to-white border-2 border-dashed border-purple-200 rounded-xl p-8 mb-6 text-center hover:border-purple-400 transition-colors cursor-pointer"
+              id="resumeDropZone"
+            >
+              <div
+                class="w-16 h-16 mx-auto bg-purple-100 rounded-xl flex items-center justify-center mb-4"
+              >
+                <i
+                  class="fa-solid fa-cloud-arrow-up text-3xl text-purple-600"
+                ></i>
+              </div>
+              <h3 class="font-semibold text-gray-800 mb-2">上传简历</h3>
+              <p class="text-sm text-gray-500 mb-4">支持 PDF、DOCX、TXT</p>
+              <button
+                id="resumeUploadBtn"
+                class="px-6 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors"
+              >
+                选择文件
+              </button>
+              <input
+                type="file"
+                id="resumeFileInput"
+                accept=".pdf,.doc,.docx,.txt"
+                class="hidden"
+              />
+              <p
+                id="resumeFileName"
+                class="mt-3 text-sm text-purple-600 font-medium hidden"
+              ></p>
+            </div>
+
+            <!-- 或粘贴简历 -->
+            <div class="mb-4">
+              <div class="flex items-center gap-3 mb-3">
+                <div class="flex-1 h-px bg-gray-200"></div>
+                <span class="text-xs text-gray-400">或直接粘贴简历内容</span>
+                <div class="flex-1 h-px bg-gray-200"></div>
+              </div>
+              <textarea
+                id="resumeTextInput"
+                rows="8"
+                placeholder="粘贴你的简历文本内容..."
+                class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-purple-500 resize-none leading-relaxed"
+              ></textarea>
+            </div>
+
+            <!-- JD 输入 -->
+            <div class="mb-6">
+              <div class="flex items-center gap-2 mb-2">
+                <i class="fa-solid fa-bullseye text-purple-500"></i>
+                <label class="text-sm font-medium text-gray-700">
+                  目标职位描述 (JD)
+                  <span
+                    class="ml-2 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-normal"
+                    >强烈建议提供，优化效果翻倍</span
+                  >
+                </label>
+              </div>
+              <textarea
+                id="resumeJDInput"
+                rows="4"
+                placeholder="粘贴目标职位的招聘要求，AI 会从中提取关键词注入你的简历..."
+                class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-purple-500 resize-none"
+              ></textarea>
+            </div>
+
+            <!-- 开始分析按钮 -->
+            <button
+              id="resumeAnalyzeBtn"
+              class="w-full py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl font-semibold text-lg shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
+            >
+              <i class="fa-solid fa-wand-magic-sparkles"></i>
+              开始 AI 分析优化
+            </button>
+
+            <!-- 分析结果区（初始隐藏） -->
+            <div id="resumeResultSection" class="hidden mt-8">
+              <div
+                class="flex items-center gap-3 mb-6 p-4 bg-purple-50 rounded-xl border border-purple-100"
+              >
+                <div
+                  class="w-12 h-12 rounded-full bg-purple-600 flex items-center justify-center text-white text-xl"
+                  id="resumeScoreIcon"
+                >
+                  <i class="fa-solid fa-chart-line"></i>
+                </div>
+                <div class="flex-1">
+                  <div class="text-3xl font-bold text-gray-800">
+                    <span id="resumeScore">0</span
+                    ><span class="text-base text-gray-400">/100</span>
+                  </div>
+                  <div class="text-sm text-gray-500">ATS 兼容性评分</div>
+                </div>
+                <button
+                  id="resumeDownloadBtn"
+                  class="px-4 py-2 bg-white border border-purple-200 text-purple-600 rounded-lg text-sm font-medium hover:bg-purple-50 transition-colors flex items-center gap-2"
+                >
+                  <i class="fa-solid fa-download"></i>
+                  下载优化版
+                </button>
+              </div>
+
+              <div class="grid grid-cols-2 gap-4 mb-6">
+                <!-- 问题列表 -->
+                <div class="bg-red-50 rounded-xl p-4 border border-red-100">
+                  <h4
+                    class="font-semibold text-red-700 mb-3 flex items-center gap-2"
+                  >
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                    需要改进
+                  </h4>
+                  <ul id="resumeIssuesList" class="space-y-2 text-sm">
+                    <!-- 问题项动态生成 -->
+                  </ul>
+                </div>
+                <!-- 亮点 -->
+                <div class="bg-green-50 rounded-xl p-4 border border-green-100">
+                  <h4
+                    class="font-semibold text-green-700 mb-3 flex items-center gap-2"
+                  >
+                    <i class="fa-solid fa-circle-check"></i>
+                    亮点
+                  </h4>
+                  <ul id="resumeHighlightsList" class="space-y-2 text-sm">
+                    <!-- 亮点项动态生成 -->
+                  </ul>
+                </div>
+              </div>
+
+              <!-- 优化建议 -->
+              <div class="bg-white rounded-xl p-5 border border-gray-100">
+                <h4
+                  class="font-semibold text-gray-800 mb-3 flex items-center gap-2"
+                >
+                  <i class="fa-solid fa-lightbulb text-yellow-500"></i>
+                  优化建议
+                </h4>
+                <div
+                  id="resumeSuggestions"
+                  class="space-y-3 text-sm text-gray-600"
+                >
+                  <!-- 建议动态生成 -->
+                </div>
+              </div>
+
+              <!-- 优化前后对比 -->
+              <div class="mt-6 grid grid-cols-2 gap-4">
+                <div class="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                  <h4 class="font-medium text-gray-600 text-sm mb-2">优化前</h4>
+                  <div
+                    id="resumeBeforeText"
+                    class="text-xs text-gray-500 whitespace-pre-wrap max-h-40 overflow-y-auto"
+                  ></div>
+                </div>
+                <div
+                  class="bg-purple-50 rounded-xl p-4 border border-purple-100"
+                >
+                  <h4 class="font-medium text-purple-600 text-sm mb-2">
+                    优化后
+                  </h4>
+                  <div
+                    id="resumeAfterText"
+                    class="text-xs text-gray-700 whitespace-pre-wrap max-h-40 overflow-y-auto"
+                  ></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- /resumePanel -->
+
+          <!-- ========== 面试记录面板（sessionsPanel）：来自桌面端 SQLite /api/db/sessions/* ========== -->
+          <div class="panel hidden" id="sessionsPanel">
+            <!-- 页面顶部：标题 + 状态 -->
+            <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 class="text-2xl font-bold text-gray-800 mb-1">
+                  📋 面试记录
+                </h2>
+                <p class="text-sm text-gray-500">
+                  从桌面端本地 SQLite 读取你的真实面试与 AI 模拟面试记录
+                </p>
+              </div>
+              <div
+                id="sessionsTopStatus"
+                class="text-xs px-3 py-1.5 rounded-full bg-gray-100 text-gray-500"
+              >
+                🔍 正在连接桌面端…
+              </div>
+            </div>
+
+            <!-- 3 条分类徽章条 -->
+            <div class="grid grid-cols-3 gap-3 mb-5">
+              <div
+                class="bg-white rounded-xl border border-gray-100 p-4 shadow-sm flex items-center gap-3"
+              >
+                <div
+                  class="w-11 h-11 rounded-lg bg-gray-50 flex items-center justify-center text-2xl"
+                >
+                  📒
+                </div>
+                <div>
+                  <div class="text-xs text-gray-500">全部记录</div>
+                  <div
+                    class="text-xl font-bold text-gray-800"
+                    id="sessionsBadgeAll"
+                  >
+                    0
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-white rounded-xl border border-gray-100 p-4 shadow-sm flex items-center gap-3"
+              >
+                <div
+                  class="w-11 h-11 rounded-lg bg-blue-50 flex items-center justify-center text-2xl"
+                >
+                  💼
+                </div>
+                <div>
+                  <div class="text-xs text-gray-500">真实面试 · Copilot</div>
+                  <div
+                    class="text-xl font-bold text-blue-600"
+                    id="sessionsBadgeCopilot"
+                  >
+                    0
+                  </div>
+                </div>
+              </div>
+              <div
+                class="bg-white rounded-xl border border-gray-100 p-4 shadow-sm flex items-center gap-3"
+              >
+                <div
+                  class="w-11 h-11 rounded-lg bg-orange-50 flex items-center justify-center text-2xl"
+                >
+                  🎯
+                </div>
+                <div>
+                  <div class="text-xs text-gray-500">AI 模拟面试</div>
+                  <div
+                    class="text-xl font-bold text-orange-500"
+                    id="sessionsBadgeMock"
+                  >
+                    0
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 切换 + 搜索框 -->
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div
+                class="flex items-center gap-2 bg-white border border-gray-200 rounded-xl p-1 shadow-sm"
+              >
+                <button
+                  type="button"
+                  data-sess-cat=""
+                  class="sess-tab px-4 py-2 text-sm font-medium rounded-lg transition-colors bg-blue-600 text-white"
+                >
+                  全部
+                </button>
+                <button
+                  type="button"
+                  data-sess-cat="copilot"
+                  class="sess-tab px-4 py-2 text-sm font-medium rounded-lg transition-colors text-gray-600 hover:bg-gray-50"
+                >
+                  💼 真实面试
+                </button>
+                <button
+                  type="button"
+                  data-sess-cat="mock"
+                  class="sess-tab px-4 py-2 text-sm font-medium rounded-lg transition-colors text-gray-600 hover:bg-gray-50"
+                >
+                  🎯 模拟面试
+                </button>
+              </div>
+              <div class="relative w-full sm:w-80">
+                <i
+                  class="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"
+                ></i>
+                <input
+                  id="sessionsSearchInput"
+                  type="search"
+                  placeholder="搜索岗位、公司、面试标题…"
+                  class="w-full pl-9 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                />
+              </div>
+            </div>
+
+            <!-- 卡片列表 -->
+            <div id="sessionsCardWrap" class="min-h-[360px]">
+              <div
+                class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+                id="sessionsCardGrid"
+              ></div>
+              <!-- 分页 -->
+              <div
+                class="mt-5 flex items-center justify-between"
+                id="sessionsPagerWrap"
+                style="display: none"
+              >
+                <div class="text-xs text-gray-500" id="sessionsPagerInfo">
+                  —
+                </div>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    id="sessionsPrevBtn"
+                    class="px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    上一页
+                  </button>
+                  <div
+                    id="sessionsPageText"
+                    class="text-sm text-gray-600 font-medium px-2"
+                  >
+                    1 / 1
+                  </div>
+                  <button
+                    type="button"
+                    id="sessionsNextBtn"
+                    class="px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- /sessionsPanel -->
+
+          <!-- ========== 面试记录详情 Modal（居中遮罩） ========== -->
+          <div
+            id="sessionsDetailModal"
+            class="fixed inset-0 z-[999] bg-black/40 backdrop-blur-sm items-center justify-center p-4 hidden"
+          >
+            <div
+              class="bg-white w-full max-w-3xl max-h-[90vh] rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+            >
+              <!-- Header -->
+              <div
+                class="px-6 py-4 border-b border-gray-100 flex items-start justify-between gap-4"
+              >
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 mb-1">
+                    <span
+                      id="sessModalCatBadge"
+                      class="text-xs px-2 py-0.5 rounded-full font-medium"
+                      >💼 真实面试</span
+                    >
+                    <span
+                      id="sessModalStatusBadge"
+                      class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600"
+                      >进行中</span
+                    >
+                  </div>
+                  <h3
+                    id="sessModalTitle"
+                    class="text-lg font-bold text-gray-800 truncate"
+                  >
+                    面试标题
+                  </h3>
+                  <div
+                    id="sessModalMeta"
+                    class="text-xs text-gray-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-1"
+                  >
+                    <span id="sessModalCompany">—</span
+                    ><span id="sessModalPosition">—</span
+                    ><span id="sessModalDate">—</span>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    id="sessModalDeleteBtn"
+                    class="px-3 py-1.5 text-xs text-red-600 bg-red-50 rounded-lg hover:bg-red-100 hidden"
+                  >
+                    🗑 删除记录
+                  </button>
+                  <button
+                    type="button"
+                    id="sessModalCloseBtn"
+                    class="w-9 h-9 rounded-lg hover:bg-gray-100 flex items-center justify-center text-gray-500 text-lg"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+              <!-- Body：统计卡 + Rounds 列表 -->
+              <div id="sessModalBody" class="overflow-y-auto flex-1 p-6">
+                <!-- 动态渲染 -->
+              </div>
+            </div>
+          </div>
+
+          <!-- ========== 充值积分面板（L1968：位于 resumePanel 下方，与你截图完全对齐） ========== -->
+          <div class="panel hidden" id="creditPanel">
+            <!-- 返回控制台 -->
+            <a href="#" class="credit-back-link" data-menu="overview">
+              <span>←</span>
+              <span>返回控制台</span>
+            </a>
+
+            <!-- 标题 -->
+            <h1 class="credit-page-title">购买积分</h1>
+            <p class="credit-page-subtitle">
+              积分可在套餐额度用完后继续使用功能
+            </p>
+
+            <!-- 当前余额（实时数据来自 API） -->
+            <div class="credit-balance-bar">
+              <span class="credit-balance-label">
+                <span class="bal-icon">💳</span>
+                当前余额
+              </span>
+              <span class="credit-balance-num" id="creditBalanceNum">0</span>
+            </div>
+
+            <!-- 积分说明 -->
+            <div class="credit-note-box">
+              <div class="credit-note-head">
+                <span class="note-icon">ⓘ</span>
+                积分说明
+              </div>
+              <div class="credit-note-text">
+                当套餐额度用完时，系统会自动扣除积分。每天还可以免费领取 10
+                积分！
+              </div>
+              <div class="credit-price-list">
+                <span class="credit-price-item">
+                  <span class="ppi-icon">💻</span>
+                  Copilot 会话：<strong>120</strong>
+                </span>
+                <span class="credit-price-item">
+                  <span class="ppi-icon">🎯</span>
+                  模拟面试：<strong>30</strong>
+                </span>
+                <span class="credit-price-item">
+                  <span class="ppi-icon">📄</span>
+                  简历分析：<strong>20</strong>
+                </span>
+              </div>
+            </div>
+
+            <!-- 套餐列表 -->
+            <div class="credit-section-title">选择积分套餐</div>
+            <div class="credit-pack-list" id="creditPackList">
+              <!-- 5 档套餐由 JS 动态渲染；若 JS 未执行，则以下静态占位作为兜底（与截图一致） -->
+
+              <!-- 120 积分：¥10（首充） -->
+              <div
+                class="credit-pack-card"
+                data-package-id="c120"
+                data-price-yuan="10"
+              >
+                <span class="credit-pack-corner first">首充</span>
+                <div class="credit-pack-left">
+                  <div class="credit-pack-icon">⚡</div>
+                  <div class="credit-pack-main">
+                    <div class="title">
+                      120 积分
+                      <span class="bonus-tag">100 + 首充送 20</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="credit-pack-right">
+                  <div class="credit-pack-price">
+                    <span class="yuan">¥</span>10
+                  </div>
+                  <div class="credit-pack-unit">
+                    <span>(¥0.1/积分)</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 520 积分：¥45 省10% -->
+              <div
+                class="credit-pack-card"
+                data-package-id="c520"
+                data-price-yuan="45"
+              >
+                <div class="credit-pack-left">
+                  <div class="credit-pack-icon">⚡</div>
+                  <div class="credit-pack-main">
+                    <div class="title">
+                      520 积分
+                      <span class="bonus-tag">500 + 首充送 20</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="credit-pack-right">
+                  <div class="credit-pack-price">
+                    <span class="yuan">¥</span>45
+                  </div>
+                  <div class="credit-pack-unit">
+                    <span>(¥0.09/积分)</span>
+                    <span class="save-tag">省 10%</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 1020 积分：¥85 省15% 热门 -->
+              <div
+                class="credit-pack-card selected"
+                data-package-id="c1020"
+                data-price-yuan="85"
+              >
+                <span class="credit-pack-corner hot">热门</span>
+                <div class="credit-pack-left">
+                  <div class="credit-pack-icon">⚡</div>
+                  <div class="credit-pack-main">
+                    <div class="title">
+                      1,020 积分
+                      <span class="bonus-tag">1000 + 首充送 20</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="credit-pack-right">
+                  <div class="credit-pack-price">
+                    <span class="yuan">¥</span>85
+                  </div>
+                  <div class="credit-pack-unit">
+                    <span>(¥0.085/积分)</span>
+                    <span class="save-tag">省 15%</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 2020 积分：¥160 省20% -->
+              <div
+                class="credit-pack-card"
+                data-package-id="c2020"
+                data-price-yuan="160"
+              >
+                <div class="credit-pack-left">
+                  <div class="credit-pack-icon">⚡</div>
+                  <div class="credit-pack-main">
+                    <div class="title">
+                      2,020 积分
+                      <span class="bonus-tag">2000 + 首充送 20</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="credit-pack-right">
+                  <div class="credit-pack-price">
+                    <span class="yuan">¥</span>160
+                  </div>
+                  <div class="credit-pack-unit">
+                    <span>(¥0.08/积分)</span>
+                    <span class="save-tag">省 20%</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 5020 积分：¥375 省25% 最划算 -->
+              <div
+                class="credit-pack-card"
+                data-package-id="c5020"
+                data-price-yuan="375"
+              >
+                <span class="credit-pack-corner best">最划算</span>
+                <div class="credit-pack-left">
+                  <div class="credit-pack-icon">⚡</div>
+                  <div class="credit-pack-main">
+                    <div class="title">
+                      5,020 积分
+                      <span class="bonus-tag">5000 + 首充送 20</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="credit-pack-right">
+                  <div class="credit-pack-price">
+                    <span class="yuan">¥</span>375
+                  </div>
+                  <div class="credit-pack-unit">
+                    <span>(¥0.075/积分)</span>
+                    <span class="save-tag">省 25%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 底部支付条 -->
+            <div class="credit-pay-bar">
+              <div class="pay-summary">
+                <span class="label">已选择：</span>
+                <span class="value" id="creditPaySummary">
+                  1,020 积分 · <span class="accent">¥85</span>
+                </span>
+              </div>
+              <button class="credit-pay-btn" id="creditPayBtn" type="button">
+                立即支付
+              </button>
+            </div>
+          </div>
+          <!-- /creditPanel -->
+
+          <!-- ========== 积分明细面板 ========== -->
+          <div class="panel hidden" id="flowsPanel">
+            <div class="panel-header">
+              <h2 class="panel-title">积分明细</h2>
+              <button
+                class="btn-primary"
+                onclick="window.HireMeLoadFlows && window.HireMeLoadFlows()"
+              >
+                刷新
+              </button>
+            </div>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>类型</th>
+                    <th>描述</th>
+                    <th>变动</th>
+                    <th>余额</th>
+                  </tr>
+                </thead>
+                <tbody id="flowsTableBody">
+                  <tr>
+                    <td colspan="5" class="table-empty">加载中...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="pagination" id="flowsPagination"></div>
+          </div>
+
+          <!-- ========== 我的订单面板 ========== -->
+          <div class="panel hidden" id="ordersPanel">
+            <div class="panel-header">
+              <h2 class="panel-title">我的订单</h2>
+              <button
+                class="btn-primary"
+                id="buyCreditsBtn2"
+                onclick="
+                  document.getElementById('buyModal').style.display = 'flex'
+                "
+              >
+                购买积分
+              </button>
+            </div>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>订单号</th>
+                    <th>套餐</th>
+                    <th>金额</th>
+                    <th>积分</th>
+                    <th>状态</th>
+                    <th>时间</th>
+                  </tr>
+                </thead>
+                <tbody id="ordersTableBody">
+                  <tr>
+                    <td colspan="6" class="table-empty">加载中...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ========== 个人设置面板 ========== -->
+          <div class="panel hidden" id="settingsPanel">
+            <div class="panel-header">
+              <h2 class="panel-title">个人设置</h2>
+            </div>
+
+            <!-- 修改昵称 -->
+            <div class="settings-section">
+              <h3 class="settings-section-title">基本信息</h3>
+              <div class="settings-form">
+                <div class="form-group">
+                  <label class="form-label">邮箱（不可修改）</label>
+                  <input
+                    type="text"
+                    class="form-input"
+                    id="settingsEmail"
+                    disabled
+                  />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">昵称</label>
+                  <input
+                    type="text"
+                    class="form-input"
+                    id="settingsDisplayName"
+                    placeholder="请输入昵称"
+                    maxlength="20"
+                  />
+                </div>
+                <button class="btn-primary" id="saveProfileBtn">
+                  保存昵称
+                </button>
+              </div>
+            </div>
+
+            <!-- 修改密码 -->
+            <div class="settings-section">
+              <h3 class="settings-section-title">修改密码</h3>
+              <div class="settings-form">
+                <div class="form-group">
+                  <label class="form-label">当前密码</label>
+                  <input
+                    type="password"
+                    class="form-input"
+                    id="oldPassword"
+                    placeholder="请输入当前密码"
+                    autocomplete="current-password"
+                  />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">新密码</label>
+                  <input
+                    type="password"
+                    class="form-input"
+                    id="newPassword"
+                    placeholder="至少 6 位"
+                    autocomplete="new-password"
+                    minlength="6"
+                  />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">确认新密码</label>
+                  <input
+                    type="password"
+                    class="form-input"
+                    id="newPassword2"
+                    placeholder="再次输入新密码"
+                    autocomplete="new-password"
+                    minlength="6"
+                  />
+                </div>
+                <button class="btn-primary" id="changePasswordBtn">
+                  修改密码
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ========== 兑换码面板 ========== -->
+          <div class="panel hidden" id="redeemPanel">
+            <div class="panel-header">
+              <h2 class="panel-title">兑换码</h2>
+            </div>
+            <!-- 兑换输入区 -->
+            <div class="settings-section">
+              <h3 class="settings-section-title">输入兑换码</h3>
+              <div class="settings-form">
+                <div class="form-group">
+                  <label class="form-label">兑换码（不区分大小写）</label>
+                  <input
+                    type="text"
+                    class="form-input"
+                    id="redeemCodeInput"
+                    placeholder="如 RCXXXXXX"
+                    maxlength="20"
+                    autocomplete="off"
+                  />
+                </div>
+                <button class="btn-primary" id="redeemSubmitBtn">
+                  立即兑换
+                </button>
+                <p
+                  class="form-tip"
+                  id="redeemTip"
+                  style="margin-top: 8px; color: #666; font-size: 13px"
+                ></p>
+              </div>
+            </div>
+            <!-- 我的兑换记录 -->
+            <div class="settings-section">
+              <h3 class="settings-section-title">我的兑换记录</h3>
+              <div class="data-table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>兑换码</th>
+                      <th>获得积分</th>
+                      <th>兑换时间</th>
+                      <th>备注</th>
+                    </tr>
+                  </thead>
+                  <tbody id="redeemRecordsBody">
+                    <tr>
+                      <td colspan="4" class="table-empty">暂无兑换记录</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- ========== 系统公告面板 ========== -->
+          <div class="panel hidden" id="newsPanel">
+            <div class="panel-header">
+              <h2 class="panel-title">系统公告</h2>
+            </div>
+            <div
+              id="newsListWrap"
+              style="display: flex; flex-direction: column; gap: 12px"
+            >
+              <div class="table-empty">加载中...</div>
+            </div>
+            <!-- 公告详情弹窗 -->
+            <div
+              id="newsDetailModal"
+              class="modal-mask"
+              style="
+                display: none;
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.5);
+                z-index: 1000;
+                align-items: center;
+                justify-content: center;
+              "
+            >
+              <div
+                style="
+                  background: #fff;
+                  border-radius: 8px;
+                  max-width: 560px;
+                  width: 92%;
+                  max-height: 80vh;
+                  display: flex;
+                  flex-direction: column;
+                "
+              >
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 16px 20px;
+                    border-bottom: 1px solid #eee;
+                  "
+                >
+                  <h3 id="newsDetailTitle" style="margin: 0; font-size: 18px">
+                    公告标题
+                  </h3>
+                  <button
+                    id="newsDetailClose"
+                    style="
+                      border: none;
+                      background: none;
+                      font-size: 22px;
+                      cursor: pointer;
+                      color: #999;
+                    "
+                  >
+                    ×
+                  </button>
+                </div>
+                <div
+                  id="newsDetailContent"
+                  style="
+                    padding: 20px;
+                    overflow-y: auto;
+                    white-space: pre-wrap;
+                    font-size: 14px;
+                    line-height: 1.7;
+                    color: #333;
+                  "
+                ></div>
+                <div
+                  id="newsDetailMeta"
+                  style="
+                    padding: 12px 20px;
+                    border-top: 1px solid #eee;
+                    color: #999;
+                    font-size: 12px;
+                  "
+                ></div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+
+      <!-- 浮动反馈按钮 -->
+      <button class="floating-btn" title="反馈建议" id="feedbackBtn">💬</button>
+    </div>
+
+    <div
+      class="toast-wrap"
+      id="toastWrap"
+      role="status"
+      aria-live="polite"
+    ></div>
+    <script src="/app.js?v=20260830"></script>
+  </body>
+</html>

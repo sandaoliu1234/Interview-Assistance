@@ -337,6 +337,7 @@ const elements = {
   hotkeyDisplay: document.getElementById('hotkeyDisplay'),
   hotkeyInput: document.getElementById('hotkeyInput'),
   testHideBtn: document.getElementById('testHideBtn'),
+  captureHideToggle: document.getElementById('captureHideToggle'),  // 截图/录屏不可见总开关
   listenBtn: document.getElementById('listenBtn'),
   listeningStatus: document.getElementById('listeningStatus'),
   listeningText: document.getElementById('listeningText'),
@@ -366,14 +367,20 @@ const elements = {
   // 面试记录：📚 查看全部面试记录（已挪到卡片区开始面试辅助正下方；⏹/🆕 已删除 —— 用户要求：浮动面板点×=结束本场；主窗口不再放两按钮）
   btnViewAllSessions: document.getElementById('btnViewAllSessions'),
   bottomToast: document.getElementById('bottomToast'),
-  // 面试记录：关闭浮动面板后弹的「本场已结束」两按钮横幅
-  endSessionBanner:   document.getElementById('endSessionBanner'),
-  esbClose:           document.getElementById('esbClose'),
-  esbViewDetailBtn:   document.getElementById('esbViewDetailBtn'),
-  esbNewSessionBtn:   document.getElementById('esbNewSessionBtn'),
-  endSessionBannerTitle: document.getElementById('endSessionBannerTitle'),
-  endSessionBannerSub:   document.getElementById('endSessionBannerSub'),
-  // 面试记录：viewRouter 三面板
+  // 面试记录：关闭浮动面板后显示的「面试结束总结页」
+  endSessionView:     document.getElementById('endSessionView'),
+  esvBackHomeBtn:     document.getElementById('esvBackHomeBtn'),
+  esvSessionMeta:     document.getElementById('esvSessionMeta'),
+  esvDuration:        document.getElementById('esvDuration'),
+  esvQuestionCount:   document.getElementById('esvQuestionCount'),
+  esvAnswerCount:     document.getElementById('esvAnswerCount'),
+  esvRatingStars:     document.getElementById('esvRatingStars'),
+  esvRatingHint:      document.getElementById('esvRatingHint'),
+  esvCopyInviteBtn:   document.getElementById('esvCopyInviteBtn'),
+  esvReviewBtn:       document.getElementById('esvReviewBtn'),
+  esvNewSessionBtn:   document.getElementById('esvNewSessionBtn'),
+  esvViewDetailBtn:   document.getElementById('esvViewDetailBtn'),
+  // 面试记录：viewRouter 四面板（home / list / detail / end）
   viewHome: document.getElementById('viewHome'),
   viewSessionsList: document.getElementById('viewSessionsList'),
   viewSessionDetail: document.getElementById('viewSessionDetail'),
@@ -391,7 +398,86 @@ const elements = {
   sessionDetailTitle: document.getElementById('sessionDetailTitle'),
   sessionDetailMeta:  document.getElementById('sessionDetailMeta'),
   sessionDetailChat:  document.getElementById('sessionDetailChat'),
-  sessionDetailEmpty: document.getElementById('sessionDetailEmpty')
+  sessionDetailEmpty: document.getElementById('sessionDetailEmpty'),
+
+  // ============================================================
+  // ★ 登录 / 账号 相关元素（全屏 SPA 视图 #authPage + 旧 Modal DOM 兼容）
+  // ============================================================
+  // 全屏视图容器：主路由级别（data-view='auth'），打开时覆盖整个主窗口
+  authPage:            document.getElementById('authPage'),
+  loginPageCard:       document.getElementById('loginPageCard'),
+  forgotPageCard:      document.getElementById('forgotPageCard'),
+  mergePageCard:       document.getElementById('mergePageCard'),
+  loginPageTitle:      document.getElementById('loginPageTitle'),
+
+  // 顶部按钮（保留，后续兼容桌面标题栏旁登录按钮）
+  loginBtn:         document.getElementById('loginBtn'),
+  userArea:         document.getElementById('userArea'),
+  userAvatarBtn:    document.getElementById('userAvatarBtn'),
+  userDropdown:     document.getElementById('userDropdown'),
+  udAvatarBig:      document.getElementById('udAvatarBig'),
+  udDisplayName:    document.getElementById('udDisplayName'),
+  udUserEmail:      document.getElementById('udUserEmail'),
+
+  // 登录弹窗（保留用于向后兼容 / 旧有模态 id，实际已由全屏视图接管显示）
+  loginModal:       document.getElementById('loginModal'),
+  closeLoginBtn:    document.getElementById('closeLoginBtn'),
+  loginModalTitle:  document.getElementById('loginModalTitle'),
+  loginPanel:       document.getElementById('panelLogin'),
+  loginForm:        document.getElementById('loginForm'),
+  loginEmail:       document.getElementById('loginEmail'),
+  loginPwd:         document.getElementById('loginPwd'),
+  loginError:       document.getElementById('loginError'),
+  loginSubmitBtn:   document.getElementById('loginSubmitBtn'),
+  forgotLink:       document.getElementById('forgotLink'),
+
+  // 初始化管理员面板
+  initAdminPanel:   document.getElementById('panelInitAdmin'),
+  initAdminForm:    document.getElementById('initAdminForm'),
+  initEmail:        document.getElementById('initEmail'),
+  initDisplayName:  document.getElementById('initDisplayName'),
+  initPwd:          document.getElementById('initPwd'),
+  initPwd2:         document.getElementById('initPwd2'),
+  initAdminError:   document.getElementById('initAdminError'),
+  initAdminSubmitBtn: document.getElementById('initAdminSubmitBtn'),
+
+  // 忘记密码弹窗 / 页面（三步流程共用的 DOM，新旧 id 均绑定）
+  forgotPwdModal:   document.getElementById('forgotPwdModal'),
+  closeForgotBtn:   document.getElementById('closeForgotBtn'),
+  forgotBack1:      document.getElementById('forgotBack1'),
+  forgotBack2:      document.getElementById('forgotBack2'),
+  forgotGoLogin:    document.getElementById('forgotGoLogin'),
+  forgotStep1:      document.getElementById('forgotStep1'),
+  forgotStep2:      document.getElementById('forgotStep2'),
+  forgotStep3:      document.getElementById('forgotStep3'),
+  forgotStep1Form:  document.getElementById('forgotStep1Form'),
+  forgotStep2Form:  document.getElementById('forgotStep2Form'),
+  forgotEmail:      document.getElementById('forgotEmail'),
+  forgotError:      document.getElementById('forgotError'),
+  forgotResetCodeDisplay: document.getElementById('forgotResetCodeDisplay'),
+  forgotResetInput: document.getElementById('forgotResetInput'),
+  forgotNewPwd:     document.getElementById('forgotNewPwd'),
+  forgotNewPwd2:    document.getElementById('forgotNewPwd2'),
+  forgotError2:     document.getElementById('forgotError2'),
+  forgotStepPills:  document.querySelectorAll('.step-pill'),
+  forgotStep1Next:  document.getElementById('forgotStep1Next'),
+  forgotStep2Submit:document.getElementById('forgotStep2Submit'),
+
+  // 合并游客数据弹窗 / 页面
+  mergeGuestDialog: document.getElementById('mergeGuestDialog'),
+  mergeStatsList:   document.getElementById('mergeStatsList'),
+  mergeSkipBtn:     document.getElementById('mergeSkipBtn'),
+  mergeDoBtn:       document.getElementById('mergeDoBtn'),
+
+  // ============================================================
+  // ★ 积分 & 充值 & 后台管理：动态插入到顶部栏的 DOM（缓存引用，避免每次创建新元素）
+  //   实际 DOM 节点在首次渲染时由 _ensureCreditsTopDom() 创建并挂载到 userArea 之前。
+  // ============================================================
+  creditsTopWrapper:      null, // 父容器 <div class="credits-top">
+  creditsBalanceBadge:    null, // 左侧徽章「积分 1234」
+  creditsStatusBadge:     null, // 右侧小徽章「离线」/「在线」
+  creditsRechargeBtn:     null, // 「充值」按钮 → 调 credits.openConsole
+  creditsAdminBtn:        null, // 「后台」按钮（仅管理员显示）→ 调 credits.openAdmin
 };
 
 // ============================================================
@@ -431,20 +517,589 @@ function setSessionCategory(category, opts = {}) {
   }
 }
 
+// ============================================================
+// ★ 登录 / 账号 UI 状态
+// ============================================================
+const AuthUI = {
+  /** 当前登录用户对象：{loggedIn, accountId, email, displayName, avatar, ...}，未登录时 loggedIn=false */
+  currentUser: null,
+  /** 本地是否已创建过任何账号（用于判断弹窗显示普通登录 or 初始化管理员） */
+  hasAnyAccount: true,
+  /** 邮箱正则（与 authService 保持一致） */
+  emailRe: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+};
+
+/**
+ * 获取 electronAPI 通道（兜底为 ipcRenderer 双通道）
+ * @returns {{auth?: object, authLegacy?: boolean}}
+ */
+function _authCh() {
+  if (window.electronAPI && window.electronAPI.auth) return { api: window.electronAPI };
+  // 兼容无 preload 的回退：直接用 ipcRenderer.invoke（渲染层通过 require('electron') 取得）
+  const ir = window.ipcRenderer || (typeof require === 'function' ? (() => { try { return require('electron').ipcRenderer; } catch (_) { return null; } })() : null);
+  return {
+    api: null,
+    legacy: !!ir,
+    invoke: (k, a) => ir.invoke(k, a),
+    on: (k, cb) => ir.on(k, (_e, p) => cb(p)),
+  };
+}
+
+/**
+ * 生成头像显示字符：优先显示名首字；无则取邮箱 @ 前首字；再兜底 "U"
+ * @param {{displayName?:string, email?:string}} user
+ * @returns {string}
+ */
+function _avatarLetter(user) {
+  if (!user) return 'U';
+  const dn = String(user.displayName || '').trim();
+  if (dn) return Array.from(dn)[0].toUpperCase();
+  const em = String(user.email || '').trim().split('@')[0];
+  if (em) return Array.from(em)[0].toUpperCase();
+  return 'U';
+}
+
+/**
+ * 渲染顶部入口：登录按钮 or 头像
+ */
+function renderTopAccountEntry() {
+  const user = AuthUI.currentUser || {};
+  const logged = !!user.loggedIn;
+  // 按钮显隐
+  if (elements.loginBtn)   elements.loginBtn.classList.toggle('hidden',  logged);
+  if (elements.userArea)   elements.userArea.classList.toggle('hidden', !logged);
+  // 头像字符
+  const letter = _avatarLetter(user);
+  if (elements.userAvatarBtn)  elements.userAvatarBtn.textContent = letter;
+  if (elements.udAvatarBig)    elements.udAvatarBig.textContent = letter;
+  // 下拉资料
+  if (elements.udDisplayName)  elements.udDisplayName.textContent = user.displayName || '—';
+  if (elements.udUserEmail)    elements.udUserEmail.textContent   = user.email       || '—';
+
+  // ---- 顶部积分徽章 / 充值 / 后台入口（登录后显示） ----
+  _ensureCreditsTopDom();
+  _setCreditsTopVisible(logged);
+  if (logged) {
+    // 按钮权限：isAdmin 才显示后台入口
+    if (elements.creditsAdminBtn) {
+      elements.creditsAdminBtn.style.display = (user.isAdmin === true) ? '' : 'none';
+    }
+    // 异步拉取余额并渲染（不阻塞，失败显示「离线」）
+    _refreshCreditsBadge().catch((e) => console.warn('[credits] 顶部积分刷新失败：', e && e.message));
+  } else {
+    // 未登录：直接清空余额文字
+    if (elements.creditsBalanceBadge) elements.creditsBalanceBadge.textContent = '积分 —';
+    if (elements.creditsStatusBadge)  elements.creditsStatusBadge.textContent  = '';
+  }
+}
+
+// ============================================================
+// ★ 顶部积分栏：DOM 创建 + 渲染余额 + 通用"尝试扣积分并在不足时引导充值"工具
+// ============================================================
+/**
+ * 获取 credits 通道（优先 ch.api.credits，否则走 ipc.invoke 兜底）。
+ * 浏览器模式下可能不存在，调用方需自行处理 null。
+ */
+function _creditsCh() {
+  try {
+    if (typeof window === 'undefined') return null;
+    // 优先 electronAPI（preload 暴露的正式通道）
+    if (window.electronAPI && window.electronAPI.credits) return window.electronAPI.credits;
+    // 兼容：项目其它地方使用的 _ch() / require('electron').ipcRenderer 兜底
+    const ch = (typeof _authCh === 'function') ? _authCh() : null;
+    if (ch && ch.api && ch.api.credits) return ch.api.credits;
+    return null;
+  } catch (_) { return null; }
+}
+/** 确保"积分+充值"的顶部 DOM 已创建，并挂到 elements.userArea 之前。 */
+function _ensureCreditsTopDom() {
+  if (!elements.userArea || !elements.userArea.parentNode) return;
+  if (elements.creditsTopWrapper) return; // 已创建
+  const wrap = document.createElement('div');
+  wrap.className = 'credits-top';
+  wrap.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-right:10px;vertical-align:middle;';
+  // 余额徽章
+  const bal = document.createElement('span');
+  bal.className = 'credits-balance';
+  bal.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:linear-gradient(135deg,#3B82F6 0%,#8B5CF6 100%);color:#fff;font-weight:600;font-size:13px;box-shadow:0 2px 8px rgba(59,130,246,0.25);';
+  bal.textContent = '积分 —';
+  wrap.appendChild(bal);
+  // 状态小徽章（离线/在线）
+  const tag = document.createElement('span');
+  tag.className = 'credits-status';
+  tag.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:999px;background:#F3F4F6;color:#4B5563;border:1px solid #E5E7EB;';
+  tag.textContent = '';
+  wrap.appendChild(tag);
+  // 充值按钮
+  const rech = document.createElement('button');
+  rech.type = 'button';
+  rech.className = 'credits-recharge-btn';
+  rech.textContent = '💎 充值';
+  rech.style.cssText = 'border:none;padding:4px 12px;border-radius:8px;background:#FCD34D;color:#7C2D12;font-weight:600;font-size:13px;cursor:pointer;';
+  rech.title = '打开宣传站点控制台进行充值（浏览器模式）';
+  rech.addEventListener('click', async () => {
+    try {
+      const c = _creditsCh(); if (!c || !c.openConsole) { alert('当前环境不可用：请在 HireMe 桌面端或宣传站点控制台页面中充值。'); return; }
+      await c.openConsole();
+    } catch (e) { console.warn(e); }
+  });
+  wrap.appendChild(rech);
+  // 管理员：后台按钮
+  const adm = document.createElement('button');
+  adm.type = 'button';
+  adm.className = 'credits-admin-btn';
+  adm.textContent = '🛠 后台';
+  adm.style.cssText = 'border:none;padding:4px 12px;border-radius:8px;background:#6366F1;color:#fff;font-weight:600;font-size:13px;cursor:pointer;display:none;';
+  adm.title = '（管理员）打开宣传站点后台管理系统（在系统浏览器中打开）';
+  adm.addEventListener('click', async () => {
+    try {
+      const c = _creditsCh(); if (!c || !c.openAdmin) { alert('当前环境不可用。'); return; }
+      await c.openAdmin();
+    } catch (e) { console.warn(e); }
+  });
+  wrap.appendChild(adm);
+  // 插到 userArea 之前（保证在最右侧用户头像左侧）
+  elements.userArea.parentNode.insertBefore(wrap, elements.userArea);
+  elements.creditsTopWrapper   = wrap;
+  elements.creditsBalanceBadge = bal;
+  elements.creditsStatusBadge  = tag;
+  elements.creditsRechargeBtn  = rech;
+  elements.creditsAdminBtn     = adm;
+}
+/** 登录/未登录时显隐整个 credits-top 包装 */
+function _setCreditsTopVisible(visible) {
+  if (!elements.creditsTopWrapper) return;
+  elements.creditsTopWrapper.style.display = visible ? '' : 'none';
+}
+/**
+ * 异步刷新顶部积分徽章：
+ *   - 远端有连接 → 调 getBalance() 拿到实时 balance
+ *   - 离线 / 本地模式 / 未连接 → 标「离线」
+ */
+async function _refreshCreditsBadge() {
+  const c = _creditsCh();
+  if (!elements.creditsBalanceBadge) return;
+  if (!c || !c.getBalance) {
+    elements.creditsBalanceBadge.textContent = '积分 —';
+    if (elements.creditsStatusBadge) elements.creditsStatusBadge.textContent = '';
+    return;
+  }
+  const b = await c.getBalance();
+  if (b && (b.offline || b.balance === null || b.balance === undefined)) {
+    elements.creditsBalanceBadge.textContent = '积分 —';
+    if (elements.creditsStatusBadge) {
+      elements.creditsStatusBadge.textContent = '离线';
+      elements.creditsStatusBadge.style.background = '#FEF3C7';
+      elements.creditsStatusBadge.style.color = '#92400E';
+      elements.creditsStatusBadge.style.borderColor = '#FDE68A';
+    }
+    return;
+  }
+  if (b && b.ok) {
+    const bal = Number(b.balance) || 0;
+    elements.creditsBalanceBadge.textContent = `积分 ${bal.toLocaleString()}`;
+    if (elements.creditsStatusBadge) {
+      elements.creditsStatusBadge.textContent = '在线';
+      elements.creditsStatusBadge.style.background = '#D1FAE5';
+      elements.creditsStatusBadge.style.color = '#065F46';
+      elements.creditsStatusBadge.style.borderColor = '#6EE7B7';
+    }
+  } else {
+    elements.creditsBalanceBadge.textContent = '积分 —';
+    if (elements.creditsStatusBadge) {
+      elements.creditsStatusBadge.textContent = (b && b.msg) || '异常';
+      elements.creditsStatusBadge.style.background = '#FEE2E2';
+      elements.creditsStatusBadge.style.color = '#991B1B';
+      elements.creditsStatusBadge.style.borderColor = '#FECACA';
+    }
+  }
+}
+/**
+ * 通用工具：尝试在"执行某功能"前扣积分；如果没积分就引导用户去充值。
+ * 适合三大功能入口（Copilot/模拟面试/简历优化）统一调用。
+ *
+ * @param {object}  p
+ * @param {'copilot_session'|'mock_round'|'resume_optimize'}  p.bizType  业务类型（对应 server.js 的流水 bizType）
+ * @param {number}  p.credits  需要消耗的积分数量（正整数）
+ * @param {string} [p.bizId]   业务唯一 ID（可选，用于对账/去重）
+ * @param {string} [p.desc]    流水说明文字（可选，用户流水里展示）
+ * @param {string} [p.bizName] 业务的中文名称（弹窗"是否去充值"时显示用）
+ * @returns {Promise<{ok:boolean, offline?:boolean, msg?:string, balance?:number, creditsConsumed?:number, flowId?:string, skipped?:boolean}>}
+ *   - ok:true → 扣费成功 OR 离线模式允许使用
+ *   - ok:false → 失败（积分不足 / 调用失败）；若 missing>0 表示积分不足且用户取消了充值
+ */
+async function tryConsumeCreditsBefore(p = {}) {
+  const bizType = String(p.bizType || '').trim() || 'consume';
+  const credits = Number(p.credits);
+  const bizName = String(p.bizName || bizType || '本次功能');
+  if (!Number.isSafeInteger(credits) || credits <= 0) {
+    return { ok: false, error: 'BAD_CREDITS', msg: '非法积分数量' };
+  }
+
+  const c = _creditsCh();
+  // 通道不存在（比如非 Electron 纯浏览器打开 renderer）：视为"离线允许"
+  if (!c || !c.consume) {
+    return { ok: true, offline: true, skipped: true, msg: '未连接积分服务，本次未扣积分。' };
+  }
+
+  const r = await c.consume({
+    credits,
+    bizType,
+    bizId: p.bizId ? String(p.bizId).slice(0, 64) : undefined,
+    desc:  p.desc  ? String(p.desc).slice(0, 200)  : undefined,
+  });
+
+  // 成功：扣费成功 OR 离线不扣 → 放行业务
+  if (r && r.ok) {
+    // 扣费/离线成功 → 顺手刷新顶部余额，避免显示旧值
+    _refreshCreditsBadge().catch(() => {});
+    if (r.offline && r.msg) {
+      try {
+        alert(`💡 ${r.msg}\n\n建议：在宣传站点服务器启动时，使用同一账号（在 HireMe 内登录），即可开启积分消费。`);
+      } catch (_) {}
+    }
+    return { ...r };
+  }
+
+  // 失败：积分不足 → 弹"去充值"对话框
+  if (r && r.error === 'INSUFFICIENT_CREDITS') {
+    const cur  = Number(r.current)  || 0;
+    const need = Number(r.required) || credits;
+    const miss = Number(r.missing)  || (need - cur);
+    const msg =
+      `积分不足，无法开始「${bizName}」。\n\n` +
+      `当前可用积分：${cur}\n本次需要积分：${need}\n还差：${miss}\n\n` +
+      `是否现在打开宣传站点控制台进行充值？（将在系统浏览器中打开）`;
+    const ok = window.confirm(msg);
+    if (ok) {
+      try { if (c.openConsole) await c.openConsole(); } catch (_) {}
+    }
+    return { ok: false, error: 'INSUFFICIENT_CREDITS', current: cur, required: need, missing: miss,
+             msg: `积分不足，还差 ${miss} 分。已取消开始「${bizName}」。` };
+  }
+
+  // 其它失败：兜底弹一个 alert 并透传
+  const errMsg = (r && r.msg) || '扣积分失败';
+  try { alert(`⚠️ ${errMsg}\n\n本次未开始「${bizName}」。`); } catch (_) {}
+  return { ok: false, error: (r && r.error) || 'CONSUME_FAILED', msg: errMsg };
+}
+
+/**
+ * 显示通用错误文本（含 CSS 抖动），2.5s 后自动淡化
+ * @param {HTMLElement|null} el
+ * @param {string}           msg
+ */
+function _setAuthError(el, msg) {
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.remove('hidden');
+  el.classList.remove('shake');
+  // 触发动画重排
+  void el.offsetWidth;
+  el.classList.add('shake');
+  clearTimeout(el.__hideT);
+  el.__hideT = setTimeout(() => el.classList.add('hidden'), 2500);
+}
+
+/**
+ * 账号全屏 SPA 路由：显示 #authPage 并切换内部卡片
+ *   - mode: 'login'（默认：登录/初始化）| 'forgot'（忘记密码三步）
+ *   🟢 已移除 mode='merge'：合并游客数据功能已废弃，传 merge 等价于显示 login
+ *   - 内部实现会同时隐藏另外两张卡片，保证同一时刻 #authPage 内只有一张卡片可见
+ * @param {'login'|'forgot'} [mode='login']
+ */
+function showAuthPage(mode) {
+  const which = (mode === 'forgot') ? 'forgot' : 'login';
+  if (elements.authPage) {
+    // 全屏视图作为 SPA 路由：去掉 .hidden 即进入（与 viewHome / viewSessionsList 同级机制）
+    elements.authPage.classList.remove('hidden');
+  }
+  // 🟢 只维护两张卡：登录 / 忘记密码。合并卡片不再使用（如果 HTML 里仍存在，统一加 hidden）
+  const cards = [elements.loginPageCard, elements.forgotPageCard, elements.mergePageCard].filter(Boolean);
+  const showCard = which === 'forgot' ? elements.forgotPageCard : elements.loginPageCard;
+  cards.forEach((c) => { if (c) c.classList.add('hidden'); });
+  if (showCard) showCard.classList.remove('hidden');
+  // 打开全屏视图时，收起身后可能还开着的用户下拉（视觉整洁）
+  if (elements.userDropdown && !elements.userDropdown.classList.contains('hidden')) {
+    elements.userDropdown.classList.add('hidden');
+  }
+  // 打开后把焦点放到第一个输入框，体验与页面一致
+  requestAnimationFrame(() => {
+    if (which === 'login' && elements.loginEmail) try { elements.loginEmail.focus({ preventScroll: true }); } catch (_) {}
+    else if (which === 'forgot' && elements.forgotEmail) try { elements.forgotEmail.focus({ preventScroll: true }); } catch (_) {}
+  });
+}
+
+/**
+ * 关闭账号全屏 SPA 路由：回到主界面（viewHome/viewSessionsList 等根据当前路由继续显示）
+ *   - 本质是把 #authPage 加回 .hidden
+ */
+function hideAuthPage() {
+  if (elements.authPage) {
+    // 全屏视图加回 .hidden 即退出账号页，背后主界面由 viewRouter 维持可见
+    elements.authPage.classList.add('hidden');
+  }
+  // 退出账号视图时，顺手把忘记密码步骤条归位（下次进入更干净）
+  try { setForgotStep(1); } catch (_) {}
+  // 关闭合并卡片（如果之前被打开）+ 合并统计列表清空（避免再次看到旧数据）
+  if (elements.mergeStatsList) elements.mergeStatsList.innerHTML = '';
+}
+
+/**
+ * 打开登录页：冷启动显示"初始化管理员"，否则显示普通登录
+ *   - 现在以全屏 SPA 路由显示，不再依赖模态遮罩层
+ */
+async function openLoginModal() {
+  if (!elements.loginPageCard) return;
+  // 弹窗打开前刷新 hasAnyAccount 状态（避免启动后外部同步账号，首次点击仍显示初始化）
+  try {
+    const ch = _authCh();
+    const r = (ch && ch.api) ? await ch.api.auth.hasAnyAccount() : (ch && ch.legacy ? await ch.invoke('auth-has-any-account') : null);
+    if (r && typeof r.hasAny === 'boolean') AuthUI.hasAnyAccount = r.hasAny;
+  } catch (_) { /* 失败沿用缓存，不至于阻塞页面打开 */ }
+
+  const isInit = !AuthUI.hasAnyAccount;
+  if (elements.loginPanel)     elements.loginPanel.classList.toggle('hidden',  isInit);
+  if (elements.initAdminPanel) elements.initAdminPanel.classList.toggle('hidden', !isInit);
+  // 新全屏视图下的标题（优先）
+  if (elements.loginPageTitle) {
+    elements.loginPageTitle.textContent = isInit ? '🌱 创建第一个本地账号' : '🔐 登录 HireMe';
+  }
+  // 旧模态标题（兼容/兜底，若未来切换回模态也能工作）
+  if (elements.loginModalTitle) {
+    elements.loginModalTitle.textContent = isInit ? '🌱 创建第一个本地账号' : '🔐 登录 HireMe';
+  }
+  // 清空错误 + 清空表单（避免上一次残留）
+  if (elements.loginError)     elements.loginError.classList.add('hidden');
+  if (elements.initAdminError) elements.initAdminError.classList.add('hidden');
+  if (elements.loginEmail)     elements.loginEmail.value = '';
+  if (elements.loginPwd)       elements.loginPwd.value   = '';
+  if (elements.initEmail)      elements.initEmail.value  = '';
+  if (elements.initDisplayName)elements.initDisplayName.value = '';
+  if (elements.initPwd)        elements.initPwd.value    = '';
+  if (elements.initPwd2)       elements.initPwd2.value   = '';
+
+  // 实际进入账号页面（login 卡片）
+  showAuthPage('login');
+}
+
+/**
+ * 关闭登录页：回到主界面
+ */
+function closeLoginModal() {
+  hideAuthPage();
+  // 旧模态同步关闭（向前兼容）
+  if (elements.loginModal) {
+    elements.loginModal.classList.remove('open');
+    setTimeout(() => { if (elements.loginModal) elements.loginModal.classList.add('hidden'); }, 100);
+  }
+}
+
+/**
+ * 切换忘记密码步骤条高亮
+ * @param {1|2|3} step
+ */
+function setForgotStep(step) {
+  const boxes = [elements.forgotStep1, elements.forgotStep2, elements.forgotStep3];
+  boxes.forEach((el, idx) => { if (el) el.classList.toggle('hidden', idx !== step - 1); });
+  const NodeList = window.NodeList;
+  (function setPills() {
+    const pills = (elements.forgotStepPills instanceof NodeList) ? Array.from(elements.forgotStepPills) : document.querySelectorAll('.step-pill');
+    pills.forEach((pill) => {
+      const s = Number(pill.dataset.step || 0);
+      pill.classList.toggle('active', s <= step);
+    });
+  })();
+}
+
+/**
+ * 打开忘记密码流程（以全屏视图 forgot 卡片承载）
+ */
+function openForgotModal() {
+  if (elements.forgotEmail)    elements.forgotEmail.value    = '';
+  if (elements.forgotError)    elements.forgotError.classList.add('hidden');
+  if (elements.forgotError2)   elements.forgotError2.classList.add('hidden');
+  if (elements.forgotResetInput) elements.forgotResetInput.value = '';
+  if (elements.forgotNewPwd)  elements.forgotNewPwd.value  = '';
+  if (elements.forgotNewPwd2) elements.forgotNewPwd2.value = '';
+  if (elements.forgotResetCodeDisplay) {
+    elements.forgotResetCodeDisplay.innerHTML = '';
+    elements.forgotResetCodeDisplay.classList.add('hidden');
+  }
+  setForgotStep(1);
+  // 以全屏视图 forgot 卡片显示
+  showAuthPage('forgot');
+  // 旧模态同步关闭/打开（兼容/兜底）
+  if (elements.forgotPwdModal) {
+    elements.forgotPwdModal.classList.remove('hidden');
+    requestAnimationFrame(() => { if (elements.forgotPwdModal) elements.forgotPwdModal.classList.add('open'); });
+  }
+}
+
+function closeForgotModal() {
+  // 若当前只有 forgot 卡片（之前从登录页点过来），返回登录页；否则回到主界面
+  if (elements.authPage && !elements.authPage.classList.contains('hidden')
+      && elements.loginPageCard && elements.loginPageCard.classList.contains('hidden')
+      && elements.mergePageCard && elements.mergePageCard.classList.contains('hidden')) {
+    // 只把内部卡片切回 login，保留 #authPage 打开状态（用户还没登录完成呢）
+    if (elements.loginPageCard)  elements.loginPageCard.classList.remove('hidden');
+    if (elements.forgotPageCard) elements.forgotPageCard.classList.add('hidden');
+    if (elements.mergePageCard)  elements.mergePageCard.classList.add('hidden');
+  } else {
+    // 其他情况：直接收起整个账号视图
+    hideAuthPage();
+  }
+  // 旧模态同步关闭
+  if (elements.forgotPwdModal) {
+    elements.forgotPwdModal.classList.remove('open');
+    setTimeout(() => { if (elements.forgotPwdModal) elements.forgotPwdModal.classList.add('hidden'); }, 100);
+  }
+}
+
+/**
+ * 登录成功后：直接进入主界面。
+ * 🟢 已移除"询问合并游客数据"流程 —— 根据需求：只要用户登录，
+ *    就能看到 SQLite 中属于他本人的相关数据；GUEST 账号下的数据保持独立，
+ *    不再进行 session/resume 的搬运与清空。
+ *    用户如果想回到 GUEST 命名空间下的数据，直接登出（回到游客模式）即可看到。
+ */
+async function maybeAskMergeGuest() {
+  // 空实现：不弹任何对话框，登录成功后直接进主界面
+  return;
+}
+
+/**
+ * 预检测游客是否有数据（用于决定是否弹出合并对话框）
+ * 🟢 已废弃：保留函数签名（避免其他地方直接调用时报 undefined），但永远返回 false。
+ * @returns {Promise<{hasData:boolean, stats:Array<{label:string, value:string}>}>}
+ */
+async function getGuestStatsPreflight() {
+  return { hasData: false, stats: [] };
+}
+
+/**
+ * 打开合并游客数据确认页
+ * 🟢 已废弃：合并功能已移除。保留函数签名但啥都不做，保证兼容性。
+ */
+async function openMergeGuestDialog(stats) {
+  return;
+}
+
+function closeMergeGuestDialog() {
+  // 🟢 已废弃：合并对话框不存在需要关闭的内容；保留一个空实现兜底
+  hideAuthPage();
+}
+
+/**
+ * 账号切换时，重新加载当前命名空间下的：简历、面试记录列表、Copilot/模拟面试面板缓存数据
+ * （配置 / 知识库按账号隔离需 main.js configManager 支持命名空间，未支持时这里至少保证 I/O 层 resume/session 正确）
+ */
+async function onAccountNamespaceSwitched(userObj) {
+  try {
+    // 1. 重新加载 resume（main.js load-resume 会自动按 currentAccountId 切换路径）
+    await loadResume();
+    // 2. 如果当前正位于面试记录列表页，则按当前分类过滤器刷新
+    if (typeof renderSessionsList === 'function'
+        && elements.viewSessionsList
+        && !elements.viewSessionsList.classList.contains('hidden')) {
+      const kw = (elements.sessionSearchInput && elements.sessionSearchInput.value) || '';
+      renderSessionsList(kw);
+    }
+    // 3. 通知 Copilot / 模拟面试等子模块：账号命名空间已变更
+    try {
+      window.dispatchEvent(new CustomEvent('hireme:account-namespace-changed', {
+        detail: { user: userObj || null },
+      }));
+    } catch (_) { /* 旧浏览器不支持 CustomEvent 时忽略 */ }
+  } catch (e) {
+    console.warn('[auth] 账号切换时重载 UI 失败：', e && e.message);
+  }
+}
+
+/**
+ * 初始化鉴权 UI：获取当前用户 + hasAnyAccount + 订阅状态变更事件
+ */
+async function initAuthUI() {
+  try {
+    const ch = _authCh();
+    if (!ch || (!ch.api && !ch.legacy)) {
+      console.warn('[auth] electronAPI.auth + ipc 双通道均不可用，登录功能停用');
+      // 退化为"永远隐藏登录按钮"，避免用户点了没反应
+      if (elements.loginBtn) elements.loginBtn.classList.add('hidden');
+      return;
+    }
+
+    // 1. 初始状态：并行取 currentUser + hasAnyAccount
+    let curUser = null; let hasAny = true;
+    try {
+      const r = (ch.api) ? await ch.api.auth.currentUser() : await ch.invoke('auth-current-user');
+      if (r && typeof r === 'object') curUser = { loggedIn: !!r.loggedIn, accountId: r.accountId, email: r.email, displayName: r.displayName, avatar: r.avatar || '', isAdmin: !!r.isAdmin, createdAt: r.createdAt, lastLoginTs: r.lastLoginTs, sessionExpireAt: r.sessionExpireAt };
+    } catch (e) { console.warn('[auth] init currentUser 失败：', e && e.message); }
+    try {
+      const r = (ch.api) ? await ch.api.auth.hasAnyAccount() : await ch.invoke('auth-has-any-account');
+      if (r && typeof r.hasAny === 'boolean') hasAny = r.hasAny;
+    } catch (e) { console.warn('[auth] init hasAnyAccount 失败：', e && e.message); }
+    AuthUI.currentUser   = curUser || { loggedIn: false, accountId: '__guest__' };
+    AuthUI.hasAnyAccount = hasAny;
+    renderTopAccountEntry();
+
+    // 2. 订阅 auth-state-change（登录/登出/改资料后都会广播）
+    const stateCb = async (userObj) => {
+      // 用户信息可能来自 preload 回调第一参数或 ipcRenderer.on 第二参数，此处统一按对象处理
+      const u = (userObj && typeof userObj === 'object' && !Array.isArray(userObj) && 'loggedIn' in userObj)
+        ? userObj
+        : null;
+      if (u) {
+        const prev = AuthUI.currentUser && AuthUI.currentUser.accountId;
+        const next = u.accountId;
+        AuthUI.currentUser = u;
+        if (u.loggedIn) AuthUI.hasAnyAccount = true;
+        renderTopAccountEntry();
+        // 账号切换（含游客→账号 / 账号→游客 / 账号A→账号B）→ 切换命名空间
+        if (prev !== next) await onAccountNamespaceSwitched(u);
+      }
+    };
+    if (ch.api && typeof ch.api.auth.onAuthStateChanged === 'function') {
+      ch.api.auth.onAuthStateChanged(stateCb);
+    } else if (ch.legacy) {
+      ch.on('auth-state-change', stateCb);
+    }
+  } catch (e) {
+    console.warn('[auth] initAuthUI 失败：', e && e.message);
+  }
+}
+
 // 初始化（唯一入口）
 async function init() {
-  // 加载配置
-  appState.config = await ipcRenderer.invoke('get-config');
+  // ★ 闪屏修复：第一时间判定登录态 → 决定要显示 auth 还是 home。
+  //   #viewHome 起始就是 hidden，#authPage 起始是显示的（index.html 调过了），所以
+  //   - 未登录：保持 authPage（首帧就是登录页）
+  //   - 已登录：先切隐藏 authPage，再 viewRouter.init() 显示 home
+  //   这样就不会"先闪 Copilot 再切登录"。
+  //   加载配置 / 简历 / 历史等都在判定完成后并行跑，保证首屏视觉顺序正确。
+  let isLoggedIn = false;
+  try {
+    // 先用 initAuthUI 拉 currentUser（会写入 AuthUI.currentUser）
+    //   注意：这里要顺序放最前面，因为后面的"已登录/未登录"决策依赖它。
+    await initAuthUI();
+    isLoggedIn = !!(AuthUI.currentUser && AuthUI.currentUser.loggedIn);
+  } catch (e) {
+    console.warn('[init] 启动判定登录态失败，默认显示登录页：', e && e.message);
+    isLoggedIn = false;
+  }
+
+  // 加载配置（异步，不阻塞视觉决策）
+  try { appState.config = await ipcRenderer.invoke('get-config'); } catch (e) { console.warn('[init] get-config 失败：', e && e.message); }
   // 系统A 老历史（仍加载，作为系统B 不可用时的兜底）
-  appState.history = await ipcRenderer.invoke('get-history');
+  try { appState.history = await ipcRenderer.invoke('get-history'); } catch (e) { console.warn('[init] get-history 失败：', e && e.message); }
 
   // 加载保存的简历
-  await loadResume();
+  try { await loadResume(); } catch (e) { console.warn('[init] loadResume 失败：', e && e.message); }
 
-  // 初始化UI
-  updateSettingsUI();
+  // 初始化UI（非致命：任一渲染失败都不应阻断后续事件绑定，否则会出现"页面能开但按钮全失效"）
+  try { updateSettingsUI(); } catch (e) { console.warn('[init] updateSettingsUI 失败（非致命）：', e && e.message); }
   // 先兜底渲染（如果系统B 没就绪，用户至少能看到老数据）
-  renderHistory(null);
+  try { renderHistory(null); } catch (e) { console.warn('[init] renderHistory 失败（非致命）：', e && e.message); }
 
   // 启动"系统B 历史（答题面板/H5/截图/ASR 共用的 state.history）"的周期性刷新
   // 首次立即刷一次，之后每 2 秒对比 historyVersion 决定是否重绘（避免无脑 DOM 重建）
@@ -458,7 +1113,7 @@ async function init() {
       const st = window.__sysbHistoryState;
 
       // 首次立即刷新
-      await refreshHistoryFromSystemB();
+      try { await refreshHistoryFromSystemB(); } catch (_) {}
 
       // 2 秒轮询：historyVersion 变化时才重绘 DOM，减少 CPU 抖动
       st.timer = setInterval(async () => {
@@ -479,7 +1134,7 @@ async function init() {
           if (next !== st.lastVersion || countChanged) {
             st.lastVersion = next;
             st.lastCount = count;
-            await refreshHistoryFromSystemB();
+            try { await refreshHistoryFromSystemB(); } catch (_) {}
           }
         } catch (e) {
           console.warn('[history][sysb] poll 异常:', e && e.message);
@@ -491,10 +1146,10 @@ async function init() {
   })();
 
   // 初始化字体大小缩放（A⁻ / 100% / A⁺）：必须在 bindEvents 前，保证与其他控件互不干扰
-  initFontZoom();
+  try { initFontZoom(); } catch (_) {}
 
   // 绑定事件
-  bindEvents();
+  try { bindEvents(); } catch (e) { console.warn('[init] bindEvents 失败：', e && e.message); }
 
   // 透明窗口模式：给可拖动区域添加 -webkit-app-region: drag
   // CSS 中通过 .draggable-region 选择器设置
@@ -507,28 +1162,32 @@ async function init() {
   });
 
   // 初始化窗口边缘缩放手柄
-  initResizeHandles();
+  try { initResizeHandles(); } catch (_) {}
 
   // 监听主进程发来的隐身模式切换事件（来自托盘菜单/快捷键）
-  ipcRenderer.on('stealth-mode-changed', (event, active) => {
-    appState.isStealthMode = active;
-    if (active) {
-      document.body.classList.add('stealth-active');
-      elements.toggleStealthBtn && elements.toggleStealthBtn.classList.add('active');
-    } else {
-      document.body.classList.remove('stealth-active', 'stealth-temp-reveal');
-      elements.toggleStealthBtn && elements.toggleStealthBtn.classList.remove('active');
-    }
-  });
+  try {
+    ipcRenderer.on('stealth-mode-changed', (event, active) => {
+      appState.isStealthMode = active;
+      if (active) {
+        document.body.classList.add('stealth-active');
+        elements.toggleStealthBtn && elements.toggleStealthBtn.classList.add('active');
+      } else {
+        document.body.classList.remove('stealth-active', 'stealth-temp-reveal');
+        elements.toggleStealthBtn && elements.toggleStealthBtn.classList.remove('active');
+      }
+    });
+  } catch (_) {}
 
   // 监听主进程的"临时全显"事件（Ctrl+Shift+Space 触发）
-  ipcRenderer.on('stealth-temp-reveal', (event, reveal) => {
-    if (reveal) {
-      document.body.classList.add('stealth-temp-reveal');
-    } else {
-      document.body.classList.remove('stealth-temp-reveal');
-    }
-  });
+  try {
+    ipcRenderer.on('stealth-temp-reveal', (event, reveal) => {
+      if (reveal) {
+        document.body.classList.add('stealth-temp-reveal');
+      } else {
+        document.body.classList.remove('stealth-temp-reveal');
+      }
+    });
+  } catch (_) {}
 
   // ★ 面试记录 Session 初始化
   //   1) 绑定面试相关 UI（📚 查看全部面试记录 / 结束横幅两按钮 / 公司&职位失焦自动开新场 / 列表&详情控件）
@@ -542,6 +1201,21 @@ async function init() {
     }
   } catch (e) {
     console.warn('[session] 初始化失败（非致命）：', e && e.message);
+  }
+
+  // ★ 闪屏修复：根据当前登录态决定最终显示哪个页面
+  //   - 未登录：强制显示 auth 全屏（openLoginModal 会自动切换卡片、刷新 hasAnyAccount 状态）
+  //   - 已登录：隐藏 auth 全屏 → 显示 viewRouter.init() 已经渲染好的 Home
+  if (isLoggedIn) {
+    // 已登录：authPage 必须隐藏（否则作为全屏覆盖层会盖住 home）
+    try { closeLoginModal(); } catch (e) { console.warn('[init] 已登录用户关闭 authPage 失败：', e && e.message); }
+    // 兜底：确保 #viewHome 可见（HTML 初始 hidden，viewRouter.init 应该已经去掉，但保险起见再去一次）
+    if (elements.viewHome && elements.viewHome.classList.contains('hidden')) {
+      elements.viewHome.classList.remove('hidden');
+    }
+  } else {
+    // 未登录：强制门 —— 停留在登录页（不允许进 Home）
+    try { await openLoginModal(); } catch (e) { console.warn('[init] 启动展示登录页失败：', e && e.message); }
   }
 }
 
@@ -651,6 +1325,16 @@ function bindEvents() {
   if (elements.alwaysOnTop) {
     elements.alwaysOnTop.addEventListener('change', () => {
       ipcRenderer.invoke('set-always-on-top', elements.alwaysOnTop.checked);
+    });
+  }
+
+  // ★ 截图/录屏「不可见」总开关：实时切换（不依赖点「保存设置」）。
+  //   切换后立即把全部窗口的捕获排除状态下发到主进程，实现「勾上就立刻不可见」。
+  if (elements.captureHideToggle) {
+    elements.captureHideToggle.addEventListener('change', async () => {
+      try {
+        await ipcRenderer.invoke('set-capture-hide', elements.captureHideToggle.checked);
+      } catch (_) { /* 忽略切换失败，不影响 UI */ }
     });
   }
   
@@ -793,6 +1477,321 @@ function bindEvents() {
   const _legacyCloseOverlayBtn = null;
   
   initOverlayDragResize();
+
+  // ★ 登录 / 账号 相关 UI 事件绑定
+  try { bindAuthEvents(); } catch (e) { console.warn('[bindEvents] bindAuthEvents 失败：', e && e.message); }
+}
+
+// ============================================================
+// ★ 登录 / 账号 UI：事件绑定（登录表单 / 初始化管理员 / 忘记密码 / 合并游客 / 登出）
+// ============================================================
+function bindAuthEvents() {
+  // ------------------------------------------------------------
+  // 1) 顶部登录按钮：点击打开登录弹窗
+  // ------------------------------------------------------------
+  if (elements.loginBtn) {
+    elements.loginBtn.addEventListener('click', () => openLoginModal());
+  }
+  // 关闭登录弹窗 ×
+  if (elements.closeLoginBtn) {
+    elements.closeLoginBtn.addEventListener('click', () => closeLoginModal());
+  }
+  // 点击登录弹窗遮罩（.modal）空白处：关闭
+  if (elements.loginModal) {
+    elements.loginModal.addEventListener('click', (ev) => {
+      if (ev.target === elements.loginModal) closeLoginModal();
+    });
+  }
+
+  // ------------------------------------------------------------
+  // 2) 普通登录表单提交
+  // ------------------------------------------------------------
+  if (elements.loginForm) {
+    elements.loginForm.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const email = String((elements.loginEmail && elements.loginEmail.value) || '').trim();
+      const pwd   = String((elements.loginPwd   && elements.loginPwd.value)   || '');
+      if (!AuthUI.emailRe.test(email)) { _setAuthError(elements.loginError, '请输入合法邮箱'); return; }
+      if (!pwd)                           { _setAuthError(elements.loginError, '请输入密码'); return; }
+      try {
+        const ch = _authCh(); if (!ch || (!ch.api && !ch.legacy)) return;
+        if (elements.loginSubmitBtn) elements.loginSubmitBtn.disabled = true;
+        const r = (ch.api) ? await ch.api.auth.login({ email, password: pwd }) : await ch.invoke('auth-login', { email, password: pwd });
+        if (!r || !r.ok) {
+          const code = r && r.error;
+          const msg = {
+            USER_NOT_FOUND: '账号不存在，请确认邮箱或联系管理员',
+            BAD_PASSWORD:  '密码错误，请重试',
+            SESSION_FAILED:'登录会话签发失败，请重试',
+          }[String(code || '')] || ('登录失败：' + (code || '未知原因'));
+          _setAuthError(elements.loginError, msg);
+          return;
+        }
+        // 登录成功：关闭弹窗；auth-state-change 事件会自动更新顶部头像
+        closeLoginModal();
+        // 询问是否合并游客数据
+        await maybeAskMergeGuest();
+      } catch (e) {
+        console.warn('[auth][login] 异常：', e && e.message);
+        _setAuthError(elements.loginError, '登录异常：' + (e && e.message || '未知'));
+      } finally {
+        if (elements.loginSubmitBtn) elements.loginSubmitBtn.disabled = false;
+      }
+    });
+  }
+
+  // ------------------------------------------------------------
+  // 3) 登录表单：忘记密码链接 → 打开忘记密码弹窗
+  // ------------------------------------------------------------
+  if (elements.forgotLink) {
+    elements.forgotLink.addEventListener('click', () => {
+      closeLoginModal();
+      openForgotModal();
+    });
+  }
+
+  // ------------------------------------------------------------
+  // 4) 初始化管理员表单提交（冷启动创建第一个本地账号）
+  // ------------------------------------------------------------
+  if (elements.initAdminForm) {
+    elements.initAdminForm.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const email = String((elements.initEmail && elements.initEmail.value) || '').trim();
+      const dn    = String((elements.initDisplayName && elements.initDisplayName.value) || '').trim();
+      const p1    = String((elements.initPwd && elements.initPwd.value) || '');
+      const p2    = String((elements.initPwd2 && elements.initPwd2.value) || '');
+      if (!AuthUI.emailRe.test(email)) { _setAuthError(elements.initAdminError, '请输入合法邮箱'); return; }
+      if (!dn)                            { _setAuthError(elements.initAdminError, '请填写显示名 / 昵称'); return; }
+      if (p1.length < 6)                  { _setAuthError(elements.initAdminError, '密码至少 6 位'); return; }
+      if (p1 !== p2)                      { _setAuthError(elements.initAdminError, '两次输入的密码不一致'); return; }
+      try {
+        const ch = _authCh(); if (!ch || (!ch.api && !ch.legacy)) return;
+        if (elements.initAdminSubmitBtn) elements.initAdminSubmitBtn.disabled = true;
+        // createAccount：authService 内部已要求 hasAnyAccount=false 才能成功，否则返回 DEAD_END
+        const r = (ch.api)
+          ? await ch.api.auth.createAccount({ email, displayName: dn, password: p1, isAdmin: true })
+          : await ch.invoke('auth-create-account', { email, displayName: dn, password: p1, isAdmin: true });
+        if (!r || !r.ok) {
+          const code = r && r.error;
+          const msg = {
+            INVALID_EMAIL:    '邮箱格式不正确',
+            WEAK_PASSWORD:    '密码过于简单（至少 6 位）',
+            DUPLICATE_EMAIL:  '该邮箱已创建过账号，请直接登录',
+            DEAD_END:         '本地已存在账号，如需新增请通过宣传网站或手动编辑 accounts.json',
+          }[String(code || '')] || ('创建失败：' + (code || '未知原因'));
+          _setAuthError(elements.initAdminError, msg);
+          return;
+        }
+        // 创建成功：紧接着自动登录（createAccount 本身不签发会话，需 login 一次）
+        const lr = (ch.api)
+          ? await ch.api.auth.login({ email, password: p1 })
+          : await ch.invoke('auth-login', { email, password: p1 });
+        if (!lr || !lr.ok) {
+          _setAuthError(elements.initAdminError, '账号创建成功，但自动登录失败，请手动登录');
+          AuthUI.hasAnyAccount = true;
+          closeLoginModal();
+          setTimeout(() => openLoginModal(), 150);
+          return;
+        }
+        closeLoginModal();
+      } catch (e) {
+        console.warn('[auth][init-admin] 异常：', e && e.message);
+        _setAuthError(elements.initAdminError, '创建异常：' + (e && e.message || '未知'));
+      } finally {
+        if (elements.initAdminSubmitBtn) elements.initAdminSubmitBtn.disabled = false;
+      }
+    });
+  }
+
+  // ------------------------------------------------------------
+  // 5) 忘记密码流程（三步）
+  // ------------------------------------------------------------
+  if (elements.closeForgotBtn) {
+    elements.closeForgotBtn.addEventListener('click', () => closeForgotModal());
+  }
+  if (elements.forgotPwdModal) {
+    elements.forgotPwdModal.addEventListener('click', (ev) => {
+      if (ev.target === elements.forgotPwdModal) closeForgotModal();
+    });
+  }
+  if (elements.forgotBack1) {
+    elements.forgotBack1.addEventListener('click', () => { closeForgotModal(); openLoginModal(); });
+  }
+  if (elements.forgotBack2) {
+    elements.forgotBack2.addEventListener('click', () => {
+      if (elements.forgotError2)  elements.forgotError2.classList.add('hidden');
+      setForgotStep(1);
+    });
+  }
+  if (elements.forgotGoLogin) {
+    elements.forgotGoLogin.addEventListener('click', () => {
+      // 步骤3 → 登录页：优先切卡片（不重新 hasAnyAccount 拉取，速度更快）；兜底再调 openLoginModal
+      try {
+        const cards = [elements.loginPageCard, elements.forgotPageCard, elements.mergePageCard];
+        cards.forEach((c) => { if (c) c.classList.add('hidden'); });
+        if (elements.loginPageCard) elements.loginPageCard.classList.remove('hidden');
+        if (elements.authPage)     elements.authPage.classList.remove('hidden');
+        setForgotStep(1);
+      } catch (_) {
+        openLoginModal();
+      }
+    });
+  }
+
+  // ------------------------------------------------------------
+  // 3.5) 登录页：无「返回」按钮
+  //   设计：登录页为强制门，只有登录成功（login/merge 表单提交通过）
+  //   才会 closeLoginModal()/hideAuthPage() 进入 Copilot 主窗口。
+  //   不提供"不登录就退出"的路径，故无需返回按钮及其事件绑定。
+  // ------------------------------------------------------------
+  // Step1 表单：邮箱 → 获取重置码 → 切换到步骤 2 并显示
+  if (elements.forgotStep1Form) {
+    elements.forgotStep1Form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const email = String((elements.forgotEmail && elements.forgotEmail.value) || '').trim();
+      if (!AuthUI.emailRe.test(email)) { _setAuthError(elements.forgotError, '请输入合法邮箱'); return; }
+      try {
+        const ch = _authCh(); if (!ch || (!ch.api && !ch.legacy)) return;
+        if (elements.forgotStep1Next) elements.forgotStep1Next.disabled = true;
+        const r = (ch.api) ? await ch.api.auth.forgotStep1({ email }) : await ch.invoke('auth-forgot-step1', { email });
+        if (!r || !r.ok) {
+          const code = r && r.error;
+          const msg = { USER_NOT_FOUND: '该邮箱未注册账号' }[String(code || '')] || ('生成重置码失败：' + (code || '未知'));
+          _setAuthError(elements.forgotError, msg); return;
+        }
+        // 显示重置码（桌面端直接显示，不发邮件）
+        const code = String(r.resetCode || '').trim();
+        if (elements.forgotResetCodeDisplay) {
+          elements.forgotResetCodeDisplay.classList.remove('hidden');
+          elements.forgotResetCodeDisplay.innerHTML = '';
+          const label = document.createElement('div');
+          label.className = 'rc-label';
+          label.textContent = '本机一次性重置码（请复制使用）：';
+          const copyBox = document.createElement('div');
+          copyBox.className = 'rc-copy';
+          copyBox.textContent = code;
+          copyBox.title = '点击复制';
+          copyBox.addEventListener('click', async () => {
+            try {
+              if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(code);
+                const old = copyBox.textContent;
+                copyBox.textContent = '✅ 已复制';
+                setTimeout(() => { copyBox.textContent = old; }, 1200);
+              }
+            } catch (_) { /* 复制失败不影响下一步 */ }
+          });
+          elements.forgotResetCodeDisplay.appendChild(label);
+          elements.forgotResetCodeDisplay.appendChild(copyBox);
+        }
+        setForgotStep(2);
+      } catch (e) {
+        console.warn('[auth][forgot-s1] 异常：', e && e.message);
+        _setAuthError(elements.forgotError, '请求异常：' + (e && e.message || '未知'));
+      } finally {
+        if (elements.forgotStep1Next) elements.forgotStep1Next.disabled = false;
+      }
+    });
+  }
+  // Step2 表单：重置码 + 新密码 × 2 → 重置 → 切换步骤 3
+  if (elements.forgotStep2Form) {
+    elements.forgotStep2Form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const email = String((elements.forgotEmail && elements.forgotEmail.value) || '').trim();
+      const code  = String((elements.forgotResetInput && elements.forgotResetInput.value) || '').trim();
+      const p1    = String((elements.forgotNewPwd   && elements.forgotNewPwd.value)   || '');
+      const p2    = String((elements.forgotNewPwd2  && elements.forgotNewPwd2.value)  || '');
+      if (!code || code.length < 6)                 { _setAuthError(elements.forgotError2, '请输入正确的重置码'); return; }
+      if (p1.length < 6)                            { _setAuthError(elements.forgotError2, '新密码至少 6 位'); return; }
+      if (p1 !== p2)                                { _setAuthError(elements.forgotError2, '两次新密码不一致'); return; }
+      try {
+        const ch = _authCh(); if (!ch || (!ch.api && !ch.legacy)) return;
+        if (elements.forgotStep2Submit) elements.forgotStep2Submit.disabled = true;
+        const r = (ch.api)
+          ? await ch.api.auth.forgotStep2Reset({ email, resetCode: code, newPassword: p1 })
+          : await ch.invoke('auth-forgot-step2-reset', { email, resetCode: code, newPassword: p1 });
+        if (!r || !r.ok) {
+          const code_e = r && r.error;
+          const msg = {
+            USER_NOT_FOUND:   '该邮箱未注册账号',
+            BAD_RESET_CODE:   '重置码错误或已过期',
+            WEAK_PASSWORD:    '新密码过于简单（至少 6 位）',
+          }[String(code_e || '')] || ('重置失败：' + (code_e || '未知原因'));
+          _setAuthError(elements.forgotError2, msg);
+          return;
+        }
+        setForgotStep(3);
+      } catch (e) {
+        console.warn('[auth][forgot-s2] 异常：', e && e.message);
+        _setAuthError(elements.forgotError2, '请求异常：' + (e && e.message || '未知'));
+      } finally {
+        if (elements.forgotStep2Submit) elements.forgotStep2Submit.disabled = false;
+      }
+    });
+  }
+
+  // ------------------------------------------------------------
+  // 6) 头像下拉菜单点击（展示 / 隐藏 + 点外部关闭）
+  // ------------------------------------------------------------
+  if (elements.userAvatarBtn) {
+    elements.userAvatarBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (elements.userDropdown) elements.userDropdown.classList.toggle('hidden');
+    });
+  }
+  // 点下拉外部关闭
+  document.addEventListener('click', (ev) => {
+    if (!elements.userDropdown || elements.userDropdown.classList.contains('hidden')) return;
+    if (elements.userArea && elements.userArea.contains(ev.target)) return;
+    elements.userDropdown.classList.add('hidden');
+  });
+  // ESC 也关下拉
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      if (elements.userDropdown && !elements.userDropdown.classList.contains('hidden')) {
+        elements.userDropdown.classList.add('hidden');
+      }
+    }
+  });
+  // 下拉菜单项：个人中心 / 账号设置 / 退出登录
+  if (elements.userDropdown) {
+    elements.userDropdown.addEventListener('click', async (ev) => {
+      const item = ev.target && ev.target.closest && ev.target.closest('.ud-item');
+      if (!item) return;
+      const act = String(item.dataset.act || '');
+      // 点击任何菜单项后都先收起来，避免遮挡后续弹窗
+      elements.userDropdown.classList.add('hidden');
+      if (act === 'profile') {
+        showToast('个人中心：功能入口预留（宣传网站上线后提供）', 'info');
+      } else if (act === 'settings') {
+        showToast('账号设置：修改密码 / 改昵称功能稍后补充', 'info');
+      } else if (act === 'logout') {
+        try {
+          const ch = _authCh(); if (!ch || (!ch.api && !ch.legacy)) return;
+          if (ch.api) await ch.api.auth.logout();
+          else         await ch.invoke('auth-logout');
+          // auth-state-change 会自动刷新顶部入口 + 切换游客命名空间
+        } catch (e) {
+          console.warn('[auth][logout] 异常：', e && e.message);
+          showToast('退出登录失败：' + (e && e.message || '未知'), 'error');
+        }
+      }
+    });
+  }
+
+  // ------------------------------------------------------------
+  // 7) 合并游客数据弹窗：🟢 已废弃，保留空实现以兼容 HTML 元素可能存在（但点击无副作用）
+  // ------------------------------------------------------------
+  if (elements.mergeSkipBtn) {
+    elements.mergeSkipBtn.addEventListener('click', () => closeMergeGuestDialog());
+  }
+  if (elements.mergeDoBtn) {
+    elements.mergeDoBtn.addEventListener('click', () => {
+      // 🟢 合并功能已移除：提示用户，不做任何数据搬运 / 删除
+      showToast('ℹ️ 合并游客数据功能已停用，登录后将直接显示当前账号名下的 SQLite 数据', 'info');
+      closeMergeGuestDialog();
+    });
+  }
 }
 
 // 初始化面试弹窗的拖动和缩放（拖动范围 = 整个电脑屏幕，含多显示器）
@@ -965,6 +1964,10 @@ function updateSettingsUI() {
   elements.audioBoost.value = appState.config.audioBoost || 50;
   elements.audioBoostValue.textContent = (appState.config.audioBoost || 50) + 'x';
   elements.autoSaveHistory.checked = appState.config.autoSaveHistory !== false;
+  // 截图/录屏不可见总开关：默认开启（config.captureHide !== false）
+  if (elements.captureHideToggle) {
+    elements.captureHideToggle.checked = appState.config.captureHide !== false;
+  }
 
   // 格式化显示快捷键
   const displayHotkey = formatHotkeyForDisplay(appState.config.hotkey || 'CommandOrControl+Shift+H');
@@ -1000,6 +2003,10 @@ function saveSettings() {
   appState.config.processingInterval = parseInt(elements.processingInterval.value);
   appState.config.audioBoost = parseInt(elements.audioBoost.value);
   appState.config.autoSaveHistory = elements.autoSaveHistory.checked;
+  // 截图/录屏不可见总开关状态写回配置（实时切换在 change 事件里已下发 IPC，这里仅持久化）
+  if (elements.captureHideToggle) {
+    appState.config.captureHide = elements.captureHideToggle.checked;
+  }
 
   saveConfig();
   elements.settingsModal.classList.remove('open');
@@ -2518,6 +3525,21 @@ function updateListeningUI(isListening) {
 
 // 开始面试
 async function startInterview() {
+  // ★ 积分预校验：Copilot 真实面试场（单场首次启动扣 5 积分，价格对齐 server.js CREDIT_PRICE_LIST.COPILOT_PER_SESSION=5）
+  //   - 积分充足 → 放行；离线/本地 → 放行并弹提示；不足 → 引导充值并取消启动
+  const pre = await tryConsumeCreditsBefore({
+    bizType: 'copilot_session',
+    credits: 5,
+    bizName: 'Copilot 面试场（系统声音/麦克风捕获）',
+    bizId:   (appState && appState.currentSessionId) ? String(appState.currentSessionId) : undefined,
+    desc:    '真实面试场开始：按场计费，30 分钟内同场面试不重复扣费。',
+  });
+  if (!pre || !pre.ok) {
+    // 扣费失败（主要是积分不足已被用户取消）：直接 return，不再进入捕获
+    console.warn('[startInterview] 积分未通过，已取消启动：', (pre && pre.msg) || pre);
+    return;
+  }
+
   // 内嵌面试蒙版已废弃（答题面板现已切换为独立 overlayWindow 窗口）：
   // - 不再 show() 本地 document.getElementById('interviewOverlay')；
   // - 独立面板由主窗口「开始面试辅助」按钮（copilot.js startInterviewAssist）通过 api.openOverlay() 打开。
@@ -2717,15 +3739,16 @@ function formatDuration(startedAt, endedAt) {
 }
 
 /**
- * viewRouter：home / sessions-list / session-detail 三态切换。
+ * viewRouter：home / sessions-list / session-detail / end-session 四态切换。
  * 设计：
  *   - 默认 state.view = 'home'
  *   - go('home')                       → 显示首页，隐藏其他
  *   - go('list')                       → 显示列表 + 调用 renderSessionsList()
  *   - go('detail', sessionId, roundId) → 详情页 + 渲染 + roundId 锚点高亮
+ *   - go('end', payload)               → 显示面试结束总结页（payload 含 sessionId / roundsCount 等）
  */
 const viewRouter = {
-  /** 当前路由：home / list / detail */
+  /** 当前路由：home / list / detail / end */
   state: { view: 'home', detailSessionId: null, highlightRoundId: null },
 
   /** 初始化：默认显示首页，不做任何会话 IPC（避免启动首屏等待） */
@@ -2756,6 +3779,14 @@ const viewRouter = {
         this._applyDom();
         await renderSessionDetail(this.state.detailSessionId, this.state.highlightRoundId);
         break;
+      case 'end':
+        this.state.view = 'end';
+        this._applyDom();
+        // 渲染结束总结页：payload 可能为空（直接 go('end')）
+        if (payload && typeof payload === 'object') {
+          renderEndSessionView(payload);
+        }
+        break;
       default:
         this.state.view = 'home';
         this._applyDom();
@@ -2764,7 +3795,7 @@ const viewRouter = {
 
   /** 纯 DOM 切换：显示目标 panel / 隐藏其他；无数据请求 */
   _applyDom() {
-    const panels = [elements.viewHome, elements.viewSessionsList, elements.viewSessionDetail];
+    const panels = [elements.viewHome, elements.viewSessionsList, elements.viewSessionDetail, elements.endSessionView];
     panels.forEach((p) => {
       if (!p) return;
       if (!p.classList.contains('view-panel')) p.classList.add('view-panel');
@@ -2776,6 +3807,9 @@ const viewRouter = {
         break;
       case 'detail':
         elements.viewSessionDetail && elements.viewSessionDetail.classList.remove('hidden');
+        break;
+      case 'end':
+        elements.endSessionView && elements.endSessionView.classList.remove('hidden');
         break;
       case 'home':
       default:
@@ -3049,6 +4083,21 @@ async function renderSessionDetail(sessionId, highlightRoundId) {
     const cb = Object.assign({ onInterim: () => {}, onFinal: () => {}, onError: () => {}, onStateChange: () => {} }, callbacks || {});
     const state = { running: false };
     const setState = (s) => { cb.onStateChange(s); };
+
+    // ★ 积分预校验：AI 模拟面试每 1 轮（面试官 1 问 + 你 1 答 + AI 点评）扣 3 分（MOCK_PER_ROUND）
+    const pre = await tryConsumeCreditsBefore({
+      bizType: 'mock_round',
+      credits: 3,
+      bizName: 'AI 模拟面试（1 轮问答）',
+      bizId:   (opts && (opts.roundId || opts.sessionId)) ? String(opts.roundId || opts.sessionId) : undefined,
+      desc:    '模拟面试 1 轮：包含面试官提问、你的语音作答、AI 点评反馈。',
+    });
+    if (!pre || !pre.ok) {
+      cb.onError((pre && pre.msg) || '积分不足，已取消本轮模拟面试。');
+      setState('stopped');
+      return { stop: async () => {}, isRunning: () => false };
+    }
+
     setState('starting');
 
     // 1) 取媒体流（麦克风）
@@ -3233,16 +4282,16 @@ async function renderSessionDetail(sessionId, highlightRoundId) {
 })();
 
 /**
- * 监听主进程广播「浮动答题面板已被关闭，本场面试已结束」→ 显示两按钮横幅。
+ * 监听主进程广播「浮动答题面板已被关闭，本场面试已结束」→ 显示面试结束总结页。
  *   优先走 electronAPI.onOverlayClosedPostSession（preload 桥），
  *   失败直连 window.ipcRenderer.on('overlay:closed-post-session')。
  */
 function bindOverlayClosedPostSessionListener() {
   const handler = (payload) => {
     try {
-      showEndSessionBanner(payload || {});
+      renderEndSessionView(payload || {});
     } catch (e) {
-      console.warn('[session][end-banner] showEndSessionBanner 异常:', e && e.message);
+      console.warn('[session][end-view] renderEndSessionView 异常:', e && e.message);
     }
   };
   if (window.electronAPI && typeof window.electronAPI.onOverlayClosedPostSession === 'function') {
@@ -3260,52 +4309,83 @@ function bindOverlayClosedPostSessionListener() {
 }
 
 /**
- * 显示「本场面试已结束」两按钮横幅：关闭浮动面板后，主窗口中央弹提示。
- *   🔍 查看本场面试记录 → viewRouter.go('detail', sessionId)
- *   🆕 开启新的面试      → 隐藏横幅 + startNewSession（带当前公司/职位快照）
- *   × 关闭横幅           → 仅 hide，不做任何业务动作（用户稍后自己手动切）
- * @param {{sessionId?:string, roundsCount?:number, startedAt?:number, endedAt?:number, company?:string, position?:string, endResError?:string, endResMsg?:string}} payload
+ * 最近一次渲染的面试结束页 payload，供页面内按钮事件共享。
+ * 注意：不能直接挂到 DOM dataset（避免对象循环），用模块级闭包保存。
  */
-function showEndSessionBanner(payload) {
-  const ban = elements.endSessionBanner;
-  if (!ban) return;
-  const titleEl = elements.endSessionBannerTitle;
-  const subEl = elements.endSessionBannerSub;
-  const rounds = Number(payload && payload.roundsCount) || 0;
-  const company = String((payload && payload.company) || '未知公司').trim() || '未知公司';
-  const position = String((payload && payload.position) || '未知职位').trim() || '未知职位';
-  titleEl && (titleEl.textContent = `${company} · ${position} 已结束`);
-  const durStr = formatDuration(Number(payload && payload.startedAt) || 0, Number(payload && payload.endedAt) || Date.now());
-  const subBits = [];
-  subBits.push(`本场共 ${rounds} 轮对话`);
-  durStr && subBits.push(`时长 ${durStr}`);
-  const err = String((payload && payload.endResError) || '').trim();
-  if (err) {
-    const msg = String((payload && payload.endResMsg) || '').trim() || '';
-    subBits.push(`注：${err}${msg ? (' — ' + msg) : ''}`);
+let _lastEndSessionPayload = {};
+
+/**
+ * 渲染「面试结束总结页」：关闭浮动面板后，主窗口切换到全页总结。
+ *   面试时长 / 检测到问题 / AI 建议 · 保存提示 · 评分 · 推荐 · 复盘/新面试
+ * @param {{sessionId?:string, roundsCount?:number, answeredCount?:number, startedAt?:number, endedAt?:number, company?:string, position?:string, endResError?:string, endResMsg?:string}} payload
+ */
+function renderEndSessionView(payload) {
+  payload = payload || {};
+  _lastEndSessionPayload = payload;
+
+  const view = elements.endSessionView;
+  const metaEl = elements.esvSessionMeta;
+  const durEl = elements.esvDuration;
+  const qEl = elements.esvQuestionCount;
+  const aEl = elements.esvAnswerCount;
+  if (!view) return;
+
+  const company = String(payload.company || '未知公司').trim() || '未知公司';
+  const position = String(payload.position || '未知职位').trim() || '未知职位';
+  if (metaEl) {
+    metaEl.innerHTML = `<span class="pill">${escapeHtml(company)} · ${escapeHtml(position)}</span><span class="pill status-closed">已结束</span>`;
   }
-  subEl && (subEl.textContent = subBits.join(' · '));
 
-  // 记录当前 sessionId / 元信息，按钮点击时使用
-  ban.dataset.lastSessionId = String((payload && payload.sessionId) || '');
-  ban.dataset.roundsCount   = String(rounds);
+  const durStr = formatDuration(Number(payload.startedAt) || 0, Number(payload.endedAt) || Date.now());
+  if (durEl) durEl.textContent = durStr || '—';
+  if (qEl) qEl.textContent = String(Number(payload.roundsCount) || 0);
+  if (aEl) aEl.textContent = String(Number(payload.answeredCount) || Number(payload.roundsCount) || 0);
 
-  // banner 是 viewHome 内的 fixed 中央模态，不管当前 viewRouter 在 list/detail，先切回 home 再显示
+  // 每次打开重置评分
+  resetEndSessionRating();
+
+  // 切换到结束总结页（viewRouter 会处理 DOM 显隐）
+  if (typeof viewRouter === 'object' && viewRouter && typeof viewRouter.go === 'function') {
+    viewRouter.go('end');
+  }
+}
+
+/** 隐藏面试结束总结页：回到首页 */
+function hideEndSessionView() {
   if (typeof viewRouter === 'object' && viewRouter && typeof viewRouter.go === 'function') {
     viewRouter.go('home');
   }
-  ban.classList.remove('hidden');
 }
-/** 隐藏本场面试已结束横幅（× / 点击任一 action 按钮后都会调） */
-function hideEndSessionBanner() {
-  const ban = elements.endSessionBanner;
-  ban && ban.classList.add('hidden');
+
+/**
+ * 重置评分星星为未选择状态。
+ */
+function resetEndSessionRating() {
+  const stars = elements.esvRatingStars;
+  const hint = elements.esvRatingHint;
+  if (stars) {
+    stars.dataset.rating = '0';
+    Array.from(stars.querySelectorAll('button')).forEach((btn) => {
+      btn.textContent = '☆';
+      btn.classList.remove('selected');
+    });
+  }
+  if (hint) hint.textContent = '点击星星评分';
+}
+
+/**
+ * 提交用户评分（当前仅本地记录，可扩展为上报）。
+ * @param {number} rating 1-5
+ */
+function submitEndSessionRating(rating) {
+  console.log('[session][end] 用户评分:', rating, 'sessionId:', _lastEndSessionPayload && _lastEndSessionPayload.sessionId);
+  // TODO：可在此调用统计接口，例如 window.electronAPI.feedbackRating(rating, sessionId)
 }
 
 /**
  * 绑定面试 Session 的所有 UI 事件。
  *   - Copilot 卡片区「📚 查看全部面试记录」按钮：go('list')
- *   - 结束横幅 ESB：× 关闭 / 🔍查看本场 / 🆕开启新面试
+ *   - 面试结束总结页 ESV：返回 / 🔍查看本场 / ✨复盘 / 🆕开启新面试 / 评分 / 复制推荐链接
  *   - 列表页：返回 / 搜索回车 / 刷新按钮
  *   - 详情页：返回（统一回到列表页，符合用户心智）
  *   - 公司/职位：失焦 + 1.5s 防抖 → 非空且变化 → 自动 startNewSession（用户未要求删除，保留）
@@ -3316,28 +4396,44 @@ function bindSessionUIActions() {
     elements.btnViewAllSessions.addEventListener('click', () => viewRouter.go('list'));
   }
 
-  // -------- 结束横幅 ESB：× / 查看本场 / 开启新面试 --------
-  if (elements.esbClose) {
-    elements.esbClose.addEventListener('click', () => hideEndSessionBanner());
+  // -------- 面试结束总结页 ESV：返回 / 查看本场 / 复盘 / 开启新面试 / 评分 / 复制推荐链接 --------
+  if (elements.esvBackHomeBtn) {
+    elements.esvBackHomeBtn.addEventListener('click', () => hideEndSessionView());
   }
-  if (elements.esbViewDetailBtn) {
-    elements.esbViewDetailBtn.addEventListener('click', () => {
-      const ban = elements.endSessionBanner;
-      const sid = ban ? String(ban.dataset.lastSessionId || '') : '';
+  if (elements.esvViewDetailBtn) {
+    elements.esvViewDetailBtn.addEventListener('click', () => {
+      const sid = String((_lastEndSessionPayload && _lastEndSessionPayload.sessionId) || '');
       if (!sid) {
         // 小概率异常：无 sessionId → 兜底跳列表页让用户挑一场
         showToast('未能识别本场面试 ID，已跳到全部记录列表', 'warn');
-        hideEndSessionBanner();
+        hideEndSessionView();
         viewRouter.go('list');
         return;
       }
-      hideEndSessionBanner();
+      hideEndSessionView();
       viewRouter.go('detail', sid);
     });
   }
-  if (elements.esbNewSessionBtn) {
-    elements.esbNewSessionBtn.addEventListener('click', async () => {
-      hideEndSessionBanner();
+  if (elements.esvReviewBtn) {
+    // 「面试复盘」按钮：触发 Copilot 的 AI 复盘（先回到首页再打开复盘弹窗）
+    elements.esvReviewBtn.addEventListener('click', async () => {
+      hideEndSessionView();
+      try {
+        // 触发 Copilot 模块的 generateReviewForHistory（定义在 copilot.js，挂载在 window 上）
+        if (window.generateReviewForHistory && typeof window.generateReviewForHistory === 'function') {
+          await window.generateReviewForHistory();
+        } else {
+          showToast('复盘入口尚未就绪，请稍后手动点击「✨ 生成 AI 复盘」', 'warn');
+        }
+      } catch (e) {
+        console.warn('[session][esv-review] 复盘异常:', e && e.message);
+        showToast('生成复盘失败：' + (e && e.message || '异常'), 'error');
+      }
+    });
+  }
+  if (elements.esvNewSessionBtn) {
+    elements.esvNewSessionBtn.addEventListener('click', async () => {
+      hideEndSessionView();
       try {
         const cfg = readCompanyPositionSnapshot();
         const r = await _callInterviewSession('start', cfg);
@@ -3349,9 +4445,52 @@ function bindSessionUIActions() {
           showToast('开新场失败：' + ((r && r.msg) || '未知原因'), 'error');
         }
       } catch (e) {
-        console.warn('[session][esb-new] 异常:', e && e.message);
+        console.warn('[session][esv-new] 异常:', e && e.message);
         showToast('开新场失败：' + (e && e.message || '异常'), 'error');
       }
+    });
+  }
+  if (elements.esvCopyInviteBtn) {
+    elements.esvCopyInviteBtn.addEventListener('click', async () => {
+      const inviteLink = 'https://hireme.ai/invite?ref=desktop';
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(inviteLink);
+        } else {
+          // 兜底：创建临时 textarea
+          const ta = document.createElement('textarea');
+          ta.value = inviteLink;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        showToast('推荐链接已复制到剪贴板', 'ok');
+      } catch (e) {
+        console.warn('[session][esv-invite] 复制失败:', e && e.message);
+        showToast('复制失败：' + (e && e.message || '异常'), 'error');
+      }
+    });
+  }
+  if (elements.esvRatingStars) {
+    const starBtns = elements.esvRatingStars.querySelectorAll('button[data-star]');
+    starBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const rating = Number(btn.dataset.star) || 0;
+        const stars = elements.esvRatingStars;
+        if (stars) stars.dataset.rating = String(rating);
+        starBtns.forEach((b) => {
+          const s = Number(b.dataset.star) || 0;
+          b.textContent = s <= rating ? '★' : '☆';
+          b.classList.toggle('selected', s <= rating);
+        });
+        const hint = elements.esvRatingHint;
+        const hints = ['点击星星评分', '继续努力', '一般般', '还不错', '很满意', '太棒了'];
+        if (hint) hint.textContent = hints[rating] || '点击星星评分';
+        submitEndSessionRating(rating);
+      });
     });
   }
 

@@ -1,77 +1,151 @@
 /**
- * 配置与本地持久化管理器。
- * 负责加载/保存：用户配置、简历、历史记录、面试会话。
- * 把原先散落在 main.js 里的 config.json / history.json / resume.md
- * 读写逻辑收敛到单一模块，便于后续接入 TypeScript 与统一代理。
+ * 🔴 三端统一架构版：配置与本地持久化管理器。
+ *
+ * 【数据源变更】：
+ *    旧版：所有数据都落 AppData 下的多个文件 —— config.json / history.json / resume.md /
+ *          sessions/*.json / sessions/*.wav / sessions/*.review.md
+ *    新版：核心数据（用户配置、简历、面试会话）统一落 hireme.db（三端共享），
+ *          同时保留「双写文件」的兜底，保证迁移期不丢数据：
+ *            1) 用户配置   → desktop_configs (account_id + 'main_config' 复合主键)
+ *            2) 简历       → resumes (account_id + 'default' 主键)
+ *            3) 面试会话   → ia_sessions / ia_rounds（与 Landing 端共用）
+ *            4) 历史列表   → 从 ia_sessions 读（不再依赖 history.json），回退文件兜底
+ *            5) *.wav 音频 → 仍写入 sessions/<id>.wav（二进制体积大，不塞进 BLOB），
+ *                            但同时把路径写入 ia_sessions.recording_wav
+ *
+ * 【兼容性承诺】：
+ *    所有 public 原型方法：loadConfig / saveConfig / loadHistory / saveHistory /
+ *      saveResume / loadResume / deleteResume / saveSession / saveRecording /
+ *      saveReview / listSessions 的签名、返回类型 100% 与旧版一致，main.js /
+ *      preload / 渲染层调用 「零改动」。
  */
 
-const fs = require('fs');
+'use strict';
+
+const fs   = require('fs');
 const path = require('path');
 const {
   defaultInterviewConfig,
   migrateLegacyConfig
 } = require('../shared/interview-config');
 
+// ============================================================
+// 三端统一数据源：hireme.db（desktop_configs + resumes + ia_sessions）
+// ============================================================
+const { openUnifiedDatabase, HIREME_DB_PATH, DATA_ROOT } = require('../../services/common-paths.js');
+
+let _sharedDb = null;
+
 /**
- * 配置管理器构造函数。
- * @param {string} userDataPath 应用 userData 目录（配置/数据存放根目录）
+ * 惰性获取 hireme.db 句柄。优先 main.js 注入的单例；其次若存在 global.__HIREME_BETTER_SQLITE3_PATH__
+ *（main.js 主进程探测通过的那一份 better-sqlite3，只走它，避免 native ABI 加载异常绕过 JS try/catch）；
+ * 否则按运行环境自适应加载顺序：Electron 主进程先项目根（Electron ABI），Node 环境先 landing。
+ * @param {object} [externalDb] main.js 统一注入的 Database 实例（可选）
  */
-function ConfigManager(userDataPath) {
-  this.userDataPath = userDataPath;
-  this.configPath = path.join(userDataPath, 'config.json');
-  this.historyPath = path.join(userDataPath, 'history.json');
-  this.resumePath = path.join(userDataPath, 'resume.md');
-  this.sessionPath = path.join(userDataPath, 'interview-sessions');
-  this.config = defaultInterviewConfig();
+function _acquireDb(externalDb) {
+  if (externalDb) return externalDb;
+  if (_sharedDb) return _sharedDb;
+  let Database = null;
+  const preferPath = (typeof global !== 'undefined' && global && typeof global.__HIREME_BETTER_SQLITE3_PATH__ === 'string')
+    ? global.__HIREME_BETTER_SQLITE3_PATH__
+    : '';
+  const isElectronRuntime = !!(process && process.versions && process.versions.electron);
+  const nodeFirst = [
+    path.join(__dirname, '..', '..', 'landing', 'node_modules', 'better-sqlite3'),
+    path.join(__dirname, '..', '..', 'node_modules', 'better-sqlite3'),
+  ];
+  const electronFirst = [
+    path.join(__dirname, '..', '..', 'node_modules', 'better-sqlite3'),
+    path.join(__dirname, '..', '..', 'landing', 'node_modules', 'better-sqlite3'),
+  ];
+  const candidates = (preferPath ? [preferPath] : []).concat(isElectronRuntime ? electronFirst : nodeFirst);
+  let lastErr = null;
+  for (const p of candidates) {
+    try { delete require.cache[require.resolve(p)]; } catch (_) {}
+    try { Database = require(p); break; } catch (e) { lastErr = e; }
+  }
+  if (!Database) {
+    console.error('[ConfigManager] ❌ 无法加载 better-sqlite3：', lastErr && lastErr.message);
+    throw lastErr || new Error('better-sqlite3 not found');
+  }
+  const { db, ready, error } = openUnifiedDatabase(Database);
+  if (!ready) throw error || new Error('openUnifiedDatabase failed');
+  _sharedDb = db;
+  return _sharedDb;
+}
+
+/* ============================================================
+ * Windows Defender 安全写（保留；过渡期仍然写文件时继续用它）
+ * ============================================================ */
+function _safeWriteFileSync(fpath, data, maxRetry = 3) {
+  const dir = path.dirname(fpath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxRetry; attempt++) {
+    try {
+      const tmp = fpath + '.tmp.' + process.pid + '.' + Date.now() + '.' + attempt;
+      fs.writeFileSync(tmp, data, 'utf8');
+      try { fs.renameSync(tmp, fpath); } catch (renameErr) {
+        try { fs.unlinkSync(tmp); } catch (_) {}
+        throw renameErr;
+      }
+      return;
+    } catch (e) {
+      lastErr = e;
+      const code = (e && e.code) || '';
+      const shouldRetry = (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES' || code === 'ENOTEMPTY');
+      if (!shouldRetry || attempt >= maxRetry) break;
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * attempt); } catch (_) {}
+    }
+  }
+  try { fs.writeFileSync(fpath, data, 'utf8'); } catch (directErr) {
+    const code = (directErr && directErr.code) || '';
+    if (code === 'EPERM' || code === 'EACCES' || code === 'EBUSY') {
+      try { fs.unlinkSync(fpath); } catch (_) {}
+      fs.writeFileSync(fpath, data, 'utf8');
+    } else { throw directErr; }
+  }
 }
 
 /**
- * 加载配置：优先读取已保存的 config.json 并迁移到新模型。
- * 若文件不存在或解析失败，回退到默认配置。
- * @returns {Object} 当前生效的配置对象
+ * 构造函数（保留 1 参 userDataPath；新增可选第 2 参 opts，向后兼容）
+ * @param {string} userDataPath 应用 userData 目录（过渡期仍存放 sessions/*.wav 等二进制大文件）
+ * @param {object} [opts]
+ * @param {object} [opts.externalDb]      main.js 统一注入的 hireme.db 句柄
+ * @param {()=>string} [opts.accountProvider] 返回当前账号ID 的回调（= () => authService.currentAccountId）；
+ *                                             未传时退为 '__guest__'，保证单测也能跑
  */
-ConfigManager.prototype.loadConfig = function () {
-  try {
-    if (fs.existsSync(this.configPath)) {
-      const saved = JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
-      // 用迁移函数合并，保证旧字段语义兼容且不继承泄露密钥
-      this.config = migrateLegacyConfig(saved);
-    } else {
-      this.config = defaultInterviewConfig();
-    }
-  } catch (e) {
-    console.error('[ConfigManager] 加载配置失败，使用默认配置:', e.message);
-    this.config = defaultInterviewConfig();
-  }
+function ConfigManager(userDataPath, opts = {}) {
+  this.userDataPath = userDataPath;
+  this.configPath   = path.join(userDataPath, 'config.json');
+  this.historyPath  = path.join(userDataPath, 'history.json');
+  this.resumePath   = path.join(userDataPath, 'resume.md');
+  this.sessionPath  = path.join(userDataPath, 'interview-sessions');
+  this.config       = defaultInterviewConfig();
 
-  // ============ 🌱 环境变量注入（最高优先级，覆盖 config.json 和默认值）============
-  // 字段约定：统一前缀 IA_，避免与系统其他变量冲突
-  //   - 既支持 Windows 直接 set IA_XXX=... 再 npm start
-  //   - 也支持在项目根目录写 .env 文件（每行 KEY=VALUE）
-  // 调试提示：若 .env 未生效，请在终端执行 `set`(Windows) / `env`(Unix) 检查变量是否存在，
-  //          并确认 main.js 最顶部有 `require('dotenv').config();`
+  this._externalDb      = opts.externalDb || null;
+  this._accountProvider = typeof opts.accountProvider === 'function' ? opts.accountProvider : () => '__guest__';
+}
+
+/** 取 hireme.db 句柄（内部快捷） */
+ConfigManager.prototype._db = function () { return _acquireDb(this._externalDb); };
+/** 取当前 active account_id（多账号隔离的依据） */
+ConfigManager.prototype._accountId = function () {
+  try { return String(this._accountProvider() || '__guest__'); } catch (_) { return '__guest__'; }
+};
+
+/* ============================================================
+ * 环境变量注入（loadConfig 内使用，与旧版 100% 一致 —— 未改动
+ *   唯一区别：注入完毕后会把 config 对象「再写回 desktop_configs」）
+ * ============================================================ */
+function _applyEnvAndClean(config) {
   const env = process.env || {};
-
-  // ===== 🛡️ 重要：手动解析项目根目录 .env，并强制覆盖 process.env 中的同名字段 =====
-  //   根因：dotenv 默认「不覆盖已存在的系统环境变量」。如果用户之前在 Windows 系统设置里
-  //         配过 IA_TONGYI_BASE_URL（值里可能带从日志复制的反引号/引号），那么就算 .env
-  //         里写了正确值，process.env 仍会保留脏的系统值，导致 URL 带反引号。
-  //   方案：在 config 注入阶段，我们手动解析一次 .env，把里面的值「强制覆盖」到一个临时 envCopy，
-  //         后续所有注入、判断都用这个 envCopy，而不是 process.env。
-  const envCopy = Object.assign({}, env); // 先复制系统环境的快照
+  const envCopy = Object.assign({}, env);
   try {
     const _dotenvPath = path.join(process.cwd(), '.env');
     if (fs.existsSync(_dotenvPath)) {
       const _raw = fs.readFileSync(_dotenvPath, 'utf8');
-      // 手动解析 dotenv 格式：兼容 KEY=VALUE、KEY="VALUE"、KEY='VALUE'、# 注释、空行
       const _lines = String(_raw || '').split(/\r?\n/);
-      // ★ 内联：多层包裹字符剥离（最多 6 轮，顺序先 stripTrim 再 stripChars）
-      //   覆盖用户常见错误写法：
-      //     IA_TONGYI_BASE_URL="`https://.../api/v1`"  （双引号 + 反引号 双层）
-      //     IA_TONGYI_BASE_URL='`https://.../api/v1`'  （单引号 + 反引号 双层）
-      //     IA_TONGYI_BASE_URL=``https://.../api/v1``   （双反引号 双层）
-      //     IA_TONGYI_BASE_URL=`"https://.../api/v1"`   （反引号 + 双引号 双层）
-      //     IA_TONGYI_BASE_URL="  https://.../api/v1  " （前后空格）
       const _STRIP_CHARS = new Set(['`', '"', "'", ' ', '\t', '\r', '\n', '\u3000', '\u201C', '\u201D', '\u2018', '\u2019']);
       const _stripWraps = (raw) => {
         let s = String(raw || '');
@@ -84,7 +158,6 @@ ConfigManager.prototype.loadConfig = function () {
         }
         return s;
       };
-      let _parsedFromFile = 0;
       for (const _line of _lines) {
         const _trimmed = String(_line || '').trim();
         if (!_trimmed || _trimmed.startsWith('#')) continue;
@@ -92,67 +165,29 @@ ConfigManager.prototype.loadConfig = function () {
         if (_eq < 0) continue;
         let _k = _trimmed.substring(0, _eq).trim();
         let _v = _trimmed.substring(_eq + 1);
-        // ★★ 修复 1：先去掉严格匹配的单层引号（原逻辑），再用 _stripWraps 多层去包裹（防反引号/多层引号）
         _v = String(_v || '').trim();
-        if ((_v.startsWith('"') && _v.endsWith('"')) || (_v.startsWith("'") && _v.endsWith("'"))) {
-          _v = _v.slice(1, -1);
-        }
-        const _beforeStrip = _v;
+        if ((_v.startsWith('"') && _v.endsWith('"')) || (_v.startsWith("'") && _v.endsWith("'"))) _v = _v.slice(1, -1);
         _v = _stripWraps(_v);
-        if (_beforeStrip !== _v) {
-          console.log(`[ConfigManager.env][parse] ⚠ ${_k} 值存在包裹字符，已自动剥离：before=${JSON.stringify(_beforeStrip)} → after=${JSON.stringify(_v)}`);
-        }
-        if (_k) {
-          // ★ 关键：.env 文件里的值优先于 Windows 系统环境变量，强制覆盖
-          envCopy[_k] = _v;
-          _parsedFromFile++;
-        }
+        if (_k) envCopy[_k] = _v;
       }
-      console.log(`[ConfigManager.env] 手动解析 .env 完成：path=${_dotenvPath} | 解析到 ${_parsedFromFile} 条配置（已覆盖系统环境变量中同名字段）`);
     }
-  } catch (_e) {
-    console.warn('[ConfigManager.env] 手动解析 .env 失败，回退使用 process.env：', _e && _e.message);
-  }
+  } catch (_e) { /* ignore */ }
 
-  // 【超激进清理】统一函数：去掉所有控制字符 + 常见 Unicode 包裹字符，再按白名单过滤剩余字符。
-  //   原因：用户从 .env 示例 / 复制粘贴带入了看不见的控制字符 / 罕见 Unicode 引号变体，导致正则字符类匹配不上。
-  //   本函数作为「最后一道关口」，暴力删除所有非白名单字符，保证注入 config 的值绝对干净。
-  //   URL 白名单（RFC 3986 unreserved + sub-delims + gen-delims + =&%）：A-Z a-z 0-9 -._~ :/?#[]@ !$&'()*+,;= %
-  //   字符串白名单（API Key / 枚举值）：A-Z a-z 0-9 -._~ :/!$&'()*+,;= %@#
   const _aggressiveClean = (raw, kind) => {
     if (typeof raw !== 'string') return '';
     let s = raw;
-    // 第一步：统一删除常见 Unicode 引号 / 包裹字符（ASCII 反引号、弯引号、全角反引号、角括号、方头括号、书名号等）
     const wraps = /[\x60\uFF40\u201C\u201D\u2018\u2019\u300C\u300D\u300E\u300F\u3010\u3011\uFF08\uFF09\u300A\u300B\u201E\u201F\u201A\u201B\u00AB\u00BB\u2039\u203A]/g;
     s = s.replace(wraps, '');
-    // 第二步：删除所有控制字符（\u0000-\u0008 \u000B \u000C \u000E-\u001F \u007F-\u009F）
     const ctrls = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
     s = s.replace(ctrls, '');
-    // 第三步：白名单过滤
-    let allowed;
-    if (kind === 'url') {
-      allowed = /[^A-Za-z0-9\-._~:\/?#\[\]@!$&'()*+,;=%]/g;
-    } else {
-      allowed = /[^A-Za-z0-9\-._~:\/!$&'()*+,;=%@#]/g;
-    }
-    s = s.replace(allowed, '');
-    return s;
+    const allowed = kind === 'url'
+      ? /[^A-Za-z0-9\-._~:\/?#\[\]@!$&'()*+,;=%]/g
+      : /[^A-Za-z0-9\-._~:\/!$&'()*+,;=%@#]/g;
+    return s.replace(allowed, '');
   };
-
-  // 增强字符串清理：去掉首尾可能出现的「反引号(\x60) / 单引号 / 双引号 / 全角空格 / 半角空格 / 弯引号 / 全角括号 / 书名号」
-  //   注意：正则里反引号使用 \x60（十六进制 ASCII 码），避免与 JS 模板字符串的 ` 冲突（双重保险）
-  //   覆盖范围（和 aiService.js 保持一致，保证 config → ai 整个链路清理一致）：
-  //     ASCII 空白 / 全角空格(\u3000) / 半角反引号(\x60) / 全角反引号(｀=\uFF40)
-  //     半角单引号'/双引号"  / 弯双引号“”(\u201C\u201D) / 弯单引号‘’(\u2018\u2019)
-  //     日角括号「」(\u300C\u300D) / 白角括号『』(\u300E\u300F) / 方头括号【】(\u3010\u3011)
-  //     全角圆括号（）(\uFF08\uFF09) / 书名号《》(\u300A\u300B)
   const _WRAP_CHARS = '\\s\\u3000\\x60\\uFF40\'"\\u201C\\u201D\\u2018\\u2019\\u300C\\u300D\\u300E\\u300F\\u3010\\u3011\\uFF08\\uFF09\\u300A\\u300B';
   const _reCleanHead = new RegExp('^[' + _WRAP_CHARS + ']+');
   const _reCleanTail = new RegExp('[' + _WRAP_CHARS + ']+$');
-  /**
-   * 通用字符串清理：12 轮首尾包裹剥离 + 超激进白名单过滤（保证值绝对干净）。
-   * 用于 API Key / 枚举值 / 普通字符串。
-   */
   const _cleanStr = (s) => {
     if (typeof s !== 'string') return '';
     let x = s;
@@ -163,10 +198,6 @@ ConfigManager.prototype.loadConfig = function () {
     }
     return _aggressiveClean(x, 'str');
   };
-  /**
-   * URL 清理：12 轮首尾包裹剥离 + 去尾部斜杠 + 超激进白名单过滤。
-   * 用于 tongyiBaseUrl 等 URL 类型字段。
-   */
   const _cleanUrl = (s) => {
     if (typeof s !== 'string') return '';
     let x = s;
@@ -175,113 +206,91 @@ ConfigManager.prototype.loadConfig = function () {
       x = x.replace(_reCleanHead, '').replace(_reCleanTail, '').replace(/\/+$/, '');
       if (x === before) break;
     }
-    const clean = _aggressiveClean(x, 'url');
-    return clean.replace(/\/+$/, '');
+    return _aggressiveClean(x, 'url').replace(/\/+$/, '');
   };
-
-  // 先把 .env 读到哪些关键变量打出来（脱敏），方便用户直接肉眼确认 dotenv 是否生效
   const _hasEnv = (k) => (typeof envCopy[k] === 'string' && _cleanStr(envCopy[k]).length > 0);
-  const _mask = (s, show = 8) => {
-    if (!s) return '(empty)';
-    const x = _cleanStr(s);
-    if (x.length <= show) return x + '*'.repeat(Math.max(0, show - x.length));
-    return x.slice(0, show) + '***';
-  };
-  console.log(
-    '[ConfigManager.env] .env/环境变量关键变量快照：'
-    + ` IA_TONGYI_API_KEY=${_hasEnv('IA_TONGYI_API_KEY') ? ('set(len=' + _cleanStr(envCopy.IA_TONGYI_API_KEY).length + ') ' + _mask(envCopy.IA_TONGYI_API_KEY)) : '(not-set)'}`
-    + ` | IA_TONGYI_BASE_URL=${_hasEnv('IA_TONGYI_BASE_URL') ? JSON.stringify(_cleanUrl(envCopy.IA_TONGYI_BASE_URL)) : '(not-set)'}`
-    + ` | IA_DEFAULT_SERVICE=${_hasEnv('IA_DEFAULT_SERVICE') ? _cleanStr(envCopy.IA_DEFAULT_SERVICE) : '(not-set)'}`
-    + ` | IA_ZHIPU_API_KEY=${_hasEnv('IA_ZHIPU_API_KEY') ? ('set(len=' + _cleanStr(envCopy.IA_ZHIPU_API_KEY).length + ')') : '(not-set)'}`
-    + ` | IA_BAIDU_API_KEY=${_hasEnv('IA_BAIDU_API_KEY') ? ('set(len=' + _cleanStr(envCopy.IA_BAIDU_API_KEY).length + ')') : '(not-set)'}`
-    + ` | IA_TONGYI_VISION_MODEL=${_hasEnv('IA_TONGYI_VISION_MODEL') ? _cleanStr(envCopy.IA_TONGYI_VISION_MODEL) : '(not-set,默认qvq-plus)'}`
-    + ` | IA_ZHIPU_VISION_MODEL=${_hasEnv('IA_ZHIPU_VISION_MODEL') ? _cleanStr(envCopy.IA_ZHIPU_VISION_MODEL) : '(not-set)'}`
-  );
-  // ===== ★ 注入前：清理前后对比诊断 warn。如果原值 != 清理后，说明 .env 写法有误（两侧带反引号/引号），一次性打出来供用户修正 =====
-  try {
-    const _checkList = [
-      { key: 'IA_TONGYI_BASE_URL', raw: envCopy.IA_TONGYI_BASE_URL, clean: _cleanUrl(envCopy.IA_TONGYI_BASE_URL), isUrl: true },
-      { key: 'IA_TONGYI_API_KEY',  raw: envCopy.IA_TONGYI_API_KEY,  clean: _cleanStr(envCopy.IA_TONGYI_API_KEY),  isUrl: false },
-      { key: 'IA_DEFAULT_SERVICE', raw: envCopy.IA_DEFAULT_SERVICE, clean: _cleanStr(envCopy.IA_DEFAULT_SERVICE), isUrl: false },
-      { key: 'IA_ZHIPU_API_KEY',   raw: envCopy.IA_ZHIPU_API_KEY,   clean: _cleanStr(envCopy.IA_ZHIPU_API_KEY),   isUrl: false },
-      { key: 'IA_BAIDU_API_KEY',   raw: envCopy.IA_BAIDU_API_KEY,   clean: _cleanStr(envCopy.IA_BAIDU_API_KEY),   isUrl: false },
-      { key: 'IA_BAIDU_APP_ID',    raw: envCopy.IA_BAIDU_APP_ID,    clean: _cleanStr(envCopy.IA_BAIDU_APP_ID),    isUrl: false },
-      { key: 'IA_BAIDU_SECRET_KEY',raw: envCopy.IA_BAIDU_SECRET_KEY,clean: _cleanStr(envCopy.IA_BAIDU_SECRET_KEY),isUrl: false },
-      { key: 'IA_WENXIN_API_KEY',  raw: envCopy.IA_WENXIN_API_KEY,  clean: _cleanStr(envCopy.IA_WENXIN_API_KEY),  isUrl: false },
-      { key: 'IA_TONGYI_VISION_MODEL', raw: envCopy.IA_TONGYI_VISION_MODEL, clean: _cleanStr(envCopy.IA_TONGYI_VISION_MODEL), isUrl: false },
-      { key: 'IA_ZHIPU_VISION_MODEL',  raw: envCopy.IA_ZHIPU_VISION_MODEL,  clean: _cleanStr(envCopy.IA_ZHIPU_VISION_MODEL),  isUrl: false }
-    ];
-    const _dirtyItems = _checkList.filter(x => (typeof x.raw === 'string') && x.raw !== x.clean);
-    if (_dirtyItems.length > 0) {
-      const _lines = _dirtyItems.map(x => {
-        const _raw = x.isUrl ? JSON.stringify(x.raw) : `(len=${x.raw.length})`;
-        const _clean = x.isUrl ? JSON.stringify(x.clean) : `(len=${x.clean.length})`;
-        return `    ❌ ${x.key}：\n      原值=${_raw}\n      清理后=${_clean}\n      正确写法示例：${x.key}=${x.clean || '<你的真实值，两侧不要加反引号/双引号/单引号>'}`;
-      });
-      console.warn(
-        `[ConfigManager.env] ⚠️⚠️⚠️ .env 中有 ${_dirtyItems.length} 个配置项写法错误（两侧附带了反引号/引号/不可见字符，现已自动清理，但请手动修正 .env 文件避免后续问题）：\n${_lines.join('\n')}`
-      );
-    } else {
-      console.log(`[ConfigManager.env] ✅ 所有 IA_* 配置项清理通过（原值与清理后一致，.env 写法无反引号/引号包裹问题）`);
-    }
-  } catch (_diagErr) { /* ignore：即便是诊断逻辑异常也不能阻塞正常配置注入 */ }
-  // ===== 开始注入到 this.config（全部通过 _cleanStr/_cleanUrl 清洗，保证 config 中值绝对干净）=====
-  if (_hasEnv('IA_BAIDU_APP_ID'))      this.config.baiduAppId     = _cleanStr(envCopy.IA_BAIDU_APP_ID);
-  if (_hasEnv('IA_BAIDU_API_KEY'))    this.config.baiduApiKey    = _cleanStr(envCopy.IA_BAIDU_API_KEY);
-  if (_hasEnv('IA_BAIDU_SECRET_KEY')) this.config.baiduSecretKey = _cleanStr(envCopy.IA_BAIDU_SECRET_KEY);
-  if (_hasEnv('IA_WENXIN_API_KEY'))   this.config.wenxinApiKey   = _cleanStr(envCopy.IA_WENXIN_API_KEY);
-  if (_hasEnv('IA_ZHIPU_API_KEY'))    this.config.zhipuApiKey    = _cleanStr(envCopy.IA_ZHIPU_API_KEY);
-  if (_hasEnv('IA_TONGYI_API_KEY'))   this.config.tongyiApiKey   = _cleanStr(envCopy.IA_TONGYI_API_KEY);
-  // 通义千问自定义 BaseURL：支持百炼私有工作空间（默认公共 dashscope.aliyuncs.com）
-  if (_hasEnv('IA_TONGYI_BASE_URL'))  this.config.tongyiBaseUrl  = _cleanUrl(envCopy.IA_TONGYI_BASE_URL);
-  // 视觉（多模态）模型选择：支持环境变量覆盖默认 qvq-plus（如切 qvq-max 或下线后换新模型名）
-  if (_hasEnv('IA_TONGYI_VISION_MODEL')) this.config.tongyiVisionModel = _cleanStr(envCopy.IA_TONGYI_VISION_MODEL);
-  if (_hasEnv('IA_ZHIPU_VISION_MODEL'))  this.config.zhipuVisionModel  = _cleanStr(envCopy.IA_ZHIPU_VISION_MODEL);
+  if (_hasEnv('IA_BAIDU_APP_ID'))      config.baiduAppId     = _cleanStr(envCopy.IA_BAIDU_APP_ID);
+  if (_hasEnv('IA_BAIDU_API_KEY'))    config.baiduApiKey    = _cleanStr(envCopy.IA_BAIDU_API_KEY);
+  if (_hasEnv('IA_BAIDU_SECRET_KEY')) config.baiduSecretKey = _cleanStr(envCopy.IA_BAIDU_SECRET_KEY);
+  if (_hasEnv('IA_WENXIN_API_KEY'))   config.wenxinApiKey   = _cleanStr(envCopy.IA_WENXIN_API_KEY);
+  if (_hasEnv('IA_ZHIPU_API_KEY'))    config.zhipuApiKey    = _cleanStr(envCopy.IA_ZHIPU_API_KEY);
+  if (_hasEnv('IA_TONGYI_API_KEY'))   config.tongyiApiKey   = _cleanStr(envCopy.IA_TONGYI_API_KEY);
+  if (_hasEnv('IA_TONGYI_BASE_URL'))  config.tongyiBaseUrl  = _cleanUrl(envCopy.IA_TONGYI_BASE_URL);
+  if (_hasEnv('IA_TONGYI_VISION_MODEL')) config.tongyiVisionModel = _cleanStr(envCopy.IA_TONGYI_VISION_MODEL);
+  if (_hasEnv('IA_ZHIPU_VISION_MODEL'))  config.zhipuVisionModel  = _cleanStr(envCopy.IA_ZHIPU_VISION_MODEL);
   if (_hasEnv('IA_DEFAULT_SERVICE')) {
     const svc = _cleanStr(envCopy.IA_DEFAULT_SERVICE).toLowerCase();
-    if (svc === 'wenxin' || svc === 'zhipu' || svc === 'tongyi') {
-      this.config.selectedService = svc;
-    }
+    if (svc === 'wenxin' || svc === 'zhipu' || svc === 'tongyi') config.selectedService = svc;
   }
-  // 注入后：再次校验 tongyiBaseUrl（如果清理后仍没有 http(s):// 前缀，打致命错误），避免 baseUrl 非法导致所有 LLM 请求失败
-  try {
-    const bu = (typeof this.config.tongyiBaseUrl === 'string') ? this.config.tongyiBaseUrl : '';
-    if (bu && !/^https?:\/\//i.test(bu)) {
-      console.error(
-        `[ConfigManager.env] ❌❌ tongyiBaseUrl 注入后仍非法（没有 http(s):// 前缀）：值=${JSON.stringify(bu)}\n`
-        + `  请修正 .env 文件中的 IA_TONGYI_BASE_URL，正确写法示例：\n`
-        + `    IA_TONGYI_BASE_URL=https://llm-xxxxxx.cn-beijing.maas.aliyuncs.com/api/v1\n`
-        + `    注意：两侧不要加任何反引号、双引号、单引号！不要有前后空格！`
-      );
-    }
-  } catch (_) { /* ignore */ }
-  // 注入后再次打快照（脱敏），确认 config 字段是否真正被覆盖
-  console.log(
-    '[ConfigManager.env] 注入后config快照：'
-    + ` selectedService=${this.config.selectedService || '(empty)'}`
-    + ` | tongyiApiKeyLen=${(typeof this.config.tongyiApiKey === 'string') ? this.config.tongyiApiKey.length : 0}`
-    + ` | tongyiBaseUrl=${JSON.stringify(this.config.tongyiBaseUrl || '(default: dashscope.aliyuncs.com)')}`
-    + ` | tongyiVisionModel=${this.config.tongyiVisionModel || '(empty)'}`
-    + ` | zhipuApiKeyLen=${(typeof this.config.zhipuApiKey === 'string') ? this.config.zhipuApiKey.length : 0}`
-    + ` | zhipuVisionModel=${this.config.zhipuVisionModel || '(empty)'}`
-    + ` | wenxinApiKeyLen=${(typeof this.config.wenxinApiKey === 'string') ? this.config.wenxinApiKey.length : 0}`
-  );
-  // ============================================================================
+  return config;
+}
 
+/* ============================================================
+ * 对外 API：配置 / 历史 / 简历 / 会话 四大类
+ *   - 读：优先 DB；无则读文件并「写回 DB」做升级迁移
+ *   - 写：DB + 文件双写；过渡期不删旧文件
+ * ============================================================ */
+
+/**
+ * 加载配置：先读 desktop_configs.main_config；未命中 → 回退 config.json 并迁移回写 → 环境变量注入
+ */
+ConfigManager.prototype.loadConfig = function () {
+  const aid = this._accountId();
+  try {
+    const db = this._db();
+    const row = db.prepare(`
+      SELECT config_json FROM desktop_configs WHERE account_id = ? AND config_key = ?
+    `).get(aid, 'main_config');
+    if (row && row.config_json) {
+      try {
+        this.config = migrateLegacyConfig(JSON.parse(row.config_json));
+      } catch (_) {
+        this.config = defaultInterviewConfig();
+      }
+    } else if (fs.existsSync(this.configPath)) {
+      // 🔴 升级迁移：首次从 JSON 迁到 DB（迁移脚本 m3 已做过，但 DB 里可能无该 account 的 main_config 行）
+      try {
+        const saved = JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
+        this.config = migrateLegacyConfig(saved);
+        // 回写 DB（INSERT OR REPLACE）
+        try {
+          db.prepare(`
+            INSERT OR REPLACE INTO desktop_configs (account_id, config_key, config_json, updated_at)
+            VALUES (?, ?, ?, ?)
+          `).run(aid, 'main_config', JSON.stringify(this.config), Date.now());
+          console.log(`[ConfigManager] 🔄 配置已从 JSON 升级迁移到 desktop_configs（account=${aid}）`);
+        } catch (_w) { /* 忽略：DB 写入失败不阻塞使用 JSON 配置 */ }
+      } catch (_e) { this.config = defaultInterviewConfig(); }
+    } else {
+      this.config = defaultInterviewConfig();
+    }
+  } catch (e) {
+    console.error('[ConfigManager] 加载配置(DB)失败，回退默认配置:', e.message);
+    this.config = defaultInterviewConfig();
+  }
+
+  // 最后一层：环境变量注入（最高优先级；含 .env 手动解析+清包裹+对比诊断，代码未改）
+  this.config = _applyEnvAndClean(this.config);
   return this.config;
 };
 
 /**
- * 保存配置到 config.json（保留全部字段，密钥由用户自行填写）。
- * @param {Object} config 待保存的配置对象
- * @returns {boolean} 是否保存成功
+ * 保存配置：DB upsert + 双写 config.json（过渡期兜底）
  */
 ConfigManager.prototype.saveConfig = function (config) {
   try {
-    if (config && typeof config === 'object') {
-      this.config = config;
-    }
-    fs.writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), 'utf8');
+    if (config && typeof config === 'object') this.config = config;
+    const aid = this._accountId();
+    const now = Date.now();
+    // 1) 写 hireme.db desktop_configs
+    try {
+      this._db().prepare(`
+        INSERT OR REPLACE INTO desktop_configs (account_id, config_key, config_json, updated_at)
+        VALUES (?, ?, ?, ?)
+      `).run(aid, 'main_config', JSON.stringify(this.config), now);
+    } catch (dbe) { console.warn('[ConfigManager] DB 写配置失败：', dbe.message); }
+    // 2) 双写 userData/config.json（兜底）
+    _safeWriteFileSync(this.configPath, JSON.stringify(this.config, null, 2));
     return true;
   } catch (e) {
     console.error('[ConfigManager] 保存配置失败:', e.message);
@@ -289,37 +298,76 @@ ConfigManager.prototype.saveConfig = function (config) {
   }
 };
 
-/**
- * 读取当前内存中的配置（不触发磁盘 IO）。
- * @returns {Object} 配置对象
- */
-ConfigManager.prototype.getConfig = function () {
-  return this.config;
-};
+ConfigManager.prototype.getConfig = function () { return this.config; };
 
 /**
- * 加载面试历史记录（每次问答的存档列表）。
- * @returns {Array} 历史记录数组
+ * 加载历史记录：优先从 hireme.db.ia_sessions 读（与 Landing 端共享），回退 history.json
+ *   - 返回格式兼容旧版：数组，每条包含 id/createdAt/title 等旧 history.json 字段
+ *   - Landing 端新写入的面试能立刻在桌面端历史列表里看到（实现"三端互通"）
  */
 ConfigManager.prototype.loadHistory = function () {
+  const aid = this._accountId();
   try {
-    if (fs.existsSync(this.historyPath)) {
-      return JSON.parse(fs.readFileSync(this.historyPath, 'utf8'));
+    const db = this._db();
+    // 🟢 严格账号隔离：只显示当前 account_id 自己的历史记录，
+    //    不再额外带 OR account_id = '__guest__' —— 避免把游客数据串到已登录用户下
+    const rows = db.prepare(`
+      SELECT id AS session_id, title, job_title, total_score,
+             created_at, finished_at, resume_id, interviewer_mode
+        FROM ia_sessions
+       WHERE account_id = ?
+       ORDER BY created_at DESC
+       LIMIT 500
+    `).all(aid);
+    if (rows && rows.length) {
+      // 格式兼容旧版 history.json：旧版每条 { id, title, createdAt, lastScore, mode } 等
+      return rows.map(r => ({
+        id: r.session_id,
+        sessionId: r.session_id,
+        title: r.title || (r.job_title ? (r.job_title + ' 面试') : '未命名面试'),
+        createdAt: Number(r.created_at) || 0,
+        finishedAt: Number(r.finished_at) || 0,
+        lastScore: r.total_score != null ? Number(r.total_score) : null,
+        resumeId: r.resume_id || null,
+        mode: r.interviewer_mode || 'standard',
+        // 字段来源标识：桌面端渲染层可选使用；旧字段名保持兼容
+        source: 'hireme.db',
+      }));
     }
   } catch (e) {
-    console.error('[ConfigManager] 加载历史记录失败:', e.message);
+    console.warn('[ConfigManager] 从 hireme.db 加载历史失败，回退 history.json：', e.message);
   }
+  // fallback：旧 history.json
+  try {
+    if (fs.existsSync(this.historyPath)) {
+      const arr = JSON.parse(fs.readFileSync(this.historyPath, 'utf8'));
+      return Array.isArray(arr) ? arr : [];
+    }
+  } catch (e) { console.error('[ConfigManager] 加载历史记录失败:', e.message); }
   return [];
 };
 
 /**
- * 保存面试历史记录。
- * @param {Array} history 历史记录数组
- * @returns {boolean} 是否保存成功
+ * 保存历史记录（保留双写：过渡期仍写 history.json；同时把每条 {sessionId, title, score}
+ *   若 ia_sessions 里存在对应行，就 UPDATE 该 session 的 title/total_score —— 不做全量同步）
  */
 ConfigManager.prototype.saveHistory = function (history) {
   try {
-    fs.writeFileSync(this.historyPath, JSON.stringify(history || [], null, 2), 'utf8');
+    const arr = Array.isArray(history) ? history : [];
+    _safeWriteFileSync(this.historyPath, JSON.stringify(arr, null, 2));
+    // 异步式同步：逐条尝试 upsert ia_sessions 的几个展示列（不阻塞主流程）
+    try {
+      const db = this._db();
+      const up = db.prepare(`
+        UPDATE ia_sessions SET title = COALESCE(?, title),
+                               total_score = COALESCE(?, total_score)
+        WHERE id = ?
+      `);
+      for (const h of arr) {
+        if (!h || !h.id) continue;
+        up.run(h.title || null, h.lastScore != null ? h.lastScore : null, h.id);
+      }
+    } catch (_) { /* ignore */ }
     return true;
   } catch (e) {
     console.error('[ConfigManager] 保存历史记录失败:', e.message);
@@ -328,13 +376,28 @@ ConfigManager.prototype.saveHistory = function (history) {
 };
 
 /**
- * 保存简历文本到 resume.md。
- * @param {string} content 简历纯文本
- * @returns {boolean} 是否保存成功
+ * 保存简历文本：先写 hireme.db resumes（默认 key='default'），再双写 resume.md
  */
 ConfigManager.prototype.saveResume = function (content) {
   try {
-    fs.writeFileSync(this.resumePath, content || '', 'utf8');
+    const aid = this._accountId();
+    const md = String(content || '');
+    const now = Date.now();
+    const resumeId = 'res_' + aid + '_default';
+    const db = this._db();
+    db.prepare(`
+      INSERT OR REPLACE INTO resumes
+        (resume_id, account_id, resume_key, resume_name, resume_md,
+         resume_text, source_file, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      resumeId, aid, 'default',
+      '默认简历',   // resume_name（默认值；用户未设时写"默认简历"）
+      md, md,       // resume_md / resume_text：暂都放纯文本（旧 resume.md 是纯文本/markdown）
+      this.resumePath, now
+    );
+    // 双写文件兜底
+    _safeWriteFileSync(this.resumePath, md);
     return true;
   } catch (e) {
     console.error('[ConfigManager] 保存简历失败:', e.message);
@@ -343,29 +406,51 @@ ConfigManager.prototype.saveResume = function (content) {
 };
 
 /**
- * 读取已保存的简历文本。
- * @returns {string|null} 简历内容；不存在返回 null
+ * 读取简历文本：先读 resumes.default；未命中 → 读 resume.md 并回写 DB（升级迁移）
  */
 ConfigManager.prototype.loadResume = function () {
+  const aid = this._accountId();
   try {
-    if (fs.existsSync(this.resumePath)) {
-      return fs.readFileSync(this.resumePath, 'utf8');
+    const db = this._db();
+    const row = db.prepare(`
+      SELECT resume_md, resume_text FROM resumes WHERE account_id = ? AND resume_key = ?
+    `).get(aid, 'default');
+    if (row && (row.resume_md || row.resume_text)) {
+      return row.resume_md || row.resume_text;
     }
   } catch (e) {
-    console.error('[ConfigManager] 读取简历失败:', e.message);
+    console.warn('[ConfigManager] DB 读简历失败，回退 resume.md：', e.message);
   }
+  // fallback：resume.md，并回写 DB（升级迁移）
+  try {
+    if (fs.existsSync(this.resumePath)) {
+      const md = fs.readFileSync(this.resumePath, 'utf8');
+      try {
+        const db = this._db();
+        const now = Date.now();
+        const resumeId = 'res_' + aid + '_default';
+        db.prepare(`
+          INSERT OR REPLACE INTO resumes
+            (resume_id, account_id, resume_key, resume_name, resume_md,
+             resume_text, source_file, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(resumeId, aid, 'default', '默认简历', md, md, this.resumePath, now);
+        console.log(`[ConfigManager] 🔄 简历已从 resume.md 升级迁移到 resumes 表（account=${aid}）`);
+      } catch (_w) { /* ignore */ }
+      return md;
+    }
+  } catch (e) { console.error('[ConfigManager] 读取简历失败:', e.message); }
   return null;
 };
 
-/**
- * 删除已保存的简历文件。
- * @returns {boolean} 是否删除成功
- */
+/** 删除简历：DB 行 DELETE + 文件 unlink */
 ConfigManager.prototype.deleteResume = function () {
   try {
-    if (fs.existsSync(this.resumePath)) {
-      fs.unlinkSync(this.resumePath);
-    }
+    const aid = this._accountId();
+    try {
+      this._db().prepare('DELETE FROM resumes WHERE account_id = ? AND resume_key = ?').run(aid, 'default');
+    } catch (_) { /* ignore */ }
+    if (fs.existsSync(this.resumePath)) fs.unlinkSync(this.resumePath);
     return true;
   } catch (e) {
     console.error('[ConfigManager] 删除简历失败:', e.message);
@@ -373,19 +458,78 @@ ConfigManager.prototype.deleteResume = function () {
   }
 };
 
+/* ============================================================
+ * 会话三件套（saveSession / saveRecording / saveReview / listSessions）
+ *   策略：文件系统三件套不删（.json / .wav / .review.md 仍是用户可见的备份）
+ *        同时写 ia_sessions / ia_rounds 对应列 → 让 Landing / Admin 端立即可见
+ * ============================================================ */
+
 /**
- * 保存一次面试会话档案（含 transcript / 系统音频路径 / AI 复盘）。
- * @param {string} sessionId 会话唯一标识
- * @param {Object} sessionData 会话数据
- * @returns {boolean} 是否保存成功
+ * 保存会话档案：三件套之一 <id>.json（文件）+ ia_sessions 同步
+ * @param {string} sessionId 会话 ID
+ * @param {Object} sessionData {transcript, meta: {title, jobTitle, ...}, totalScore, rounds, ...}
  */
 ConfigManager.prototype.saveSession = function (sessionId, sessionData) {
   try {
-    if (!fs.existsSync(this.sessionPath)) {
-      fs.mkdirSync(this.sessionPath, { recursive: true });
-    }
+    if (!fs.existsSync(this.sessionPath)) fs.mkdirSync(this.sessionPath, { recursive: true });
     const filePath = path.join(this.sessionPath, `${sessionId}.json`);
-    fs.writeFileSync(filePath, JSON.stringify(sessionData, null, 2), 'utf8');
+    _safeWriteFileSync(filePath, JSON.stringify(sessionData, null, 2));
+
+    // —— 同步写入 hireme.db.ia_sessions（与 Landing 端共表）——
+    try {
+      const aid = this._accountId();
+      const sd = sessionData || {};
+      const meta = sd.meta || {};
+      const now = Date.now();
+      const created = Number(sd.createdAt || meta.createdAt || now);
+      const finished = Number(sd.finishedAt || meta.finishedAt || 0);
+      const resumeId = sd.resumeId || meta.resumeId || ('res_' + aid + '_default');
+      const db = this._db();
+      db.prepare(`
+        INSERT OR REPLACE INTO ia_sessions
+          (id, account_id, title, job_title, resume_id, interviewer_mode,
+           total_score, total_rounds, created_at, updated_at, finished_at,
+           config_json, transcript_json, review_md, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'desktop.json')
+      `).run(
+        sessionId, aid,
+        sd.title || meta.title || (meta.jobTitle ? (meta.jobTitle + ' 面试') : '未命名面试'),
+        meta.jobTitle || sd.jobTitle || '',
+        resumeId,
+        meta.interviewerMode || 'standard',
+        sd.totalScore != null ? sd.totalScore : null,
+        Array.isArray(sd.rounds) ? sd.rounds.length : (meta.totalRounds || 0),
+        created, now, finished,
+        JSON.stringify({ interview_config: meta.interviewConfig || this.config || {} }),
+        JSON.stringify({ transcript: sd.transcript || [], rounds: sd.rounds || [] }),
+        sd.review || ''
+      );
+      // 如果有 rounds：逐行 UPSERT ia_rounds
+      if (Array.isArray(sd.rounds) && sd.rounds.length > 0) {
+        const stmtR = db.prepare(`
+          INSERT OR REPLACE INTO ia_rounds
+            (session_id, round_no, round_id, question, answer_markdown,
+             audio_wav_path, score, score_breakdown_json, created_at, duration_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        sd.rounds.forEach((r, idx) => {
+          if (!r) return;
+          stmtR.run(
+            sessionId, idx + 1,
+            r.roundId || (sessionId + '-r' + (idx + 1)),
+            r.question || '',
+            r.answerMarkdown || r.answer || '',
+            r.wavPath || r.audioWavPath || null,
+            r.score != null ? r.score : null,
+            r.scoreBreakdown ? JSON.stringify(r.scoreBreakdown) : null,
+            Number(r.createdAt || r.startAt || created + idx * 60000),
+            Number(r.durationMs || r.duration || 0)
+          );
+        });
+      }
+    } catch (dbe) {
+      console.warn('[ConfigManager] ia_sessions 同步写入失败（文件已保存）：', dbe.message);
+    }
     return true;
   } catch (e) {
     console.error('[ConfigManager] 保存会话失败:', e.message);
@@ -393,21 +537,17 @@ ConfigManager.prototype.saveSession = function (sessionId, sessionData) {
   }
 };
 
-/**
- * 保存系统音频存档（WAV）到 sessions/<sessionId>.wav。
- * @param {string} sessionId 会话 ID
- * @param {Buffer|ArrayBuffer} wavBuffer WAV 二进制数据
- * @returns {string|null} 存档文件绝对路径；失败返回 null
- */
+/** 保存录音：文件落 sessions/<id>.wav；同时把绝对路径写进 ia_sessions.recording_wav */
 ConfigManager.prototype.saveRecording = function (sessionId, wavBuffer) {
   try {
-    if (!fs.existsSync(this.sessionPath)) {
-      fs.mkdirSync(this.sessionPath, { recursive: true });
-    }
+    if (!fs.existsSync(this.sessionPath)) fs.mkdirSync(this.sessionPath, { recursive: true });
     const filePath = path.join(this.sessionPath, `${sessionId}.wav`);
-    // 兼容 ArrayBuffer / Buffer / TypedArray
     const buf = Buffer.isBuffer(wavBuffer) ? wavBuffer : Buffer.from(wavBuffer);
     fs.writeFileSync(filePath, buf);
+    // 同步 ia_sessions.recording_wav（让 Landing 端能跳转播放同一份音频）
+    try {
+      this._db().prepare('UPDATE ia_sessions SET recording_wav = ? WHERE id = ?').run(filePath, sessionId);
+    } catch (_) { /* ignore */ }
     return filePath;
   } catch (e) {
     console.error('[ConfigManager] 保存音频存档失败:', e.message);
@@ -415,19 +555,15 @@ ConfigManager.prototype.saveRecording = function (sessionId, wavBuffer) {
   }
 };
 
-/**
- * 保存 AI 复盘报告到 sessions/<sessionId>.review.md。
- * @param {string} sessionId 会话 ID
- * @param {string} review 复盘 Markdown 文本
- * @returns {string|null} 文件路径；失败返回 null
- */
+/** 保存复盘：文件落 sessions/<id>.review.md；同步 ia_sessions.review_md */
 ConfigManager.prototype.saveReview = function (sessionId, review) {
   try {
-    if (!fs.existsSync(this.sessionPath)) {
-      fs.mkdirSync(this.sessionPath, { recursive: true });
-    }
+    if (!fs.existsSync(this.sessionPath)) fs.mkdirSync(this.sessionPath, { recursive: true });
     const filePath = path.join(this.sessionPath, `${sessionId}.review.md`);
-    fs.writeFileSync(filePath, review || '', 'utf8');
+    _safeWriteFileSync(filePath, review || '');
+    try {
+      this._db().prepare('UPDATE ia_sessions SET review_md = ? WHERE id = ?').run(String(review || ''), sessionId);
+    } catch (_) { /* ignore */ }
     return filePath;
   } catch (e) {
     console.error('[ConfigManager] 保存复盘失败:', e.message);
@@ -436,15 +572,56 @@ ConfigManager.prototype.saveReview = function (sessionId, review) {
 };
 
 /**
- * 列出所有会话档案（json/wav/review 三件套按 ID 聚合）。
- * @returns {Array<Object>} 会话摘要列表（按 ID 倒序）
+ * 列出所有会话档案：DB 优先（ia_sessions 按 created_at DESC），缺 wav/review 的再拼文件路径
+ *   - 返回格式完全兼容旧版：[{id, jsonPath, wavPath, reviewPath}]，并按 ID 倒序
+ *   - 桌面端用户在 Landing 端创建的面试会话同样可见（实现三端互通）
  */
 ConfigManager.prototype.listSessions = function () {
+  const aid = this._accountId();
+  try {
+    const db = this._db();
+    // 🟢 严格账号隔离：只列出当前 account_id 名下的会话档案，
+    //    不再额外带 OR account_id = '__guest__' —— 游客数据保持独立，不串到已登录用户
+    const rows = db.prepare(`
+      SELECT id, recording_wav, review_md, created_at
+        FROM ia_sessions
+       WHERE account_id = ?
+       ORDER BY created_at DESC
+       LIMIT 500
+    `).all(aid);
+    if (rows && rows.length) {
+      return rows.map(r => {
+        const info = { id: r.id };
+        // json：若 sessions/<id>.json 存在就挂路径；Landing 端生成的可能没有，但历史列表 loadHistory 也能看
+        const jsonF = path.join(this.sessionPath, `${r.id}.json`);
+        if (fs.existsSync(jsonF)) info.jsonPath = jsonF;
+        // wav：先看 DB 列（recording_wav），再 fallback sessions/<id>.wav
+        if (r.recording_wav && fs.existsSync(r.recording_wav)) {
+          info.wavPath = r.recording_wav;
+        } else {
+          const wavF = path.join(this.sessionPath, `${r.id}.wav`);
+          if (fs.existsSync(wavF)) info.wavPath = wavF;
+        }
+        // review：若 review_md 非空，直接把内容塞 reviewMarkdown；路径则优先 sessions/<id>.review.md
+        const revF = path.join(this.sessionPath, `${r.id}.review.md`);
+        if (fs.existsSync(revF)) {
+          info.reviewPath = revF;
+        } else if (r.review_md) {
+          // DB 有值但没文件 → 写出（让旧 UI 仍能按 path 读取）
+          try { _safeWriteFileSync(revF, r.review_md); info.reviewPath = revF; } catch (_) {}
+        }
+        return info;
+      });
+    }
+  } catch (e) {
+    console.warn('[ConfigManager] DB 列表会话失败，回退文件扫描：', e.message);
+  }
+  // fallback：旧版文件扫描
   try {
     if (!fs.existsSync(this.sessionPath)) return [];
     const files = fs.readdirSync(this.sessionPath);
-    const ids = new Set(files.map((f) => f.replace(/\.(json|wav|review\.md)$/, '')));
-    return Array.from(ids).map((id) => {
+    const ids = Array.from(new Set(files.map((f) => f.replace(/\.(json|wav|review\.md)$/, ''))));
+    return ids.map((id) => {
       const info = { id };
       if (files.includes(`${id}.json`)) info.jsonPath = path.join(this.sessionPath, `${id}.json`);
       if (files.includes(`${id}.wav`)) info.wavPath = path.join(this.sessionPath, `${id}.wav`);

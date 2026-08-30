@@ -1271,5 +1271,10 @@ async function initCopilot() {
   }
 }
 
+// 把复盘函数暴露给 renderer.js 的面试结束总结页调用
+if (typeof window !== 'undefined') {
+  window.generateReviewForHistory = generateReviewForHistory;
+}
+
 // 渲染层脚本在 body 末尾加载，DOM 已就绪，直接初始化
 initCopilot();

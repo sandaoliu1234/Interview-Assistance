@@ -96,6 +96,9 @@ const _apiImpl = {
   // 独立控制「从屏幕捕获排除」（对齐 HireMe applyExcludeFromCapture）
   // 返回 { success, method }，method ∈ exclude_from_capture/content_protection/unsupported
   setExcludeFromCapture: (enabled) => invoke('set-exclude-from-capture', enabled),
+  // ★ 截图/录屏「不可见」总开关：实时切换对全部窗口的捕获排除。
+  //   返回 { success, total, ok, method }
+  setCaptureHide: (enabled) => invoke('set-capture-hide', enabled),
   showWindowTemporarily: () => invoke('show-window-temporarily'),
   sendNotification: (title, body) => invoke('send-notification', title, body),
 
@@ -234,7 +237,73 @@ const _apiImpl = {
   onNativeAudioData: (cb) => on('native-audio-data', cb),
   onNativeAudioError: (cb) => on('native-audio-error', cb),
   onNativeAudioMetadata: (cb) => on('native-audio-metadata', cb),
-  onCheckRecovery: (cb) => on('check-recovery', cb)
+  onCheckRecovery: (cb) => on('check-recovery', cb),
+
+  // ============================================================
+  // ★ 账号鉴权：auth-* 共 11 条 IPC（对应 main.js auth-create-account / auth-merge-guest-to-current 等）
+  //   渲染层永远拿不到明文密码、哈希值或 token。
+  // ============================================================
+  auth: {
+    /** 当前登录用户（未登录返回 {loggedIn:false, accountId:'__guest__'}） */
+    currentUser: () => invoke('auth-current-user'),
+    /** 是否已创建任何本地账号（用于冷启动切换到初始化面板） */
+    hasAnyAccount: () => invoke('auth-has-any-account'),
+    /**
+     * 创建账号（仅限 hasAnyAccount===false 时成功；否则返回 DEAD_END 错误）。
+     * 用于冷启动"创建第一个本地超级管理员"。
+     */
+    createAccount: (payload) => invoke('auth-create-account', payload || {}),
+    /** 邮箱 + 密码 → 登录，返回 { ok, user:{loggedIn, accountId, email, displayName, ...} } */
+    login: (payload) => invoke('auth-login', payload || {}),
+    /** 退出登录 → 返回新的 currentUser（游客态） */
+    logout: () => invoke('auth-logout'),
+    /** 忘记密码步骤 1：邮箱 → 返回重置码（桌面端本地显示，不发邮件） */
+    forgotStep1: (payload) => invoke('auth-forgot-step1', payload || {}),
+    /** 忘记密码步骤 2：邮箱 + 重置码 + 新密码 → 成功 ok:true */
+    forgotStep2Reset: (payload) => invoke('auth-forgot-step2-reset', payload || {}),
+    /** 已登录用户修改密码：需提供旧密码 */
+    changePassword: (payload) => invoke('auth-change-password', payload || {}),
+    /** 修改昵称 / 头像 */
+    updateProfile: (patch) => invoke('auth-update-profile', patch || {}),
+    /** 获取指定账号完整资料（不传则取当前登录账号） */
+    getAccount: (accountId) => invoke('auth-get-account', accountId || null),
+    /**
+     * 🟢 【已废弃】把游客(__guest__)的 session/resume 合并到当前登录账号。
+     *   —— 需求变更：不再执行合并；登录后直接读取 SQLite 中 ia_sessions.account_id
+     *      = 当前登录账号 的记录，GUEST 命名空间下的数据保持独立（登出回到游客
+     *      模式时仍可见）。
+     *   —— 本函数保留兼容返回：{ok:true, stats:{sessionMerged:0, resumeMerged:false,...}}，
+     *      不会搬运或删除任何数据。
+     */
+    mergeGuestToCurrent: () => invoke('auth-merge-guest-to-current'),
+    /**
+     * 登录态变更事件：登录/登出/初始化完成/修改资料后主进程广播。
+     * cb 接收 user 对象（形态与 currentUser() 返回一致）。
+     * @returns {() => void} 取消订阅函数
+     */
+    onAuthStateChanged: (cb) => on('auth-state-change', cb),
+  },
+
+  // ============================================================
+  // ★ 积分消费 & 宣传页控制台联动：credits-* 5 条 IPC 封装
+  //   远端登录态 → 直接请求 landing server 原子双写；离线/本地 → fallback 标记 offline=true
+  // ============================================================
+  credits: {
+    /** 宣传站点服务端状态：{ landingBaseUrl, remoteConnected, remoteExpireAt } */
+    getServerInfo: () => invoke('credits-get-server-info'),
+    /** 查询积分余额（远端登录返回实时 balance；离线返回 offline=true）*/
+    getBalance:    () => invoke('credits-get-balance'),
+    /**
+     * 扣积分（每次 Copilot 面试场 / 模拟面试 1 轮 / 简历优化都先调本方法）
+     * @param {object} p       { credits: number, bizType: 'copilot_session'|'mock_round'|'resume_optimize', bizId?: string, desc?: string }
+     * @returns {Promise<any>} { ok, offline?, creditsConsumed?, balance?, flowId?, msg?, current?, required?, missing? }
+     */
+    consume: (p) => invoke('credits-consume', p || {}),
+    /** 打开系统浏览器 → 宣传站点控制台（充值 / 看流水 / 看订单） */
+    openConsole: () => invoke('credits-open-console'),
+    /** （管理员）打开系统浏览器 → 宣传站点后台管理页 */
+    openAdmin:   () => invoke('credits-open-admin'),
+  },
 };
 
 // ① 标准方式：contextBridge.exposeInMainWorld（仅 contextIsolation=true 时可用）

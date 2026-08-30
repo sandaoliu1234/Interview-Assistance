@@ -77,6 +77,12 @@ function defaultInterviewConfig() {
     // ===== 视线检测（对齐 HireMe gaze；默认关闭，启用需摄像头权限）=====
     gazeEnabled: false,              // 是否启用「无人脸自动隐藏 overlay」
 
+    // ===== 截图/录屏不可见（系统级从捕获排除，对齐 HireMe 的 applyExcludeFromCapture）=====
+    //   默认开启：本 App 所有顶层窗口（主窗口、答题面板、模拟面试浮窗、声源选择器）
+    //   在 Win10 2004+ 通过 WDA_EXCLUDEFROMCAPTURE 从截屏/录屏/屏幕共享中排除，
+    //   本地仍可见，但捕获端（腾讯会议/Zoom/Win+Shift+S）看不到——这是「点击截图看不到项目」的根治方案。
+    captureHide: true,
+
     // ===== 回答 & 模型 =====
     answerLength: 'standard',        // short | standard | detailed
     modelTier: 'standard',           // standard | advanced | deep | programming
@@ -135,7 +141,7 @@ function migrateLegacyConfig(old) {
   const safeCopy = [
     'type', 'interviewScene', 'instructionStyle', 'customInstruction',
     'targetCompany', 'targetPosition', 'jobDescription', 'knowledgeBase',
-    'audioMode', 'realtimeMode', 'gazeEnabled', 'answerLength', 'modelTier', 'cutoffMode',
+    'audioMode', 'realtimeMode', 'gazeEnabled', 'captureHide', 'answerLength', 'modelTier', 'cutoffMode',
     'alwaysOnTop', 'windowOpacity', 'windowWidth', 'windowHeight', 'hotkey',
     'selectedService', 'resumeText', 'resumeFilePath', 'hotWords',
     'detectionSensitivity', 'processingInterval', 'audioBoost', 'autoSaveHistory',

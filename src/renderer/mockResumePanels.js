@@ -1613,6 +1613,99 @@
     return submitMockAnswerOrFollowupAuto();
   }
 
+  // ============================================================
+  // ★ 账号变更监听：登录/登出/切换账号 后重新加载当前账号命名空间的简历与配置
+  // ============================================================
+  /**
+   * 根据账号命名空间，重载"当前账号"下的配置（含 resumeText / knowledgeBase），
+   * 并回填到：
+   *   ① 模拟面试简历编辑器（mockResumeEditor）+ 已加载状态文案
+   *   ② 简历优化编辑器（resumeOptEditor）+ 字符数统计
+   *   ③ 如果当前选中的是"使用已保存简历"分段按钮（mockUseSavedResumeBtn），也同步刷新已加载条目
+   * 注意：知识库（Copilot 页 copilotKbEditor）由 copilot.js 自身监听并刷新，不在本模块范围。
+   */
+  async function reloadAccountNamespaceOnAuthChange(userObj) {
+    try {
+      const ipc = getIPC();
+      // 1. 取配置（get-config / get-interview-config 底层均从 configManager 读取；若主进程有按账号命名空间隔离
+      //    则此处返回值天然不同；即使暂未支持命名空间级 config，以下清空逻辑至少避免"旧账号内存数据残留"）
+      let cfg = null;
+      try {
+        cfg = ipc ? (await ipc.invoke('get-config')) : null;
+      } catch (_) { /* 取失败视为空配置，做清空兜底 */ }
+      const resumeText = (cfg && (cfg.resumeContent || cfg.resumeText)) ? (cfg.resumeContent || cfg.resumeText) : '';
+
+      // 2. 回填模拟面试简历编辑器
+      const mockResumeEl = document.getElementById('mockResumeEditor');
+      if (mockResumeEl) {
+        // 仅在"用户未手动粘贴/上传内容"时覆盖，避免冲掉用户正在编辑的半成稿（简单判断：当前为空则写）
+        if (!String(mockResumeEl.value || '').trim()) {
+          mockResumeEl.value = resumeText;
+        }
+        const loadedBox = document.getElementById('mockResumeLoadedBody');
+        if (loadedBox) {
+          loadedBox.textContent = resumeText ? `已加载（${resumeText.length} 字）` : '—';
+        }
+      }
+
+      // 3. 回填简历优化编辑器
+      const optResumeEl = document.getElementById('resumeOptEditor');
+      if (optResumeEl && !String(optResumeEl.value || '').trim()) {
+        optResumeEl.value = resumeText;
+        // 同步刷新字符数 + 状态文案（与 bootResumeOptUI 一致的回显格式）
+        syncResumeOptCharCount(resumeText ? `账号数据已重载 · ${resumeText.length} 字` : '');
+      } else {
+        // 不管编辑器是否有值，也要刷新字数显示（保证真实）
+        syncResumeOptCharCount();
+      }
+    } catch (e) {
+      console.warn('[mockResumePanels] 账号切换后重载数据失败：', e && e.message);
+      try { toast('账号已切换，当前面板数据稍后自动同步', 'info', 2400); } catch (_) {}
+    }
+  }
+
+  /** 绑定账号变更订阅：双通道（electronAPI.onAuthStateChanged + hireme:account-namespace-changed 自定义事件） */
+  function bindAuthNamespaceListeners() {
+    try {
+      let firedOnce = false; // 防止双通道重复触发
+      const handler = (payload) => {
+        if (firedOnce) return;
+        firedOnce = true;
+        // 短暂去抖：双通道可能在同一 tick 先后到达
+        setTimeout(() => { firedOnce = false; }, 120);
+        // 由 renderer.js 派发的自定义事件是 CustomEvent，真实 user 位于 detail.user
+        const userObj = (payload && payload.detail && payload.detail.user && 'accountId' in payload.detail.user)
+          ? payload.detail.user
+          : ((payload && 'accountId' in payload) ? payload : null);
+        reloadAccountNamespaceOnAuthChange(userObj);
+      };
+
+      // 通道 A：preload 桥 electronAPI.auth.onAuthStateChanged
+      try {
+        if (window.electronAPI && window.electronAPI.auth && typeof window.electronAPI.auth.onAuthStateChanged === 'function') {
+          window.electronAPI.auth.onAuthStateChanged(handler);
+        }
+      } catch (e) { console.warn('[mockResumePanels] auth 桥监听失败：', e && e.message); }
+
+      // 通道 B：ipcRenderer 直连 auth-state-change（contextIsolation=false 场景）
+      try {
+        const ir = window.ipcRenderer
+          || (typeof require === 'function' ? (() => { try { return require('electron').ipcRenderer; } catch (_) { return null; } })() : null);
+        if (ir && typeof ir.on === 'function') {
+          ir.on('auth-state-change', (_e, p) => handler(p));
+        }
+      } catch (e) { console.warn('[mockResumePanels] ipc auth-state-change 监听失败：', e && e.message); }
+
+      // 通道 C：renderer.js 在 onAccountNamespaceSwitched 尾部派发的 hireme:account-namespace-changed 自定义事件
+      // （保证即便 Electron 层事件因为"用户首登前 DOM 尚未渲染完"被跳过，也能在 renderer.js 里统一触达）
+      try {
+        window.addEventListener('hireme:account-namespace-changed', handler);
+      } catch (e) { console.warn('[mockResumePanels] hireme:account-namespace-changed 监听失败：', e && e.message); }
+    } catch (e) {
+      console.warn('[mockResumePanels] bindAuthNamespaceListeners 整体失败：', e && e.message);
+    }
+  }
+
   /** 启动整个 mock+resume 面板：先绑定所有 DOM 事件，再做一次 UI 引导 boot（字数刷新 + 可选自动回填已保存简历） */
   async function initMockAndResumeUI() {
     try {
@@ -1624,6 +1717,12 @@
       await bootResumeOptUI();
     } catch (e) {
       console.warn('[mockResumePanels] bootResumeOptUI 未完成:', e.message);
+    }
+    // ★ 绑定账号命名空间变更监听：登录/登出/切换账号 → 重新加载当前账号下的简历/配置
+    try {
+      bindAuthNamespaceListeners();
+    } catch (e) {
+      console.warn('[mockResumePanels] bindAuthNamespaceListeners 未完成:', e.message);
     }
   }
 

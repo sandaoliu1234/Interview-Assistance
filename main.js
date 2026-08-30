@@ -1,11 +1,132 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, desktopCapturer, session, Notification, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, desktopCapturer, session, Notification, screen, safeStorage, shell } = require('electron');
+// ============================================================
+// ★ 启动前崩溃兜底 + Chromium 参数（解决 Windows 下 electron 秒退 / crashpad not connected 问题）
+//   - 未捕获异常/拒绝 全部同步写 crashLog（因为 console 可能还没 flush 进程就没了）
+//   - disable-gpu / no-sandbox：Windows 非管理员账号 + 老显卡驱动下 crashpad 的头号解药
+//   - disable-crashpad：直接关掉 crashpad 客户端，避免 "not connected" 干扰日志（Windows 下 crashpad 客户端失败时偶发整进程崩）
+// ============================================================
+(function _startupSafety() {
+  const path = require('path');
+  const fs   = require('fs');
+  const os   = require('os');
+  // 崩溃日志放在 {cwd}/logs/crashes/desktop-crash-YYYYMMDD-HHMMSS-pid.log
+  const crashDir = path.join(process.cwd(), 'logs', 'crashes');
+  try { fs.mkdirSync(crashDir, { recursive: true }); } catch (_) {}
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const crashLog = path.join(crashDir, `desktop-crash-${stamp}-${process.pid}.log`);
+  const writeCrash = (tag, payload) => {
+    try {
+      const line = `[${new Date().toISOString()}] [${tag}] ${payload}${os.EOL}`;
+      fs.appendFileSync(crashLog, line, 'utf8');
+      // 同时写 stderr（父进程/终端若捕获得到会显示）
+      process.stderr.write(line);
+    } catch (_) {}
+  };
+  writeCrash('BOOT', `cwd=${process.cwd()}  node=${process.versions.node}  electron=${process.versions.electron || '(null)'}  platform=${process.platform}`);
+  process.on('uncaughtException', (err) => {
+    writeCrash('uncaughtException', (err && err.stack) ? err.stack : String(err));
+  });
+  process.on('unhandledRejection', (reason, p) => {
+    const txt = (reason && reason.stack) ? reason.stack : String(reason);
+    writeCrash('unhandledRejection', `${txt}   promise=${String(p)}`);
+  });
+  process.on('exit', (code) => {
+    writeCrash('exit', `code=${code} (0x${(code >>> 0).toString(16)})`);
+  });
+  // Chromium 命令行开关（必须在 app.whenReady 之前设置，越靠前越好）
+  try {
+    app.commandLine.appendSwitch('disable-gpu');
+    app.commandLine.appendSwitch('disable-software-rasterizer');
+    app.commandLine.appendSwitch('no-sandbox');
+    app.commandLine.appendSwitch('disable-crashpad');
+    app.commandLine.appendSwitch('max-gum-fps', '60');
+  } catch (e) {
+    writeCrash('appendSwitch-fail', (e && e.stack) ? e.stack : String(e));
+  }
+  // ============================================================
+  // 🛡️ child_process 安全守卫：禁止二次拉起 electron.exe GUI 进程
+  //   - 过去曾出现 cp.spawnSync(electron.exe, <脚本字符串>) 导致 Electron 把
+  //     代码内容当应用路径解析，弹出 "Unable to find Electron app at ..." 的
+  //     系统级对话框，阻塞整个 npm start 流程。
+  //   - 此处 monkey-patch 全部 6 个 child_process 创建入口，一旦检测到调用方
+  //     想执行 electron.exe 且未显式声明 ELECTRON_RUN_AS_NODE=1（纯 Node CLI
+  //     模式，不创建 GUI），就立刻 throw，并附带完整调用栈写进崩溃日志，
+  //     方便定位是谁、在哪里误触发的。
+  //   - 允许例外：process.execPath（当前 electron.exe 自己）且带
+  //     ELECTRON_RUN_AS_NODE 环境变量时放行（即纯 Node 脚本探测场景）。
+  // ============================================================
+  (function _installElectronSpawnGuard() {
+    // Electron 可执行文件名，一律小写比较
+    const ELECTRON_EXE_NAMES = ['electron.exe', 'electron'];
+    // 判定某字符串参数是否指向 electron.exe
+    const looksLikeElectron = (v) => {
+      if (!v) return false;
+      const s = String(v).replace(/\\/g, '/').toLowerCase();
+      return ELECTRON_EXE_NAMES.some(n => s.endsWith('/' + n) || s.endsWith('\\' + n) || s === n);
+    };
+    // 判定 options.env 或当前环境是否显式打开 ELECTRON_RUN_AS_NODE=1
+    const isRunAsNode = (opts) => {
+      const envObj = (opts && opts.env) ? opts.env : process.env;
+      if (!envObj) return false;
+      const v = String(envObj.ELECTRON_RUN_AS_NODE || '').trim();
+      return v === '1' || v === 'true';
+    };
+    // 构建一个带堆栈的 Error，便于定位调用者
+    const makeBlockError = (apiName, args) => {
+      const err = new Error(
+        `[child_process:${apiName}] 🚫 禁止从 Electron 主进程再拉起 electron.exe GUI 进程。` +
+        ` 若确需在 Electron 的 Node CLI 模式下执行脚本，请显式设置 env.ELECTRON_RUN_AS_NODE=1。` +
+        ` args0=${String(args && args[0] ? args[0] : '').slice(0, 300)}` +
+        ` args1=${Array.isArray(args && args[1]) ? JSON.stringify(args[1]).slice(0, 500) : ''}`
+      );
+      Error.captureStackTrace(err, makeBlockError); // 裁剪到真正的调用栈
+      return err;
+    };
+    // 单个 API 的统一包装：先校验 → 再调用原始实现
+    const wrap = (cp, key) => {
+      const orig = cp[key];
+      if (typeof orig !== 'function') return;
+      cp[key] = function guarded(/* ...args */) {
+        const argv = Array.prototype.slice.call(arguments);
+        const file  = argv[0]; // spawn/execFile/spawnSync/execFileSync 的第一个参数
+        const argArr = Array.isArray(argv[1]) ? argv[1] : null; // spawn 的 args[]
+        const opts = argv[argv.length - 1];
+        const optionsObj = opts && typeof opts === 'object' && !Array.isArray(opts) ? opts : null;
+        // 命中条件：目标文件像 electron.exe，且不是 RUN_AS_NODE 模式
+        const blocked = looksLikeElectron(file) && !isRunAsNode(optionsObj);
+        if (blocked) {
+          const e = makeBlockError(key, argv);
+          // 立刻写盘，确保哪怕 throw 被吞掉，日志也能定位到责任人
+          writeCrash(`child_process:${key}:BLOCK`, (e && e.stack) ? e.stack : String(e));
+          throw e;
+        }
+        return orig.apply(this, argv);
+      };
+    };
+    try {
+      const cp = require('child_process');
+      ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'exec', 'execSync', 'fork'].forEach(k => wrap(cp, k));
+      writeCrash('child_process:guard', `installed (${process.pid})`);
+    } catch (e) {
+      writeCrash('child_process:guard:FAIL', (e && e.stack) ? e.stack : String(e));
+    }
+  })();
+  // 暴露 crashLog 路径给后续阶段（Phase 1 仓储初始化可以打日志）
+  global.__DESKTOP_CRASH_LOG__ = crashLog;
+  global.__DESKTOP_SAFE_LOG__ = writeCrash;
+})();
+
 // 环境变量加载（必须在最前面，保证后续模块的 process.env 已就绪）
 // 加载顺序：1) 系统环境变量  2) 项目根目录 .env 文件（dotenv 不会覆盖已有系统环境变量）
 require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const iconv = require('iconv-lite');
+// iconv-lite：Windows GBK 终端下日志转码（非关键，失败就按 UTF-8 原生输出）
+let iconv = null;
+try { iconv = require('iconv-lite'); } catch (_) { iconv = null; }
 // ===== Node.js 原生事件总线：主进程内各模块（ASR/HTTP/WS/Overlay）解耦通信 =====
 // 事件列表（集中在 app.bus 上，新增事件请在此注释说明）：
 //   - 'asr:interim'(text)            ASR 临时文本
@@ -22,64 +143,200 @@ if (!app.bus) {
   app.bus.setMaxListeners(50);     // 每个 listener 都算，默认 10 太小
   console.log('[app.bus] 事件总线初始化完成');
 }
-const speechService = require('./services/speechService');
-const aiService = require('./services/aiService');
-const audioService = require('./services/audioService');
-const StateManager = require('./services/stateManager');
-const PrivacyAudit = require('./services/privacyAudit');
+// ============================================================
+// ★ 逐个 require 包裹安全兜底（native 模块 require 崩溃时能写入崩溃日志）
+//   - 前一版本 npm start 秒退但没有 [uncaughtException]/[exit] 日志，
+//     说明是某个顶层 require（native ABI / iconv / captureExclusion koffi 调 Win32 / asrPipeline 依赖音频库）
+//     在 require 阶段直接 native-level crash，绕过了 process.on('uncaughtException')。
+//   - 逐个 try/catch require 可以把错误通过 catch 捕获后交给 __DESKTOP_SAFE_LOG__ 写盘。
+// ============================================================
+const SAFE_LOG = (typeof global.__DESKTOP_SAFE_LOG__ === 'function') ? global.__DESKTOP_SAFE_LOG__ : (() => {});
+function safeRequire(modPath, label = modPath) {
+  try {
+    SAFE_LOG('require:start', label);
+    const m = require(modPath);
+    SAFE_LOG('require:ok', `${label} -> loaded`);
+    return m;
+  } catch (e) {
+    const stack = (e && e.stack) ? e.stack : String(e);
+    SAFE_LOG('require:FAIL', `${label} :: ${stack}`);
+    // 让 npm start 的 stderr 也打印
+    try { process.stderr.write(`[require:FAIL] ${label} :: ${stack}\n`); } catch (_) {}
+    // 非关键模块返回 null 让后续 try/catch 继续跑；关键模块若缺了会在后续阶段再报错
+    return null;
+  }
+}
+const speechService = safeRequire('./services/speechService',  'speechService');
+const aiService     = safeRequire('./services/aiService',      'aiService');
+const audioService  = safeRequire('./services/audioService',   'audioService');
+const StateManager  = safeRequire('./services/stateManager',   'StateManager');
+const PrivacyAudit  = safeRequire('./services/privacyAudit',   'PrivacyAudit');
 // ASR 管线：WASAPI 系统音频 → 百度 ASR → 问题检测 → AI 答题（主进程原生采集，不依赖渲染层）
-const ASRPipeline = require('./services/asrPipeline');
+const ASRPipeline   = safeRequire('./services/asrPipeline',    'ASRPipeline');
 let asrPipeline = null; // 管线单例，启动面试辅助时创建
 // ★ 缓存"最后一次成功启动 ASR 使用的 config"，供面板端 toggle-asr-pipeline 直接复用，
 //   否则面板端拿不到主窗口保存的百度 API Key / 模型 / 简历 / 场景等完整 config，
 //   就无法独立完成"开始识别"动作（只能停止）。
 let lastAsrConfig = null;
-// 配置与本地持久化管理器（替代散落的 config/history 读写，密钥不再写死在代码里）
-const ConfigManager = require('./src/main/config-manager');
+// 配置与本地持久化管理器（替代原先散落的 config/history 读写，密钥不再写死在代码里）
+const ConfigManager = safeRequire('./src/main/config-manager', 'ConfigManager');
+
+// ============================================================
+// ★ 远端宣传站点（Landing Server）联动：
+//   - 登录：邮箱+密码 → 走 landing /api/auth/login → 返回 sessionId → 存本地 remote-session.json
+//   - 积分消费：走 landing /api/console/consume → 服务端原子写余额+流水
+//   - 充值引导：shell.openExternal(LANDING_BASE_URL/console.html)
+//   - 默认地址 http://localhost:3000，可用环境变量 LANDING_BASE_URL 覆盖（生产部署后改指向公网）
+//   - 如果 landing server 没启动，全部接口**自动 fallback 本地账号 + 离线允许使用**，保证本地使用不崩
+// ============================================================
+const LANDING_BASE_URL = String(process.env.LANDING_BASE_URL || 'http://localhost:3000').replace(/\/+$/, '');
+
+// 用户数据存储路径（必须在 REMOTE_SESSION_FILE、stateManager、privacyAudit、configManager、interview.db 之前声明）
+// 注意：app.getPath('userData') 不要求 app.whenReady，可在顶层直接调用
+const userDataPath = path.join(app.getPath('userData'), 'interview-assistant');
+if (!fs.existsSync(userDataPath)) {
+  fs.mkdirSync(userDataPath, { recursive: true });
+}
+
+const REMOTE_SESSION_FILE = path.join(userDataPath, 'remote-session.json');
+/** 读取当前登录的远端会话（sessionId / user / expireAt / baseUrl） */
+function _readRemoteSession() {
+  try {
+    if (!fs.existsSync(REMOTE_SESSION_FILE)) return null;
+    const raw = JSON.parse(fs.readFileSync(REMOTE_SESSION_FILE, 'utf-8'));
+    if (!raw || !raw.sessionId) return null;
+    if (raw.expireAt && raw.expireAt < Date.now()) return null; // 已过期
+    return raw;
+  } catch (_) { return null; }
+}
+/** 保存远端会话到文件 */
+function _writeRemoteSession(sess) {
+  try { fs.mkdirSync(userDataPath, { recursive: true }); fs.writeFileSync(REMOTE_SESSION_FILE, JSON.stringify(sess || null, null, 2), 'utf-8'); } catch (_) {}
+}
+/** 清除远端会话（登出 / 过期） */
+function _clearRemoteSession() { try { if (fs.existsSync(REMOTE_SESSION_FILE)) fs.unlinkSync(REMOTE_SESSION_FILE); } catch (_) {} }
+/**
+ * 统一的远端 HTTP 调用：自动带 Authorization: Bearer <sessionId>
+ * 返回 { ok, status, data, errorMsg }（永远不 throw，调用方只看 ok/data）
+ */
+async function _callLanding({ method = 'GET', pathname, body = null, timeoutMs = 10000, forceSkipAuth = false }) {
+  const sess = !forceSkipAuth ? _readRemoteSession() : null;
+  const url = `${LANDING_BASE_URL}${pathname}`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (sess && sess.sessionId) headers['Authorization'] = 'Bearer ' + sess.sessionId;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const resp = await fetch(url, {
+      method, headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    const text = await resp.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = { _rawText: text }; }
+    return { ok: resp.ok && data && data.ok === true, status: resp.status, data };
+  } catch (e) {
+    return { ok: false, status: 0, errorMsg: e && e.message ? e.message : String(e) };
+  }
+}
+/**
+ * 远端登录：email+password → 调 /api/auth/login → 成功则保存 session + 返回 user
+ * 未连接 landing server（status===0 或 timeout）直接返回 {ok:false,code:'LANDING_OFFLINE'}，调用方 fallback 本地
+ */
+async function _remoteLogin(email, password) {
+  const r = await _callLanding({ method: 'POST', pathname: '/api/auth/login', body: { email, password }, forceSkipAuth: true, timeoutMs: 6000 });
+  if (r.status === 0) return { ok: false, code: 'LANDING_OFFLINE', msg: '宣传站点未启动，已切换本地账号登录' };
+  if (!r.ok || !r.data) return { ok: false, code: (r.data && r.data.code) || 'REMOTE_LOGIN_FAILED', msg: (r.data && r.data.msg) || '远端登录失败' };
+  const d = r.data;
+  const sess = { sessionId: d.sessionId, expireAt: d.expireAt || (Date.now() + 7 * 24 * 3600 * 1000), user: d.user || null, baseUrl: LANDING_BASE_URL, loggedInAt: Date.now() };
+  _writeRemoteSession(sess);
+  return { ok: true, user: sess.user, session: sess, remote: true };
+}
+/** 远端登出（可选调用，主要是清本地 session；服务端会话会自行过期） */
+async function _remoteLogout() {
+  try { await _callLanding({ method: 'POST', pathname: '/api/auth/logout', body: {} }); } catch (_) {}
+  _clearRemoteSession();
+}
+
 // 系统级窗口捕获排除（对齐 HireMe 发行版 applyExcludeFromCapture，用 koffi 调 Win32 API）
-const captureExclusion = require('./src/main/capture-exclusion');
+const captureExclusion = safeRequire('./src/main/capture-exclusion', 'captureExclusion');
 // 本地伴生设备中继服务（http + SSE + WebSocket，对齐 HireMe localServer/relay）
-const relayServer = require('./src/main/relay-server');
+const relayServer = safeRequire('./src/main/relay-server', 'relayServer');
 // 小程序联动：本地 HTTP + WebSocket 服务（WS + HTTP，支持截图/答案回写/ASR推送）
-const localHttpServer = require('./services/localHttpServer');
+const localHttpServer = safeRequire('./services/localHttpServer', 'localHttpServer');
+// 账号鉴权：本地账号注册表、登录会话、密码哈希、重置码
+const _authMod = safeRequire('./services/authService', 'authService');
+const AuthService = _authMod && _authMod.AuthService ? _authMod.AuthService : null;
+const GUEST_ACCOUNT_ID = _authMod && _authMod.GUEST_ACCOUNT_ID ? _authMod.GUEST_ACCOUNT_ID : '__guest__';
+// ============================================================
+// ★ 三端统一数据源：common-paths（定位 hireme.db 物理路径 + 统一 open 方法）
+//   - 桌面端 / Landing :3000 / 管理员 :3001 都 require 本文件，
+//     拿到的 HIREME_DB_PATH 一定是同一份（项目根/data/hireme.db）
+//   - openUnifiedDatabase(Database) 会执行统一 PRAGMA：WAL / busy_timeout / foreign_keys …
+// ============================================================
+const commonPaths = safeRequire('./services/common-paths', 'common-paths');
+const HIREME_DB_PATH = commonPaths && commonPaths.HIREME_DB_PATH
+  ? commonPaths.HIREME_DB_PATH
+  : path.join(__dirname, 'data', 'hireme.db'); // 兜底，绝不使用 interview.db 旧路径
 // 二维码生成：把 payload JSON 转成 dataUrl，供 overlay 弹窗 <img> 渲染
 let qrcodeLib = null;
-try { qrcodeLib = require('qrcode'); } catch (e) {
+try { qrcodeLib = safeRequire('qrcode', 'qrcode'); } catch (e) {
   console.warn('[main] qrcode 模块未安装，二维码功能不可用:', e.message);
 }
 
+// ============================================================
+// ★ 在 Phase 1 三个核心 manager (StateManager / PrivacyAudit / ConfigManager)
+//    初始化完成后，立刻做一个【子进程 / child_process.fork 隔离运行】的自检 ——
+//    这一步之前的所有 require 和 init:* 已经全部 OK。
+//    如果是 iconv / safeStorage / koffi / 其他 native 模块在"app.whenReady 之前"
+//    触发 Chromium 崩溃（exit=-36861/0xFFFF7003），直接在 main.js 中做"最小
+//    可行启动"二分：先把【experimental features / 磁盘缓存 / GBK 日志编码 /
+//    iconv / enable-features / safeStorage】全部降级关掉，再逐项打开。
+// 具体做法：【把 app.whenReady 之前的 appendSwitch 全部改为"最小启动集"，
+//    默认不用 experimental、不用 disk cache 细粒度参数，只用我们在顶部
+//    disable-gpu/disable-crashpad/no-sandbox 这 4 条。
+//    成功起来后，再逐条加回。】
+// ============================================================
+SAFE_LOG('phase:before-ready-switches', 'begin');
 // 启用 Chromium 实验特性：渲染层 FaceDetector API（gaze 视线检测降级方案需要）
 // 必须在 app.ready 之前调用
 try {
-  app.commandLine.appendSwitch('enable-experimental-web-platform-features');
-  app.commandLine.appendSwitch('enable-features', 'ExperimentalWebPlatformFeatures');
+  // 【2026-08-29：临时注释"实验性 features + 磁盘缓存定制"】
+  //   这一段是目前"app.whenReady 之前"唯一会触发 Chromium/GPU 层的操作，
+  //   先注释干净，等 electron 能正常创建窗口后再逐条打开。
+  // app.commandLine.appendSwitch('enable-experimental-web-platform-features');
+  // app.commandLine.appendSwitch('enable-features', 'ExperimentalWebPlatformFeatures');
+  //
+  // // === 解决 Windows 下部分环境 GPU 缓存目录无写权限（错误码 0x5：拒绝访问） ===
+  // app.commandLine.appendSwitch('disable-gpu-cache');
+  // app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+  // app.commandLine.appendSwitch('disable-http-cache');
+  // app.commandLine.appendSwitch('media-cache-size', '0');
+  // const cacheDir = path.join(app.getPath('userData'), 'chromium-cache');
+  // try { fs.mkdirSync(cacheDir, { recursive: true }); } catch (_) { /* 忽略 */ }
+  // app.commandLine.appendSwitch('disk-cache-dir', cacheDir);
+  // app.commandLine.appendSwitch('gpu-cache-dir', cacheDir);
+  SAFE_LOG('phase:before-ready-switches', 'skip (experimental + cache settings disabled for boot stability)');
+} catch (e) {
+  SAFE_LOG('phase:before-ready-switches:FAIL', (e && e.stack) ? e.stack : String(e));
+}
 
-  // === 解决 Windows 下部分环境 GPU 缓存目录无写权限（错误码 0x5：拒绝访问） ===
-  // 报错表现：
-  //   ERROR:cache_util_win.cc Unable to move the cache: 拒绝访问 (0x5)
-  //   ERROR:disk_cache.cc Unable to create cache
-  //   ERROR:gpu_disk_cache.cc Gpu Cache Creation failed: -2
-  // 影响：纯告警级错误，不影响 GPU 运算与 MediaPipe 推理，但刷屏干扰日志。
-  // 处理：关闭 Chromium 所有磁盘缓存（GPU/Shader/HTTP/Media 全关），强制内存缓存。
-  app.commandLine.appendSwitch('disable-gpu-cache');
-  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
-  app.commandLine.appendSwitch('disable-http-cache');
-  app.commandLine.appendSwitch('media-cache-size', '0');
-  // 把磁盘缓存目录明确指向 userData 下的可写位置（兜底措施）
-  const cacheDir = path.join(app.getPath('userData'), 'chromium-cache');
-  try { fs.mkdirSync(cacheDir, { recursive: true }); } catch (_) { /* 忽略 */ }
-  app.commandLine.appendSwitch('disk-cache-dir', cacheDir);
-  app.commandLine.appendSwitch('gpu-cache-dir', cacheDir);
-} catch (_) { /* 极少数情况下 app 尚未初始化，忽略 */ }
-
+// ============================================================
+// ★ GBK 日志编码 + iconv.encode：【也包 try/catch + 顶层安全兜底】
+//    iconv-lite 是纯 JS，理论上不会 native crash，
+//    但 GBK 编码会给所有 console 加一层写入逻辑，若 stream 异常可能连带影响启动。
+//    这里把 iconv 相关全部放在 try/catch 中：失败时直接用原生 console。
+// ============================================================
 // 保存原始 console 方法
 const _origConsoleLog = console.log;
 const _origConsoleWarn = console.warn;
 const _origConsoleError = console.error;
-
-// Windows PowerShell 默认代码页是 GBK(936)，直接输出 UTF-8 会乱码
-// 使用 iconv-lite 将中文日志转换为 GBK 编码后输出
-const isWindowsGBK = process.platform === 'win32';
+let isWindowsGBK = false;
+try {
+  isWindowsGBK = process.platform === 'win32' && iconv && typeof iconv.encode === 'function';
+} catch (_) { isWindowsGBK = false; }
 
 function gbkLog(args, stream = process.stdout) {
   try {
@@ -118,9 +375,11 @@ function gbkLog(args, stream = process.stdout) {
 // 控制台日志编码处理（Windows GBK 兼容）
 // ============================================================
 
-console.log   = (...a) => gbkLog(a, process.stdout);
-console.warn  = (...a) => gbkLog(a, process.stderr);
-console.error = (...a) => gbkLog(a, process.stderr);
+try {
+  console.log   = (...a) => gbkLog(a, process.stdout);
+  console.warn  = (...a) => gbkLog(a, process.stderr);
+  console.error = (...a) => gbkLog(a, process.stderr);
+} catch (_) { /* 降级：保持原生 console */ }
 let nativeAudio = null;
 async function loadNativeAudio() {
   if (nativeAudio) return nativeAudio;
@@ -141,21 +400,446 @@ let tray;
 let isWindowVisible = true;
 let isStealthMode = false;
 
-// 用户数据存储路径
-const userDataPath = path.join(app.getPath('userData'), 'interview-assistant');
-if (!fs.existsSync(userDataPath)) {
-  fs.mkdirSync(userDataPath, { recursive: true });
+// ★ 截图/录屏「不可见」总开关（默认开启）：本地看得见，但截屏/录屏/屏幕共享的捕获端看不到。
+//   由 config.captureHide 初始化；设置面板可实时切换。
+let captureHideEnabled = true;
+
+// ★ 顶层窗口注册表：登记本 App 全部顶层窗口，便于「统一」施加系统级捕获排除。
+//   为什么需要它：WDA_EXCLUDEFROMCAPTURE 只对「单个 HWND」生效，主窗口、答题面板、
+//   模拟面试浮窗、声源选择器必须各自单独设置，漏掉任何一个都会在截图里露馅。
+const windowRegistry = new Map();  // id -> BrowserWindow
+
+// 登记一个窗口（创建后调用；窗口已销毁则忽略）
+function registerWindow(id, win) {
+  if (win && !win.isDestroyed()) windowRegistry.set(id, win);
 }
 
-// 初始化状态管理器
-const stateManager = new StateManager(userDataPath);
+// 注销一个窗口（窗口 closed 时调用）
+function unregisterWindow(id) {
+  windowRegistry.delete(id);
+}
 
-// 初始化隐私审计
-const privacyAudit = new PrivacyAudit(userDataPath);
+// 取出当前存活的所有窗口（顺手清理已销毁的引用）
+function getLiveWindows() {
+  const out = [];
+  for (const [id, w] of windowRegistry.entries()) {
+    if (w && !w.isDestroyed()) out.push(w);
+    else windowRegistry.delete(id);  // 已销毁的从注册表剔除，避免缓存脏引用
+  }
+  return out;
+}
 
-// 配置与本地持久化管理器（替代原先散落的 config/history 读写）。
-// 默认配置由 interview-config.js 提供，密钥字段一律为空，需用户填写或运行时注入。
-const configManager = new ConfigManager(userDataPath);
+// 对全部已登记窗口统一施加/取消「从屏幕捕获排除」，并返回统计。
+// 这是「截图不可见」能力的核心入口，启动时与各窗口 ready 时都会调用。
+function applyCaptureHideToAll(enabled) {
+  const wins = getLiveWindows();
+  let ok = 0;
+  for (const w of wins) {
+    if (captureExclusion.applyCaptureExclusion(w, enabled)) ok += 1;
+  }
+  console.log(`[capture-hide] 已对 ${wins.length} 个窗口施加「从捕获排除」=${enabled}（成功 ${ok}）`);
+  return { total: wins.length, ok };
+}
+
+// 初始化状态管理器 / 隐私审计 / 配置管理 —— 全部 try/catch + 写 crashLog
+//   - 这些类的构造函数里会立刻做 fs 读写、JSON.parse、密钥处理，任何一个抛错都可能让 electron 秒退
+//   - 🔴 三端统一架构版：ConfigManager 延后到 Phase SQLite init 之后创建，
+//     这样能注入：① hireme.db 同一句柄 ② currentAccountIdSafe 账号 Provider
+let stateManager = null, privacyAudit = null, configManager = null;
+(function _initCoreManagers() {
+  const steps = [
+    ['StateManager',   () => { StateManager && (stateManager = new StateManager(userDataPath)); }],
+    ['PrivacyAudit',   () => { PrivacyAudit && (privacyAudit = new PrivacyAudit(userDataPath)); }],
+    // ConfigManager 移到下方 Phase SQLite+AuthService 之后再初始化（需要 externalDb + accountProvider）
+  ];
+  for (const [name, fn] of steps) {
+    try {
+      SAFE_LOG(`init:${name}`, `start`);
+      fn();
+      SAFE_LOG(`init:${name}`, `ok`);
+    } catch (e) {
+      const stack = (e && e.stack) ? e.stack : String(e);
+      SAFE_LOG(`init:${name}:FAIL`, stack);
+      try { process.stderr.write(`[init:FAIL] ${name} :: ${stack}\n`); } catch (_) {}
+    }
+  }
+})();
+
+// ============================================================
+// ★ 面试记录【三端统一架构 Phase 7】hireme.db 统一初始化
+//   - 单一数据库文件：项目根/data/hireme.db（通过 common-paths.HIREME_DB_PATH 定位）
+//   - 统一句柄：只 new 一次 Database，后续 AuthService / ConfigManager / SessionRepo
+//              都复用同一条连接，避免多连接争抢 WAL 文件锁
+//   - 注入链路：
+//         authService = new AuthService(..., { externalDb })
+//         currentAccountIdSafe() => 账号 provider 可用
+//         configManager = new ConfigManager(userDataPath, { externalDb, accountProvider })
+//         sessionRepo   = new SessionRepo(externalDb)  → setSessionRepository 给 HTTP/WS
+//   - 失败：全部 try/catch 兜底，SQLite 侧降级，JSON 原流程 100% 不受影响
+// ============================================================
+let _unifiedDb = null;    // 三模块共享的 hireme.db 句柄（单例）
+let sessionRepo = null;   // 全局仓储实例（IPC 句柄复用）
+SAFE_LOG('phase:sqlite-init', `begin, db=${HIREME_DB_PATH}`);
+// ============================================================
+// 🛠️ better-sqlite3 ABI 兼容性探测【主进程内轻量版】
+//   - Windows 上若用 cp.spawnSync(electron.exe, <probe.js>) 会再启一条 Electron GUI 进程：
+//     临时 .js 不是合法 Electron App（无 package.json + 无 BrowserWindow 初始化），
+//     会弹系统级对话框 "Unable to find Electron app at ..."，导致 npm start 启动被阻塞。
+//   - 所以直接在**主进程**里 try/catch require + pragma('journal_mode') + 写读一条：
+//     失败就走降级（__SQLITE_DISABLE_BY_PROBE__=true，跳过 SQLite，JSON 原流程不受影响），
+//     且不创建/销毁任何额外进程，完全规避 Electron GUI 弹窗。
+// ============================================================
+(function _probeBetterSqlite3Inline() {
+  const os   = require('os');
+  const fs   = require('fs');
+  const path = require('path');
+  // 候选 better-sqlite3 目录：Electron 运行时优先项目根（Electron ABI 编译），兜底 landing
+  const candidates = [
+    path.join(__dirname, 'node_modules', 'better-sqlite3'),
+    path.join(__dirname, 'landing', 'node_modules', 'better-sqlite3'),
+  ].filter(p => fs.existsSync(p));
+  if (candidates.length === 0) {
+    SAFE_LOG('phase:sqlite-probe', 'SKIP: better-sqlite3 目录均不存在，已降级');
+    console.warn('[sqlite-sessions] ⚠️ better-sqlite3 未安装（node_modules 缺失），本次启动跳过 SQLite，JSON 主流程不受影响');
+    global.__SQLITE_DISABLE_BY_PROBE__ = true;
+    return;
+  }
+  const tmpDb = path.join(os.tmpdir(), 'hireme-sqlite3-probe-inline-' + process.pid + '-' + Date.now() + '.db');
+  try {
+    // 1) 顺序尝试 require better-sqlite3（第一家成功即 Database）
+    let Database = null;
+    let lastErr  = null;
+    let usedPath = '';
+    for (const _p of candidates) {
+      try { delete require.cache[require.resolve(_p)]; } catch (_) {}
+      try { Database = require(_p); usedPath = _p; break; }
+      catch (e) { lastErr = e; }
+    }
+    if (!Database) {
+      throw lastErr || new Error('无法 require 任何 better-sqlite3 候选路径');
+    }
+    // 2) 打开临时 DB → WAL → 建表 → 插入 → 查询：最严格的 ABI + SQLITE thread 探测
+    const db = new Database(tmpDb, { readonly: false, fileMustExist: false });
+    db.pragma('journal_mode = WAL');
+    db.exec('CREATE TABLE IF NOT EXISTS _probe (id INTEGER PRIMARY KEY, v TEXT)');
+    db.prepare('INSERT INTO _probe(v) VALUES (?)').run('ok-' + process.versions.modules);
+    const row = db.prepare('SELECT v FROM _probe LIMIT 1').get();
+    db.close();
+    if (!row || String(row.v || '').indexOf('ok-') !== 0) {
+      throw new Error('probe 写入后查询结果异常: ' + JSON.stringify(row));
+    }
+    // 3) 结果：OK —— 保存候选路径到 global，后续 openUnifiedDatabase 会优先复用
+    global.__SQLITE_DISABLE_BY_PROBE__ = false;
+    global.__HIREME_BETTER_SQLITE3_PATH__ = usedPath;
+    SAFE_LOG('phase:sqlite-probe', `OK abi=modules-${process.versions.modules}, used=${path.relative(__dirname, usedPath)}`);
+  } catch (e) {
+    const stack = (e && e.stack) ? e.stack : String(e);
+    SAFE_LOG('phase:sqlite-probe', `FAIL :: ${stack.slice(0, 400)}`);
+    console.warn('[sqlite-sessions] ⚠️ better-sqlite3 主进程 ABI 探测失败（native 未正确编译 / 与 Electron ABI 不匹配），本次启动跳过 SQLite，JSON 主流程完全不受影响：', (e && e.message) || String(e));
+    global.__SQLITE_DISABLE_BY_PROBE__ = true;
+  } finally {
+    // 清理临时 DB（无论成败）
+    try { if (fs.existsSync(tmpDb)) fs.unlinkSync(tmpDb); } catch (_) {}
+    try { if (fs.existsSync(tmpDb + '-wal')) fs.unlinkSync(tmpDb + '-wal'); } catch (_) {}
+    try { if (fs.existsSync(tmpDb + '-shm')) fs.unlinkSync(tmpDb + '-shm'); } catch (_) {}
+  }
+})();
+try {
+  // ============================================================
+  // 🛠️ 降级重试机制：探测失败但 build/Release 编译产物存在时，
+  // 直接在主进程 try/catch 中尝试初始化（绕过主进程探测的 native 加载异常）。
+  // ============================================================
+  let _buildProductAvailable = false;
+  try {
+    const _releaseFile = path.join(__dirname, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
+    if (fs.existsSync(_releaseFile) && fs.statSync(_releaseFile).size > 1000000) {
+      _buildProductAvailable = true;
+    }
+  } catch (_) {}
+  if (global.__SQLITE_DISABLE_BY_PROBE__ && _buildProductAvailable) {
+    SAFE_LOG('phase:sqlite-init', 'probe 失败但 build/Release 编译产物存在，启用降级重试（主进程再次尝试初始化）...');
+    console.info('[sqlite-sessions] ℹ️ 内联 ABI 探测未通过，但检测到已编译的 better_sqlite3.node，尝试降级初始化（如仍失败将跳过SQLite，不影响JSON主流程）');
+    global.__SQLITE_DISABLE_BY_PROBE__ = false; // 取消禁用标记，让下面的逻辑再试一次
+  }
+
+  if (global.__SQLITE_DISABLE_BY_PROBE__) {
+    SAFE_LOG('phase:sqlite-init', 'skip: disabled by probe (better-sqlite3 native mismatch)');
+    sessionRepo = null;
+  } else {
+    // ============================================================
+    // ★ 【三端统一】只 new 一次 hireme.db 单例（通过 common-paths.openUnifiedDatabase）
+    // ============================================================
+    // 1) 加载 better-sqlite3：
+    //    - 优先使用【主进程探测通过的】 global.__HIREME_BETTER_SQLITE3_PATH__
+    //      （避免 Electron 主进程误加载 landing 下 Node ABI 版本造成 native crash）
+    //    - 其次 Electron 环境：先项目根 node_modules（Electron ABI 编译），再 landing（Node ABI 编译）
+    //    - 与 services/* 内 requireBetterSqlite3() 实现顺序保持一致
+    let Database = null;
+    const preferPath = typeof global.__HIREME_BETTER_SQLITE3_PATH__ === 'string' && global.__HIREME_BETTER_SQLITE3_PATH__
+      ? global.__HIREME_BETTER_SQLITE3_PATH__
+      : '';
+    const dbCandidates = (preferPath ? [preferPath] : []).concat([
+      path.join(__dirname, 'node_modules', 'better-sqlite3'),
+      path.join(__dirname, 'landing', 'node_modules', 'better-sqlite3'),
+    ]);
+    let _lastDbErr = null;
+    for (const _p of dbCandidates) {
+      try { Database = require(_p); SAFE_LOG('phase:sqlite-init', `using better-sqlite3 from ${path.relative(__dirname, _p) || _p}`); break; }
+      catch (_e) { _lastDbErr = _e; }
+    }
+    if (!Database) {
+      SAFE_LOG('phase:sqlite-init', `FAIL: better-sqlite3 not loaded | ${_lastDbErr && _lastDbErr.message}`);
+      throw _lastDbErr || new Error('better-sqlite3 未找到（项目根 与 landing/node_modules 均不可加载）');
+    }
+    // 2) 统一打开：WAL + busy_timeout + foreign_keys + NORMAL + cache_size
+    let _db = null;
+    if (commonPaths && typeof commonPaths.openUnifiedDatabase === 'function') {
+      const { db, ready, error } = commonPaths.openUnifiedDatabase(Database);
+      if (!ready || !db) throw error || new Error('openUnifiedDatabase 返回失败');
+      _db = db;
+    } else {
+      // common-paths 加载失败时兜底（极少）
+      const _dbDir = path.dirname(HIREME_DB_PATH);
+      if (!fs.existsSync(_dbDir)) fs.mkdirSync(_dbDir, { recursive: true });
+      _db = new Database(HIREME_DB_PATH);
+      _db.pragma('journal_mode = WAL');
+      _db.pragma('busy_timeout = 5000');
+      _db.pragma('foreign_keys = ON');
+    }
+    _unifiedDb = _db;
+    SAFE_LOG('phase:sqlite-init', `unified db opened: ${HIREME_DB_PATH}`);
+
+    // 3) 创建 SessionRepository（直接 new，传入 externalDb 共享句柄）
+    //    - 不再通过 localHttpServer.createSessionRepo(INTERVIEW_SQLITE_PATH) 开独立连接
+    const SessionRepo = safeRequire('./services/session-repo.js', 'session-repo');
+    if (SessionRepo) {
+      sessionRepo = new SessionRepo(_unifiedDb);
+    } else {
+      // fallback：兼容旧逻辑 createSessionRepo（此时传 db 句柄）
+      if (typeof localHttpServer?.createSessionRepo === 'function') {
+        sessionRepo = localHttpServer.createSessionRepo(_unifiedDb);
+      }
+    }
+    if (sessionRepo && typeof localHttpServer?.setSessionRepository === 'function') {
+      localHttpServer.setSessionRepository(sessionRepo);
+    }
+    // 健康检查打印
+    const h = (sessionRepo && typeof sessionRepo.health === 'function') ? sessionRepo.health() : null;
+    if (h && h.ok) {
+      console.log(`[sqlite-sessions] ✅ 初始化成功（三端统一 hireme.db）：DB=${path.relative(process.cwd(), HIREME_DB_PATH)} | sessions=${h.sessionCount} rounds=${h.roundCount}`);
+      SAFE_LOG('phase:sqlite-init', `ok, sessions=${h.sessionCount}, rounds=${h.roundCount}`);
+    } else {
+      console.warn('[sqlite-sessions] ⚠️ SQLite 仓库初始化未就绪：', h && h.msg ? h.msg : 'unknown');
+      SAFE_LOG('phase:sqlite-init', `not-ready: ${(h && h.msg) ? h.msg : 'unknown'}`);
+    }
+  }
+} catch (e) {
+  sessionRepo = null;
+  const stack = (e && e.stack) ? e.stack : String(e);
+  SAFE_LOG('phase:sqlite-init:FAIL', stack);
+  console.warn('[sqlite-sessions] ❌ 启动时初始化 hireme.db 统一仓库失败（SQLite 侧安全跳过，JSON 原流程不受影响）：', e && e.message);
+}
+
+SAFE_LOG('phase:sqlite-migrate', 'begin');
+// 启动时【自动】做一次 JSON → SQLite 的幂等迁移（迁过的 session 会被跳过，重复启动不重复）
+// 目的：老用户升级到带 SQLite 的新版本后，历史记录自动进入 DB，Web 端就能立刻看到
+try {
+  if (sessionRepo && sessionRepo.ready) {
+    // 用 child_process 同步跑 scripts/migrate-sessions-to-sqlite.js 会有路径问题，所以直接复用 migration 函数
+    // 为了代码复用，我们直接在 main.js 里内联一份"简化版迁移逻辑"（只做 logs/sessions/{accountId} 扫描 + upsert）
+    const _SESSION_ROOT = path.join(__dirname, 'logs', 'sessions');
+    if (fs.existsSync(_SESSION_ROOT)) {
+      let _migNew = 0, _migSkip = 0;
+      // 辅助函数：推断 category（与 migrate-sessions-to-sqlite.js / localHttpServer._inferSessionCategory 完全对齐）
+      const _inferCat = (s) => {
+        if (!s || typeof s !== 'object') return 'copilot';
+        if (s.category === 'copilot' || s.category === 'mock') return s.category;
+        if (s.meta && s.meta.mockInterview) return 'mock';
+        if (s.config && s.config._mockInterview) return 'mock';
+        if (s._cfg && s._cfg._mockInterview) return 'mock';
+        return 'copilot';
+      };
+      const _migrateDir = (dir, accountId) => {
+        if (!fs.existsSync(dir)) return;
+        for (const name of fs.readdirSync(dir)) {
+          if (!name.endsWith('.json') || name.startsWith('_index')) continue;
+          try {
+            const full = path.join(dir, name);
+            const raw = JSON.parse(fs.readFileSync(full, 'utf-8'));
+            if (!raw || !raw.id) continue;
+            if (sessionRepo.exists(raw.id)) { _migSkip++; continue; }
+            const rounds = Array.isArray(raw.rounds) ? raw.rounds : [];
+            let ac = 0, ec = 0;
+            for (const r of rounds) {
+              if (r && r.status === 'answered') ac++;
+              else if (r && r.status === 'error') ec++;
+            }
+            const st = Number(raw.startedAt || raw.started_at || 0);
+            const en = Number(raw.endedAt || raw.ended_at || 0);
+            const la = Number(raw.lastActiveAt || en || st || Date.now());
+            const status = (raw.status === 'ended' || en > 0) ? 'ended' : 'active';
+            const cat = _inferCat(raw);
+            const snippet = (typeof raw.snippet === 'string' && raw.snippet.trim()) ? raw.snippet.slice(0, 500)
+              : (rounds.length ? String(rounds[rounds.length - 1].questionText || rounds[rounds.length - 1].answerText || '').slice(0, 500) : '');
+            sessionRepo.upsertSession({
+              id: String(raw.id), accountId,
+              category: cat,
+              title: String(raw.title || '').slice(0, 200),
+              targetCompany:  String(raw.targetCompany  || raw.target_company  || '').slice(0, 200),
+              targetPosition: String(raw.targetPosition || raw.target_position || '').slice(0, 200),
+              interviewType:  String(raw.interviewType  || raw.interview_type  || '').slice(0, 100),
+              status, startedAt: st, endedAt: en, lastActiveAt: la,
+              roundCount: rounds.length, questionCount: rounds.length,
+              answeredCount: ac, errorCount: ec,
+              durationMs: (raw.stats && raw.stats.totalDurationMs) || Math.max(0, en - st),
+              jdSnapshot: String(raw.jdSnapshot || raw.jd_snapshot || '').slice(0, 20000),
+              resumeSnapshot: String(raw.resumeSnapshot || raw.resume_snapshot
+                || (raw.config && (raw.config.resumeContent || raw.config.resumeText)) || '').slice(0, 40000),
+              snippet,
+            });
+            sessionRepo.upsertRoundsForSession(String(raw.id), rounds);
+            _migNew++;
+          } catch (_) { /* 单条失败不影响其它 */ }
+        }
+      };
+      // 顶层遗留（老版本）→ 挂到 __guest__
+      const topFiles = fs.readdirSync(_SESSION_ROOT, { withFileTypes: true });
+      if (topFiles.some(e => e.isFile() && e.name.endsWith('.json') && !e.name.startsWith('_index'))) {
+        _migrateDir(_SESSION_ROOT, '__guest__');
+      }
+      // 账号子目录（主流格式）
+      for (const e of topFiles) {
+        if (!e.isDirectory()) continue;
+        _migrateDir(path.join(_SESSION_ROOT, e.name), e.name);
+      }
+      if (_migNew > 0 || _migSkip > 0) {
+        console.log(`[sqlite-sessions] 📥 启动自动迁移：新迁 ${_migNew} 场，跳过已存在 ${_migSkip} 场`);
+      }
+      SAFE_LOG('phase:sqlite-migrate', `done, new=${_migNew}, skipped=${_migSkip}`);
+    } else {
+      SAFE_LOG('phase:sqlite-migrate', 'skip: no logs/sessions directory');
+    }
+  } else {
+    SAFE_LOG('phase:sqlite-migrate', 'skip: sessionRepo not ready');
+  }
+} catch (migE) {
+  const stack = (migE && migE.stack) ? migE.stack : String(migE);
+  SAFE_LOG('phase:sqlite-migrate:FAIL', stack);
+  console.warn('[sqlite-sessions] ⚠️ 启动自动迁移异常（不影响后续运行，用户可手动重跑 scripts/migrate-sessions-to-sqlite.js）：', migE && migE.message);
+}
+
+SAFE_LOG('phase:authService', 'begin');
+// ===== 账号鉴权服务：本地持久化账号表 + safeStorage 加密会话 =====
+// stateChangeListener：登录/登出/改资料时向主窗口+浮窗广播 'auth-state-change'
+// 🔴 三端统一：传入 _unifiedDb 共享句柄（避免再 new 一次 Database）
+let authService = null;
+try {
+  if (AuthService) {
+    authService = new AuthService(userDataPath, (safeStorage || null), {
+      externalDb: _unifiedDb || null,   // ★ 复用统一 hireme.db 单例
+      stateChangeListener(userObj) {
+        try { broadcastToAllViews('auth-state-change', userObj); } catch (_) {}
+      }
+    });
+  }
+  SAFE_LOG('phase:authService', 'ok');
+} catch (e) {
+  const stack = (e && e.stack) ? e.stack : String(e);
+  SAFE_LOG('phase:authService:FAIL', stack);
+  console.warn('[auth] AuthService 初始化失败（降级为 null）：', e && e.message);
+  authService = null;
+}
+// 注入到 LocalHttpServer 单例（内部 setAuthService 实现了按账号分 session 目录）
+try {
+  if (authService && localHttpServer && typeof localHttpServer.setAuthService === 'function') {
+    localHttpServer.setAuthService(authService);
+  }
+} catch (e) {
+  console.warn('[auth] setAuthService 注入失败：', e && e.message);
+}
+
+// ★ 预置默认账号：确保始终存在一个管理员账号，
+//   邮箱 15376110673@163.com / 密码 123456，便于直接登录体验。
+//   不存在则创建；已存在（DUPLICATE_EMAIL）视为成功，不覆盖密码。
+try {
+  if (authService) {
+    const r = authService.createAccount({
+      email: '15376110673@163.com',
+      password: '123456',
+      displayName: '默认账号',
+      isAdmin: true,
+    });
+    if (r && r.ok) console.log('[auth] 已预置默认账号：15376110673@163.com');
+    else if (r && r.error === 'DUPLICATE_EMAIL') console.log('[auth] 默认账号已存在：15376110673@163.com');
+    else console.warn('[auth] 预置默认账号结果：', r && r.error);
+  } else {
+    console.warn('[auth] authService 未就绪，跳过预置默认账号');
+  }
+} catch (e) { console.warn('[auth] 预置默认账号异常：', e && e.message); }
+
+// 暴露给外部 IPC 复用：判断当前账号 ID（用于 resume/kb 按账号拼路径）
+function currentAccountIdSafe() {
+  try { return authService.currentAccountId || GUEST_ACCOUNT_ID; } catch (_) { return GUEST_ACCOUNT_ID; }
+}
+
+// ============================================================
+// ★ 【三端统一】ConfigManager 延后初始化（必须在 AuthService 之后）
+//   - externalDb       ：复用 _unifiedDb 共享句柄（第 3 个模块共享连接）
+//   - accountProvider  ：currentAccountIdSafe()（多账号隔离必须，拿当前登录账号 id）
+// ============================================================
+SAFE_LOG('init:ConfigManager', 'start');
+try {
+  if (ConfigManager) {
+    configManager = new ConfigManager(userDataPath, {
+      externalDb:      _unifiedDb || null,
+      accountProvider: () => currentAccountIdSafe(),
+    });
+    SAFE_LOG('init:ConfigManager', 'ok');
+  } else {
+    SAFE_LOG('init:ConfigManager', 'skip: module not loaded');
+  }
+} catch (e) {
+  const stack = (e && e.stack) ? e.stack : String(e);
+  SAFE_LOG('init:ConfigManager:FAIL', stack);
+  try { process.stderr.write(`[init:FAIL] ConfigManager :: ${stack}\n`); } catch (_) {}
+  configManager = null;
+  console.warn('[config] ConfigManager 初始化失败（降级为 null）：', e && e.message);
+}
+// 空兜底：后续所有 loadConfig / saveConfig / saveResume 等函数即使 configManager=null 也不抛错
+if (!configManager) {
+  try {
+    const { defaultInterviewConfig } = require('./src/shared/interview-config');
+    configManager = {
+      config: defaultInterviewConfig && typeof defaultInterviewConfig === 'function' ? defaultInterviewConfig() : {},
+      loadConfig()     { try { return this.config; } catch (_) { return {}; } },
+      saveConfig()     { /* noop */ },
+      loadHistory()    { return []; },
+      saveHistory()    { /* noop */ },
+      loadResume()     { return { success: false, error: 'ConfigManager 未就绪' }; },
+      saveResume()     { return { success: false, error: 'ConfigManager 未就绪' }; },
+      deleteResume()   { return { success: false, error: 'ConfigManager 未就绪' }; },
+      saveSession()    { return { success: false, error: 'ConfigManager 未就绪' }; },
+      listSessions()   { return []; },
+      saveRecording()  { /* noop */ },
+      saveReview()     { return { success: false, error: 'ConfigManager 未就绪' }; },
+    };
+  } catch (_nocfg) {
+    configManager = {
+      config: {},
+      loadConfig()     { return {}; },
+      saveConfig()     {},
+      loadHistory()    { return []; },
+      saveHistory()    {},
+      loadResume()     { return { success: false, error: 'ConfigManager 未就绪' }; },
+      saveResume()     { return { success: false, error: 'ConfigManager 未就绪' }; },
+      deleteResume()   { return { success: false, error: 'ConfigManager 未就绪' }; },
+      saveSession()    { return { success: false, error: 'ConfigManager 未就绪' }; },
+      listSessions()   { return []; },
+      saveRecording()  {},
+      saveReview()     { return { success: false, error: 'ConfigManager 未就绪' }; },
+    };
+  }
+}
 
 // 加载配置（迁移到统一模型，且不继承任何硬编码密钥）
 function loadConfig() {
@@ -264,17 +948,15 @@ function toggleStealthMode() {
       // 改用 CSS pointer-events: none，让大部分 UI 透明穿透底层应用
       // 但保留一个拖动手柄 (stealth-drag-handle) 可交互
       mainWindow.setSkipTaskbar(true);
-      // ★ 系统级捕获排除（对齐 HireMe）：窗口从录屏/截图/屏幕共享中排除，本地仍可见
-      captureExclusion.applyCaptureExclusion(mainWindow, true);
+      // 注：「截图/录屏不可见」已解耦为独立的 captureHide 开关（默认开启），
+      // 此处隐身模式只负责鼠标穿透 + 跳过任务栏，不再重复设置捕获排除。
       // 通知渲染层切换 class
       mainWindow.webContents.send('stealth-mode-changed', true);
-      showNotification('面试助手', '已进入隐身模式（窗口已从屏幕捕获排除）');
+      showNotification('面试助手', '已进入隐身模式');
     } else {
       // 退出隐身模式：恢复鼠标交互
       mainWindow.setIgnoreMouseEvents(false);
       mainWindow.setSkipTaskbar(false);
-      // ★ 恢复正常屏幕捕获
-      captureExclusion.applyCaptureExclusion(mainWindow, false);
       mainWindow.webContents.send('stealth-mode-changed', false);
       showNotification('面试助手', '已退出隐身模式');
     }
@@ -427,6 +1109,9 @@ function createWindow() {
     alwaysOnTop: config.alwaysOnTop,
     skipTaskbar: true,                      // 共享屏幕时不显示在任务栏，保持隐蔽
     hasShadow: false,
+    // ★ 闪屏修复：先不显示，等页面 load + first-paint 之后再一次性 show，
+    //    避免用户看到「白屏 → Copilot 半渲染 → 登录页」的混乱过渡。
+    show: false,
     webPreferences: {
       // 安全桥：渲染层可通过 window.electronAPI 调用主进程能力，
       // 后续把渲染层改为 window.electronAPI 后即可关闭 nodeIntegration。
@@ -436,6 +1121,26 @@ function createWindow() {
       enableRemoteModule: true
     },
     icon: path.join(__dirname, 'assets', 'icon.png')
+  });
+
+  // ★ 闪屏修复：did-finish-load + first-paint 之后再显示窗口
+  //   first-paint 之后浏览器已完成首帧绘制，此时用户看到的就是"完整正确"的页面，
+  //   而不是 HTML 未加载完/JS 还没切路由的中间状态。
+  let didFirstPaint = false;
+  mainWindow.webContents.once('did-finish-load', () => {
+    const tryShow = () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      try { if (!mainWindow.isVisible()) mainWindow.show(); } catch (_) {}
+    };
+    if (didFirstPaint) { tryShow(); return; }
+    try {
+      mainWindow.webContents.once('paint', () => { didFirstPaint = true; tryShow(); });
+      // 兜底：如果 600ms 内没有 paint 事件（比如 GPU 合成跳过 paint），仍然 show
+      //   避免窗口"卡住不显示"。
+      setTimeout(() => { didFirstPaint = true; tryShow(); }, 600);
+    } catch (_) {
+      didFirstPaint = true; tryShow();
+    }
   });
 
   mainWindow.loadFile('index.html');
@@ -450,8 +1155,13 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    unregisterWindow('main');  // 注销主窗口，避免脏引用
   });
-  
+
+  // ★ 登记主窗口到统一排除注册表，并按当前开关施加「截图/录屏不可见」
+  registerWindow('main', mainWindow);
+  captureExclusion.applyCaptureExclusion(mainWindow, captureHideEnabled);
+
   mainWindow.on('resize', () => {
     const [width, height] = mainWindow.getSize();
     const config = loadConfig();
@@ -462,34 +1172,85 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  // 加载保存的状态
-  stateManager.load();
+  SAFE_LOG('phase:app-whenReady', 'entered');
+  try {
+    // ★ 启动强制清会话：让每次运行都从未登录态开始，登录页作为默认首页
+    try { authService && authService.logoutCurrent && authService.logoutCurrent(); } catch (e) { console.warn('[auth] 启动清会话失败：', e && e.message); }
+    SAFE_LOG('phase:app-whenReady', 'auth-logout done');
 
-  // 检查是否有未完成的会话
-  const recoveryData = stateManager.getRecoveryData();
-  if (recoveryData.hasUnfinished) {
-    const duration = recoveryData.session.endTime
-      ? Date.now() - recoveryData.session.startTime
-      : Date.now() - recoveryData.session.startTime;
-    console.log('[app] 检测到未完成会话，时长:', Math.floor(duration / 60000), '分钟');
+    // 加载保存的状态
+    stateManager && stateManager.load && stateManager.load();
+    SAFE_LOG('phase:app-whenReady', 'stateManager.load done');
 
-    // 通知渲染进程（如果窗口已创建）
-    setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('check-recovery', recoveryData);
+    // 检查是否有未完成的会话
+    try {
+      const recoveryData = stateManager && stateManager.getRecoveryData && stateManager.getRecoveryData();
+      if (recoveryData && recoveryData.hasUnfinished) {
+        const duration = recoveryData.session.endTime
+          ? Date.now() - recoveryData.session.startTime
+          : Date.now() - recoveryData.session.startTime;
+        console.log('[app] 检测到未完成会话，时长:', Math.floor(duration / 60000), '分钟');
+
+        // 通知渲染进程（如果窗口已创建）
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('check-recovery', recoveryData);
+          }
+        }, 1000);
       }
-    }, 1000);
+    } catch (e) {
+      console.warn('[app] 未完成会话检查失败：', e && e.message);
+    }
+    SAFE_LOG('phase:app-whenReady', 'recovery check done');
+
+    // 启动自动保存（30秒间隔）
+    try { stateManager && stateManager.startAutoSave && stateManager.startAutoSave(30000); } catch (_) {}
+    SAFE_LOG('phase:app-whenReady', 'autosave started');
+
+    // 注册 display media handler（解决 renderer 调 getDisplayMedia 抛 "Not supported"）
+    // 拦截后我们自己弹一个应用内选择器，用户选完把 source 返回给 getDisplayMedia
+    try { setupDisplayMediaHandler(); } catch (e) { console.warn('[app] setupDisplayMediaHandler 失败：', e && e.message); }
+    SAFE_LOG('phase:app-whenReady', 'display media handler done');
+  } catch (e) {
+    const stack = (e && e.stack) ? e.stack : String(e);
+    SAFE_LOG('phase:app-whenReady-preWindow:FAIL', stack);
+    console.warn('[app] whenReady 前半段（createWindow 之前）异常：', e && e.message);
   }
 
-  // 启动自动保存（30秒间隔）
-  stateManager.startAutoSave(30000);
+  // ★ 启动即按配置确定「截图/录屏不可见」开关：默认 config.captureHide=true。
+  //   必须在 createWindow() 之前设置，确保主窗口以正确状态创建。
+  try {
+    const _startCfg = loadConfig();
+    captureHideEnabled = _startCfg.captureHide !== false;  // 默认开启
+    console.log(`[capture-hide] 启动读取 config.captureHide=${captureHideEnabled}`);
+  } catch (e) {
+    console.warn('[capture-hide] 读取 config.captureHide 失败，回退默认 true:', e && e.message);
+    captureHideEnabled = true;
+  }
 
-  // 注册 display media handler（解决 renderer 调 getDisplayMedia 抛 "Not supported"）
-  // 拦截后我们自己弹一个应用内选择器，用户选完把 source 返回给 getDisplayMedia
-  setupDisplayMediaHandler();
+  try {
+    createWindow();
+    SAFE_LOG('phase:app-whenReady', 'createWindow done');
+  } catch (e) {
+    const stack = (e && e.stack) ? e.stack : String(e);
+    SAFE_LOG('phase:app-whenReady-createWindow:FAIL', stack);
+    console.warn('[app] createWindow 失败：', e && e.message);
+  }
+  try { createTray(); SAFE_LOG('phase:app-whenReady', 'createTray done'); }
+  catch (e) {
+    const stack = (e && e.stack) ? e.stack : String(e);
+    SAFE_LOG('phase:app-whenReady-createTray:FAIL', stack);
+    console.warn('[app] createTray 失败：', e && e.message);
+  }
 
-  createWindow();
-  createTray();
+  // 按当前开关对全部已登记窗口（此时至少主窗口）统一施加「从屏幕捕获排除」
+  try {
+    applyCaptureHideToAll(captureHideEnabled);
+    console.log(`[capture-hide] 启动已对全部窗口施加排除=${captureHideEnabled}`);
+  } catch (e) {
+    console.warn('[capture-hide] 启动施加排除失败（不致命）:', e && e.message);
+  }
+  SAFE_LOG('phase:app-whenReady', 'capture-hide applied');
 
   // ===== 关键修复：提前挂载 localHttpServer 的外部依赖（loadConfigFn / captureFn）=====
   //   问题背景：用户点「面板截图→AI解题」时，还没生成二维码（localHttpServer 未启动），
@@ -502,9 +1263,15 @@ app.whenReady().then(() => {
   } catch (e) {
     console.warn('[app] localHttpServer externals 预挂载失败（不致命，后续启动服务时会重试）:', e && e.message);
   }
+  SAFE_LOG('phase:app-whenReady', 'attachLocalHttpServerExternals done');
 
-  const config = loadConfig();
-  registerGlobalShortcuts(config);
+  try {
+    const config = loadConfig();
+    registerGlobalShortcuts(config);
+  } catch (e) {
+    console.warn('[app] registerGlobalShortcuts 失败：', e && e.message);
+  }
+  SAFE_LOG('phase:app-whenReady', 'ALL DONE');
 });
 
 // ============================================================
@@ -853,9 +1620,14 @@ function showSourcePicker(sources) {
       }
     });
 
+    // ★ 登记声源选择器到统一排除注册表，并施加「截图/录屏不可见」（保持与其他窗口一致）
+    registerWindow('picker', pickerWindow);
+    captureExclusion.applyCaptureExclusion(pickerWindow, captureHideEnabled);
+
     pickerWindow.setMenuBarVisibility(false);
 
     pickerWindow.on('closed', () => {
+      unregisterWindow('picker');  // 注销选择器，避免脏引用
       pickerWindow = null;
       if (pendingPickerResolve) {
         pendingPickerResolve(null);
@@ -1017,8 +1789,8 @@ ipcMain.handle('enter-stealth-mode', () => {
   if (mainWindow) {
     // 隐身模式：用 CSS pointer-events 控制，保留 webkit-app-region 拖动能力
     mainWindow.setSkipTaskbar(true);
-    // ★ 系统级捕获排除：窗口从录屏/截图/屏幕共享中排除，本地仍可见
-    captureExclusion.applyCaptureExclusion(mainWindow, true);
+    // 注：「截图/录屏不可见」已解耦为独立开关（captureHide，默认开启），
+    // 此处不再重复设置捕获排除。
     mainWindow.webContents.send('stealth-mode-changed', true);
   }
   updateTrayMenu();
@@ -1030,29 +1802,37 @@ ipcMain.handle('exit-stealth-mode', () => {
     // 退出隐身模式：恢复鼠标交互
     mainWindow.setIgnoreMouseEvents(false);
     mainWindow.setSkipTaskbar(false);
-    // ★ 恢复正常屏幕捕获
-    captureExclusion.applyCaptureExclusion(mainWindow, false);
     mainWindow.webContents.send('stealth-mode-changed', false);
   }
   updateTrayMenu();
 });
 
-// 独立控制「从屏幕捕获排除」：可在非隐身状态下单独启用（对齐 HireMe 的 applyExcludeFromCapture）
-// 返回 { success, method }，method 标识实际生效方式（exclude_from_capture / monitor / content_protection / unsupported）
+// 独立控制「从屏幕捕获排除」：可在非隐身状态下单独启用（对齐 HireMe 的 applyExcludeFromCapture）。
+// 现统一作用于「全部已登记窗口」（主窗口/答题面板/模拟面试浮窗/声源选择器），
+// 避免只排除主窗口导致答案面板在截图里露馅。
+// 返回 { success, total, ok, method }，method 标识实际生效方式（exclude_from_capture / monitor / content_protection / unsupported）
 ipcMain.handle('set-exclude-from-capture', (event, enabled) => {
-  if (!mainWindow) return { success: false, method: 'no_window' };
-  const ok = captureExclusion.applyCaptureExclusion(mainWindow, !!enabled);
-  // 反馈实际生效方式，便于 UI 提示
+  captureHideEnabled = !!enabled;
+  const res = applyCaptureHideToAll(captureHideEnabled);
   let method = 'unsupported';
-  if (ok) {
-    if (captureExclusion.ensureFunc()) {
-      // Windows 路径：能加载 koffi 即尝试了 EXCLUDEFROMCAPTURE（内部已做 MONITOR 回退）
-      method = 'exclude_from_capture';
-    } else {
-      method = 'content_protection';
-    }
+  if (res.ok > 0) {
+    // 能加载 koffi 即 Windows 路径（内部已优先 EXCLUDEFROMCAPTURE、老系统回退 MONITOR）
+    method = captureExclusion.ensureFunc() ? 'exclude_from_capture' : 'content_protection';
   }
-  return { success: ok, method };
+  return { success: res.ok > 0, total: res.total, ok: res.ok, method };
+});
+
+// ★ 截图/录屏「不可见」独立总开关：实时切换对全部窗口的捕获排除。
+// 与隐身模式正交——默认开启，用户可随时在设置面板关闭（用于自己录演示视频）。
+// 返回 { success, total, ok, method }
+ipcMain.handle('set-capture-hide', (event, enabled) => {
+  captureHideEnabled = !!enabled;
+  const res = applyCaptureHideToAll(captureHideEnabled);
+  let method = 'unsupported';
+  if (res.ok > 0) {
+    method = captureExclusion.ensureFunc() ? 'exclude_from_capture' : 'content_protection';
+  }
+  return { success: res.ok > 0, total: res.total, ok: res.ok, method };
 });
 
 ipcMain.handle('is-in-stealth-mode', () => {
@@ -1193,6 +1973,40 @@ ipcMain.handle('generate-answer', async (event, question, config) => {
 // 说明：密钥来自用户在设置面板填写的 config，不写死在代码中
 ipcMain.handle('optimize-resume', async (event, resumeText, direction) => {
   try {
+    // ★ 积分预校验：简历优化 10 积分 / 每次
+    //   - 远端 session 存在 → 调 landing /api/console/consume 原子扣费
+    //   - 远端 session 不存在 → 不阻断（离线仍能优化），返回 warning 让前端弹提示
+    let consumeWarning = null;
+    const hasRemote = !!_readRemoteSession();
+    if (hasRemote) {
+      // 这里复用统一扣费 HTTP 封装
+      const r = await _callLanding({
+        method: 'POST', pathname: '/api/console/consume',
+        body: {
+          credits: 10, bizType: 'resume_optimize',
+          bizId:   `resume-${Date.now()}`,
+          desc:    `简历优化（${String(direction || 'general')}）`,
+        },
+        timeoutMs: 12000,
+      });
+      if (!r.ok || !r.data) {
+        if (r.data && r.data.code === 'INSUFFICIENT_CREDITS') {
+          const cur  = Number(r.data.current)  || 0;
+          const need = Number(r.data.required) || 10;
+          const miss = Number(r.data.missing)  || (need - cur);
+          return {
+            success: false, blocked: true, errorCode: 'INSUFFICIENT_CREDITS',
+            error: `积分不足，无法开始「简历优化」。当前 ${cur} / 需要 ${need} / 还差 ${miss}。请点击顶部「充值」按钮打开宣传站点控制台充值。`,
+            current: cur, required: need, missing: miss,
+          };
+        }
+        // 其它异常：NOT_LOGGED_IN 等 → 降级为"离线允许"
+        consumeWarning = (r && r.data && r.data.msg) ? `[积分] ${r.data.msg}，已以离线模式继续。` : `[积分] 远端扣费失败（${r.errorMsg || '未知错误'}），已以离线模式继续。`;
+      }
+    } else {
+      consumeWarning = '未连接宣传站点（离线/本地模式）：本次未扣除积分，简历优化功能仍可使用。';
+    }
+
     // 入参校验：简历为空直接返回友好错误，不发起网络请求
     if (!resumeText || !resumeText.trim()) {
       return { success: false, error: '请先在「简历优化」页上传或粘贴简历内容' };
@@ -1230,7 +2044,7 @@ ${resumeText}
       config.modelTier,
       false // 简历优化用自定义提示词，禁止编程档位改写场景
     );
-    return { success: true, answer };
+    return { success: true, answer, warning: consumeWarning };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1273,6 +2087,325 @@ ipcMain.handle('generate-review', async (event, history, config) => {
 // 列出历史会话档案（含 transcript/wav/review）—— 旧语义：configManager 存档，不要与下面面试记录混用
 ipcMain.handle('list-sessions', () => {
   return { success: true, sessions: configManager.listSessions() };
+});
+
+// ============================================================
+// ★ 账号鉴权 IPC：前缀 auth-（9 条）
+//   所有错误都以结构化 {ok:false, error, msg?} 形式返回，渲染层根据 error 码展示中文提示。
+//   渲染进程**永远拿不到**明文 token / 密码哈希。
+// ============================================================
+// 1) 当前登录用户（启动即拉一次）：返回 user 形态：{loggedIn,accountId,email,displayName,avatar,...}
+//    远端 session 存在且未过期 → 优先返回远端 user（附带 isRemote=true + landingBaseUrl 供渲染层跳转控制台）
+ipcMain.handle('auth-current-user', async () => {
+  try {
+    const remoteSess = _readRemoteSession();
+    if (remoteSess && remoteSess.user) {
+      const u = remoteSess.user;
+      return {
+        ok: true,
+        loggedIn: true,
+        accountId:   u.accountId   || ('remote-' + (u.email || '').replace(/[^a-zA-Z0-9]/g, '_')),
+        email:       u.email       || '',
+        displayName: u.displayName || (u.email || '').split('@')[0],
+        avatar:      u.avatar      || '',
+        isAdmin:     !!u.isAdmin,
+        createdAt:   u.createdAt   || 0,
+        lastLoginTs: u.lastLoginTs || remoteSess.loggedInAt || 0,
+        // 桌面端专属附加字段：渲染层可据此决定"显示积分余额""充值按钮""去控制台"
+        isRemote:    true,
+        balanceMode: 'remote',
+        landingBaseUrl: remoteSess.baseUrl || LANDING_BASE_URL,
+        remoteExpireAt: remoteSess.expireAt || 0,
+      };
+    }
+    // Fallback：本地账号
+    return Object.assign({ ok: true, isRemote: false, balanceMode: 'local', landingBaseUrl: LANDING_BASE_URL }, authService.getCurrentUser());
+  } catch (e) {
+    console.error('[main][auth-current-user] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 2) 是否已有任何账号（首次启动引导创建本地管理员）
+ipcMain.handle('auth-has-any-account', async () => {
+  try { return { ok: true, hasAny: !!authService.hasAnyAccount() }; }
+  catch (e) { return { ok: false, error: 'EXCEPTION', msg: e.message }; }
+});
+// 3) 本地创建账号（首次启动管理员引导 / 宣传网站导入）
+//   防护 DEAD_END：本地已有账号时，不允许再通过此 IPC 随意创建（避免用户"公开注册入口"滥用）。
+//   如果确实需要手动导入第二个账号，请传 payload._secretAllowMulti=true 并手动编辑 main.js，
+//   或直接从 accounts.json 手动复制条目。
+ipcMain.handle('auth-create-account', async (_e, payload = {}) => {
+  try {
+    // ★ DEAD_END 防护：账号已存在 → 直接拒绝
+    if (authService.hasAnyAccount() && !(payload && payload._secretAllowMulti === true)) {
+      return { ok: false, error: 'DEAD_END', msg: '初始化入口已关闭，请使用正常登录或联系管理员创建账号。' };
+    }
+    const r = authService.createAccount({
+      email: payload && payload.email,
+      password: payload && payload.password,
+      displayName: payload && payload.displayName,
+      avatar: payload && payload.avatar,
+      // 首次创建的账号永远是管理员
+      isAdmin: true,
+    });
+    return Object.assign({ ok: r.ok, error: r.error || '' }, r.accountId ? { accountId: r.accountId } : {});
+  } catch (e) {
+    console.error('[main][auth-create-account] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 4) 登录：邮箱 + 密码 → currentUser
+//    策略：
+//      ① 先尝试「宣传站点远端登录」→ 成功即主登录态（带 isRemote=true）；
+//      ② 远端不在线（LANDING_OFFLINE）或远端鉴权失败时，自动 fallback 本地账号库；
+//      ③ 远端成功后，**顺手**也登录本地同名账号（密码不匹配就跳过不报错），保证 localHttpServer 按 accountId 分目录不崩。
+ipcMain.handle('auth-login', async (_e, payload = {}) => {
+  try {
+    const email    = String((payload && payload.email)    || '').trim();
+    const password = String((payload && payload.password) || '');
+
+    // --- 步骤1：先试远端 ---
+    const rem = await _remoteLogin(email, password);
+    if (rem.ok) {
+      // 远端登录成功：尝试本地也登录同名账号（密码不匹配忽略，纯为 localHttpServer 按 accountId 分目录兜底）
+      try { authService.login(email, password); } catch (_) {}
+      const u = rem.user || {};
+      const r2 = {
+        ok: true, remote: true,
+        loggedIn: true,
+        accountId:   u.accountId   || ('remote-' + email.replace(/[^a-zA-Z0-9]/g, '_')),
+        email:       u.email       || email,
+        displayName: u.displayName || email.split('@')[0],
+        avatar:      u.avatar      || '',
+        isAdmin:     !!u.isAdmin,
+        createdAt:   u.createdAt   || 0,
+        lastLoginTs: u.lastLoginTs || Date.now(),
+        isRemote:    true, balanceMode: 'remote',
+        landingBaseUrl: LANDING_BASE_URL,
+        remoteExpireAt: rem.session && rem.session.expireAt ? rem.session.expireAt : 0,
+      };
+      // 广播 auth-state-change（让顶部栏 / 其它浮窗立即重绘登录态）
+      try { broadcastToAllViews('auth-state-change', r2); } catch (_) {}
+      return r2;
+    }
+
+    // --- 步骤2：fallback 本地账号 ---
+    const r = authService.login(email, password);
+    if (!r.ok) return { ok: false, error: r.error || 'LOGIN_FAILED', msg: (rem && rem.code === 'REMOTE_LOGIN_FAILED') ? rem.msg : undefined };
+    // 本地登录成功也广播
+    try { broadcastToAllViews('auth-state-change', Object.assign({ok:true,isRemote:false,balanceMode:'local',landingBaseUrl:LANDING_BASE_URL}, r)); } catch (_) {}
+    return Object.assign({ ok: true, isRemote: false, balanceMode: 'local', landingBaseUrl: LANDING_BASE_URL }, r);
+  } catch (e) {
+    console.error('[main][auth-login] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 5) 退出登录 → 总会话清 → currentUser(游客)
+//    远端登录 → 先远端 logout（清 remote-session.json）+ 再本地 logout；纯本地 → 只本地
+ipcMain.handle('auth-logout', async () => {
+  try {
+    const hasRemote = !!_readRemoteSession();
+    if (hasRemote) await _remoteLogout();
+    authService.logoutCurrent();
+    const next = { ok: true, loggedIn: false, accountId: GUEST_ACCOUNT_ID, email: '', displayName: '游客', avatar: '', isAdmin: false, isRemote: false, balanceMode: 'local', landingBaseUrl: LANDING_BASE_URL };
+    try { broadcastToAllViews('auth-state-change', next); } catch (_) {}
+    return next;
+  } catch (e) {
+    console.error('[main][auth-logout] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 6) 忘记密码步骤1：邮箱 → 返回 8 位重置码 + expireAt
+ipcMain.handle('auth-forgot-step1', async (_e, payload = {}) => {
+  try {
+    const r = authService.forgotStep1GenerateResetCode(payload && payload.email);
+    if (r.ok) return { ok: true, resetCode: r.resetCode, expireAt: r.expireAt };
+    return { ok: false, error: r.error || 'FAILED' };
+  } catch (e) {
+    console.error('[main][auth-forgot-step1] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 7) 忘记密码步骤2：邮箱+重置码+新密码 → ok
+ipcMain.handle('auth-forgot-step2-reset', async (_e, payload = {}) => {
+  try {
+    const r = authService.forgotStep2ResetByCode(
+      payload && payload.email,
+      payload && payload.resetCode,
+      payload && payload.newPassword,
+    );
+    return r.ok ? { ok: true } : { ok: false, error: r.error || 'FAILED' };
+  } catch (e) {
+    console.error('[main][auth-forgot-step2-reset] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 8) 账号设置：改密码（旧密码+新密码）
+ipcMain.handle('auth-change-password', async (_e, payload = {}) => {
+  try {
+    const u = authService.getCurrentUser();
+    if (!u || !u.loggedIn) return { ok: false, error: 'NOT_LOGGED_IN' };
+    const r = authService.changePassword(u.accountId, payload && payload.oldPassword, payload && payload.newPassword);
+    if (r.ok) return Object.assign({ ok: true }, authService.getCurrentUser());
+    return { ok: false, error: r.error || 'FAILED' };
+  } catch (e) {
+    console.error('[main][auth-change-password] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 9) 账号设置：更新个人资料（昵称/头像）/ 读取账号完整信息
+ipcMain.handle('auth-update-profile', async (_e, patch = {}) => {
+  try {
+    const u = authService.getCurrentUser();
+    if (!u || !u.loggedIn) return { ok: false, error: 'NOT_LOGGED_IN' };
+    const r = authService.updateProfile(u.accountId, patch || {});
+    return r.ok ? Object.assign({ ok: true }, r) : { ok: false, error: r.error || 'FAILED' };
+  } catch (e) {
+    console.error('[main][auth-update-profile] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 10) 读取指定账号的完整资料（个人中心只读展示）
+ipcMain.handle('auth-get-account', async (_e, accountId) => {
+  try {
+    const u = authService.getCurrentUser();
+    // 仅允许读自己的账号（避免跨账号）
+    const id = accountId || (u && u.accountId);
+    if (u && u.loggedIn && String(u.accountId) !== String(id)) {
+      return { ok: false, error: 'FORBIDDEN' };
+    }
+    const r = authService.getAccount(id);
+    return r ? { ok: true, account: r } : { ok: false, error: 'NOT_FOUND' };
+  } catch (e) {
+    console.error('[main][auth-get-account] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+// 11) 🟢 合并游客(__guest__)的 session / resume 到当前登录账号：【已废弃】
+//     —— 需求变更：只要用户登录，就能直接看到 SQLite 中属于自己的相关数据；
+//        GUEST 命名空间独立保留（用户登出=回到游客模式时还能看到），不再执行
+//        任何 session/resume 的搬运与清空操作。
+//     —— 本 IPC 保留返回 ok:true+stats=0，是为了兼容"仍在调用本 IPC 的旧渲染
+//        进程/旧前端缓存/第三方调用"，避免它们收到 EXCEPTION 出错。
+ipcMain.handle('auth-merge-guest-to-current', async () => {
+  try {
+    const u = authService.getCurrentUser();
+    if (!u || !u.loggedIn) return { ok: false, error: 'NOT_LOGGED_IN' };
+    const curId = u.accountId;
+    if (String(curId) === GUEST_ACCOUNT_ID) return { ok: false, error: 'BAD_STATE', msg: '当前就是游客账号，无需合并。' };
+    console.info('[main][auth-merge-guest-to-current] ℹ️ 合并功能已废弃：直接返回空 stats（不搬运 session/resume，不清空 GUEST）。');
+    // 返回与旧版相同字段的"空 stats"，保持前端兼容性
+    const stats = {
+      sessionMerged: 0,
+      sessionFilesCopied: 0,
+      sessionSkippedDup: 0,
+      resumeMerged: false,
+      resumeChars: 0,
+      sessionClearedFromGuest: 0,
+      resumeClearedFromGuest: false,
+      deprecated: true, // 额外告知调用方：本次结果是"废弃空实现"返回的
+    };
+    return { ok: true, stats };
+  } catch (e) {
+    console.error('[main][auth-merge-guest-to-current] 异常：', e.message);
+    return { ok: false, error: 'EXCEPTION', msg: e.message };
+  }
+});
+
+// ============================================================
+// ★ 积分消费 & 宣传页控制台联动：前缀 credits-
+//   设计原则：
+//     - 有远端 session → 所有变动走 landing server（原子双写余额+流水，对账一致）
+//     - 没远端 session（宣传站没启动 / 本地离线 / 未注册远端）→ 允许"离线使用"，不扣积分
+//       但通过 offline:true 明确告知前端，让前端弹提醒。
+// ============================================================
+// 1) 查询宣传站点服务端状态（给顶部栏 UI 显示用）
+ipcMain.handle('credits-get-server-info', async () => {
+  const sess = _readRemoteSession();
+  return {
+    ok: true,
+    landingBaseUrl: LANDING_BASE_URL,
+    remoteConnected: !!(sess && sess.sessionId),
+    remoteExpireAt: sess && sess.expireAt ? sess.expireAt : 0,
+  };
+});
+
+// 2) 查询当前用户积分余额（远端登录时实时 GET /api/console/credits）
+ipcMain.handle('credits-get-balance', async () => {
+  const sess = _readRemoteSession();
+  if (!sess || !sess.sessionId) {
+    return { ok: true, offline: true, balance: null, totalRecharged: 0, totalConsumed: 0, msg: '未连接宣传站点或未远端登录，暂不显示积分余额。' };
+  }
+  const r = await _callLanding({ method: 'GET', pathname: '/api/console/credits' });
+  if (!r.ok || !r.data) {
+    // NOT_LOGGED_IN：本地 session 失效 → 清理并回传 offline
+    if (r.data && r.data.code === 'NOT_LOGGED_IN') _clearRemoteSession();
+    return { ok: false, offline: !!(r.status === 0), error: (r.data && r.data.code) || 'FETCH_FAILED', msg: (r.data && r.data.msg) || r.errorMsg || '拉取余额失败' };
+  }
+  return { ok: true, offline: false, ...(r.data.credits || {}) };
+});
+
+// 3) 扣积分（桌面端三大功能入口在调用"真正业务"前，必须先调本 IPC）
+//    payload: { credits: 正整数, bizType: 'copilot_session' | 'mock_round' | 'resume_optimize', bizId?: string, desc?: string }
+ipcMain.handle('credits-consume', async (_e, payload = {}) => {
+  const credits = Number(payload && payload.credits);
+  if (!Number.isSafeInteger(credits) || credits <= 0) {
+    return { ok: false, error: 'BAD_CREDITS', msg: '消费积分必须为正整数' };
+  }
+  const bizType = String((payload && payload.bizType) || '').trim() || 'consume';
+  const bizId   = String((payload && payload.bizId)   || '').trim().slice(0, 64);
+  const desc    = String((payload && payload.desc)    || '').trim().slice(0, 200);
+
+  const sess = _readRemoteSession();
+  if (!sess || !sess.sessionId) {
+    // 离线 fallback：允许功能继续，标记 offline=true，让前端弹提醒
+    return {
+      ok: true, offline: true,
+      creditsConsumed: 0, balance: null, flowId: null,
+      msg: '离线模式（宣传站点未连接或未远端登录）：本次未扣除宣传站点积分，功能仍可使用。上线后请留意是否需要补扣。',
+    };
+  }
+
+  const r = await _callLanding({
+    method: 'POST', pathname: '/api/console/consume',
+    body: { credits, bizType, bizId, desc },
+    timeoutMs: 12000,
+  });
+  if (!r.ok || !r.data) {
+    if (r.data && r.data.code === 'NOT_LOGGED_IN') _clearRemoteSession();
+    return {
+      ok: false, offline: !!(r.status === 0),
+      error: (r.data && r.data.code) || 'CONSUME_FAILED',
+      msg:   (r.data && r.data.msg)  || r.errorMsg || '扣积分失败',
+      // 若是积分不足，把缺失数值透传给前端，让前端直接弹"还差 N 分，去充值"
+      ...(r.data && typeof r.data.current === 'number'
+           ? { current: r.data.current, required: r.data.required, missing: r.data.missing } : {}),
+    };
+  }
+  // 成功：返回扣费结果 {creditsConsumed, balance, flowId}
+  return Object.assign({ ok: true, offline: false }, r.data);
+});
+
+// 4) 打开宣传站点控制台 → 用户充值 / 看流水 / 看订单
+ipcMain.handle('credits-open-console', async () => {
+  try {
+    const url = `${LANDING_BASE_URL}/console.html`;
+    await shell.openExternal(url);
+    return { ok: true, url };
+  } catch (e) {
+    return { ok: false, error: 'OPEN_FAILED', msg: e.message };
+  }
+});
+
+// 5) 管理员：打开宣传站点后台（如果账号 isAdmin=true 才有意义；非管理员打开后 landing 会直接 403）
+ipcMain.handle('credits-open-admin', async () => {
+  try {
+    const url = `${LANDING_BASE_URL}/admin.html`;
+    await shell.openExternal(url);
+    return { ok: true, url };
+  } catch (e) {
+    return { ok: false, error: 'OPEN_FAILED', msg: e.message };
+  }
 });
 
 // ============================================================
@@ -1364,6 +2497,175 @@ ipcMain.handle('interview-session-ensure-if-ended', async (event, cfg) => {
   } catch (e) {
     console.error('[main][interview-session-ensure-if-ended] 异常:', e && e.message);
     return { ok: false, error: 'internal', msg: e && e.message ? e.message : 'ensure-if-ended 失败' };
+  }
+});
+
+// ============================================================
+// ★ 面试记录【双写模式 Phase 1】SQLite 统一仓储：IPC 句柄（db:sessions-*）
+//   - 桌面端渲染进程「面试记录」页面优先走这套句柄（查询性能比 JSON 列表高 10x）
+//   - Web 端（Landing）如果与桌面端运行在同一台 PC，可通过本地 HTTP 代理复用同套接口
+//   - 失败兜底：SQLite 未就绪时返回 {ok:false, sqliteUnavailable:true, sessions:[]}，
+//              前端可据此回退到旧的 interview-session-list JSON 层接口
+//   - 权限隔离：所有查询强制绑定当前账号 ID（currentAccountIdSafe），
+//              防止越权读别人账号的面试记录（即使前端传了 accountId 参数也会被忽略）
+// ============================================================
+/**
+ * 【IPC】db:sessions-health —— 查询 SQLite 仓库健康状态 + 统计数字
+ * 用于前端「面试记录」页首屏先判断：SQLite 是否可用？有没有数据？
+ * 返回：{ok, ready, sessionCount, roundCount, categories:{copilot,mock}, dbPath, msg}
+ */
+ipcMain.handle('db:sessions-health', () => {
+  try {
+    if (!sessionRepo || !sessionRepo.ready) {
+      return { ok: false, ready: false, sqliteUnavailable: true,
+        sessionCount: 0, roundCount: 0, categories: { copilot: 0, mock: 0 },
+        msg: (sessionRepo && sessionRepo.lastError) ? sessionRepo.lastError.message : 'SQLite 仓库未初始化' };
+    }
+    const h = sessionRepo.health();
+    // 额外按账号+分类细分计数（右上角徽章用）
+    const aid = currentAccountIdSafe();
+    let cp = 0, mk = 0;
+    try {
+      const r1 = sessionRepo.listSessions({ accountId: aid, category: 'copilot', limit: 1, offset: 0 });
+      const r2 = sessionRepo.listSessions({ accountId: aid, category: 'mock',    limit: 1, offset: 0 });
+      cp = Number(r1 && r1.total) || 0;
+      mk = Number(r2 && r2.total) || 0;
+    } catch (_) { /* ignore */ }
+    return { ok: true, ready: true,
+      sessionCount: Number(h && h.sessionCount) || 0,
+      roundCount:   Number(h && h.roundCount)   || 0,
+      categories: { copilot: cp, mock: mk },
+      dbPath: (h && h.dbPath) ? String(h.dbPath) : ''
+    };
+  } catch (e) {
+    console.error('[main][db:sessions-health] 异常:', e && e.message);
+    return { ok: false, ready: false, sqliteUnavailable: true,
+      sessionCount: 0, roundCount: 0, categories: { copilot: 0, mock: 0 },
+      msg: e && e.message ? e.message : 'health 失败' };
+  }
+});
+
+/**
+ * 【IPC】db:sessions-list —— 分页查询当前账号的面试记录列表（SQLite 层）
+ * 支持：keyword 模糊搜索（公司/职位/标题/摘要）、category 过滤（copilot/mock/空=全部）、
+ *       limit/offset 分页；与旧 interview-session-list 返回结构完全兼容，
+ *       这样前端不用写两套渲染逻辑，直接替换数据源即可。
+ * 参数：opts = { keyword, category, limit, offset }
+ * 返回：{ok, total, sessions:[{id,category,title,targetCompany,targetPosition,status,
+ *          startedAt,endedAt,lastActiveAt,roundCount,answeredCount,errorCount,durationMs,
+ *          snippet,lastRounds,interviewType}], keyword, category, limit, offset }
+ */
+ipcMain.handle('db:sessions-list', async (event, opts = {}) => {
+  try {
+    if (!sessionRepo || !sessionRepo.ready) {
+      return { ok: false, sqliteUnavailable: true,
+        total: 0, sessions: [],
+        keyword:  opts && opts.keyword  ? String(opts.keyword)  : '',
+        category: opts && opts.category ? String(opts.category) : '',
+        limit:    Number(opts && opts.limit)  || 50,
+        offset:   Number(opts && opts.offset) || 0,
+        msg: 'SQLite 仓库未就绪（可能是 better-sqlite3 未正确安装或 DB 初始化失败）'
+      };
+    }
+    // ★ 安全：强制用当前登录账号 ID，不允许前端传 accountId 绕过隔离
+    const aid = currentAccountIdSafe();
+    const r = sessionRepo.listSessions({
+      accountId: aid,
+      keyword:  opts && opts.keyword  ? String(opts.keyword)  : '',
+      // category：空字符串表示全部，与面试记录 Tab 切换的 真实面试 / 模拟面试 / 全部 三态对齐
+      category: (opts && opts.category && (String(opts.category) === 'copilot' || String(opts.category) === 'mock'))
+                ? String(opts.category) : '',
+      limit:  Math.max(1, Math.min(200, Number(opts && opts.limit)  || 50)),
+      offset: Math.max(0, Number(opts && opts.offset) || 0),
+    });
+    return Object.assign({ ok: true }, r, {
+      keyword:  opts && opts.keyword  ? String(opts.keyword)  : '',
+      category: opts && opts.category ? String(opts.category) : '',
+    });
+  } catch (e) {
+    console.error('[main][db:sessions-list] 异常:', e && e.message);
+    return { ok: false, error: 'internal',
+      total: 0, sessions: [],
+      keyword:  opts && opts.keyword  ? String(opts.keyword)  : '',
+      category: opts && opts.category ? String(opts.category) : '',
+      limit:    Number(opts && opts.limit)  || 50,
+      offset:   Number(opts && opts.offset) || 0,
+      msg: e && e.message ? e.message : 'list 失败'
+    };
+  }
+});
+
+/**
+ * 【IPC】db:sessions-get —— 获取某场面试的完整详情（session + rounds[] + jdSnapshot + resumeSnapshot）
+ * 参数：sessionId
+ * 返回：{ok:true, session:{...}, rounds:[...]} 或 {ok:false, error, msg}
+ *   session 字段：id/category/title/targetCompany/targetPosition/interviewType/status/
+ *                startedAt/endedAt/lastActiveAt/roundCount/questionCount/answeredCount/
+ *                errorCount/durationMs/jdSnapshot/resumeSnapshot/snippet
+ *   round 字段：id/seq/sessionId/status/questionText/answerText/aiAnswer/createdAt/answeredAt/durationMs/meta
+ */
+ipcMain.handle('db:sessions-get', async (event, id) => {
+  try {
+    if (!sessionRepo || !sessionRepo.ready) {
+      return { ok: false, sqliteUnavailable: true, session: null, rounds: [],
+        msg: 'SQLite 仓库未就绪（可能是 better-sqlite3 未正确安装或 DB 初始化失败）' };
+    }
+    if (!id) {
+      return { ok: false, error: 'invalid', msg: 'sessionId 不能为空', session: null, rounds: [] };
+    }
+    const detail = sessionRepo.getSessionDetail(String(id));
+    if (!detail || !detail.id) {
+      return { ok: false, error: 'not_found', msg: '未找到该面试记录（可能已被删除或 sessionId 错误）',
+        session: null, rounds: [] };
+    }
+    // ★ 越权校验：确保请求的 session 属于当前登录账号
+    const aid = currentAccountIdSafe();
+    if (detail.accountId && detail.accountId !== aid) {
+      console.warn(`[main][db:sessions-get] ⚠️ 越权访问拦截：requested=${detail.accountId} current=${aid} session=${id}`);
+      return { ok: false, error: 'forbidden', msg: '无权查看他人的面试记录', session: null, rounds: [] };
+    }
+    // 拆分为 session + rounds，与旧 interview-session-get 返回格式保持一致（便于前端无缝切换）
+    const rounds = Array.isArray(detail.rounds) ? detail.rounds : [];
+    const sessionOnly = Object.assign({}, detail);
+    delete sessionOnly.rounds;
+    return { ok: true, session: sessionOnly, rounds };
+  } catch (e) {
+    console.error('[main][db:sessions-get] 异常:', e && e.message);
+    return { ok: false, error: 'internal', session: null, rounds: [],
+      msg: e && e.message ? e.message : 'get 失败' };
+  }
+});
+
+/**
+ * 【IPC】db:sessions-delete —— 删除某场面试（同时删 session 行 + 关联 rounds）
+ * 注意：只标记 SQLite 侧删除，JSON 文件不会动——用户要求清数据时，
+ *      如果想删 JSON 文件，前端可并行调旧的删除接口（后续迭代再合并）。
+ * 参数：sessionId
+ * 返回：{ok:true} 或 {ok:false, error, msg}
+ */
+ipcMain.handle('db:sessions-delete', async (event, id) => {
+  try {
+    if (!sessionRepo || !sessionRepo.ready) {
+      return { ok: false, sqliteUnavailable: true,
+        msg: 'SQLite 仓库未就绪（可能是 better-sqlite3 未正确安装或 DB 初始化失败）' };
+    }
+    if (!id) return { ok: false, error: 'invalid', msg: 'sessionId 不能为空' };
+    // ★ 越权校验：先读详情再判断归属（避免越权删别人的）
+    const aid = currentAccountIdSafe();
+    const detail = sessionRepo.getSessionDetail(String(id));
+    if (!detail || !detail.id) {
+      return { ok: false, error: 'not_found', msg: '未找到该面试记录' };
+    }
+    if (detail.accountId && detail.accountId !== aid) {
+      console.warn(`[main][db:sessions-delete] ⚠️ 越权删除拦截：requested=${detail.accountId} current=${aid} session=${id}`);
+      return { ok: false, error: 'forbidden', msg: '无权删除他人的面试记录' };
+    }
+    const r = sessionRepo.deleteSession(String(id));
+    if (r) return { ok: true };
+    return { ok: false, error: 'delete_fail', msg: '删除失败（可能 DB 锁或已不存在）' };
+  } catch (e) {
+    console.error('[main][db:sessions-delete] 异常:', e && e.message);
+    return { ok: false, error: 'internal', msg: e && e.message ? e.message : 'delete 失败' };
   }
 });
 
@@ -1700,6 +3002,10 @@ function createOverlayWindow() {
     },
     icon: path.join(__dirname, 'assets', 'icon.png'),
   });
+  // ★ 登记答题面板到统一排除注册表，并按当前开关施加「截图/录屏不可见」
+  //   overlay 是透明 alwaysOnTop 独立窗口，显示标准答案——必须排除，否则录屏会拍到答案。
+  registerWindow('overlay', overlayWindow);
+  captureExclusion.applyCaptureExclusion(overlayWindow, captureHideEnabled);
   // alwaysOnTop 等级：screen-saver，确保高于会议软件的全屏共享
   try { overlayWindow.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
 
@@ -1767,6 +3073,7 @@ function createOverlayWindow() {
     app.bus.off('local:write-answer-from-outside', onWriteOutside);
     app.bus.off('local:write-question-from-outside', onWriteQuestionOutside); // 新增清理
     app.bus.off('local:status-changed', onLocalStatusChanged);
+    unregisterWindow('overlay');  // 注销答题面板，避免脏引用
     overlayWindow = null;
 
     // ★ 语义升级：关闭浮层 = 用户明确结束本场面试
@@ -1790,6 +3097,8 @@ function createOverlayWindow() {
 
   overlayWindow.loadFile(path.join(__dirname, 'overlay.html')).then(() => {
     overlayWindow.show();
+    // ★ 重建后 HWND 变化，旧亲和性失效——重新施加「从捕获排除」，确保截图/录屏仍不可见
+    captureExclusion.applyCaptureExclusion(overlayWindow, captureHideEnabled);
     // 加载完成后立刻同步一次当前状态（如果 ASR 已运行，不会丢字）
     try {
       if (asrPipeline && asrPipeline.isRunning) {
@@ -1825,7 +3134,7 @@ function closeOverlayWindow() {
  *   1) 兜底把本场面试 endActiveSession（点叉号代表结束本场面试 —— 用户明确要求）
  *   2) 把主窗口 show + focus（弹出主窗口）
  *   3) 给主窗口 webContents.send('overlay:closed-post-session', payload)
- *      触发 renderer 显示两按钮横幅（查看本场 / 开启新的面试）
+ *      触发 renderer 显示「面试结束总结页」（查看本场 / 复盘 / 开启新的面试）
  *
  * 加 _lastOverlayClosePayload 幂等保护：一次窗口关闭过程只会真正执行一次，
  * 避免 close-overlay IPC 同步 end + overlayWindow 'closed' 再次 end 造成重复。
@@ -1883,6 +3192,11 @@ async function _postSessionOnOverlayClose(opts) {
     const sessionId = (endedSession && (endedSession.sessionId || endedSession.id)) ? String(endedSession.sessionId || endedSession.id)
       : (s.activeSessionId ? String(s.activeSessionId) : null);
     let roundsCount = Number((endedSession && (endedSession.roundsCount || (Array.isArray(endedSession.rounds) ? endedSession.rounds.length : 0))) || 0);
+    let answeredCount = Number((endedSession && (endedSession.answeredCount || 0)) || 0);
+    // 兜底：若没 answeredCount 但有 rounds，按 rounds 中 status === 'answered' 计数
+    if (!answeredCount && Array.isArray(endedSession && endedSession.rounds) && endedSession.rounds.length) {
+      answeredCount = endedSession.rounds.filter((r) => r && r.status === 'answered').length || endedSession.rounds.length;
+    }
     let company = '';
     let position = '';
     if (endedSession && endedSession.config && typeof endedSession.config === 'object') {
@@ -1920,6 +3234,7 @@ async function _postSessionOnOverlayClose(opts) {
       from,
       sessionId,
       roundsCount,
+      answeredCount,
       endedAt,
       startedAt,
       company: company || '未知公司',
@@ -2598,8 +3913,41 @@ ipcMain.handle('send-notification', (event, title, body) => {
 // 简历上传与管理
 // ============================================================
 
-// 简历数据路径
-const resumePath = path.join(userDataPath, 'resume.md');
+/**
+ * 按账号返回简历路径（支持多账号隔离）：
+ *   - 未登录 → {userDataPath}/accounts/__guest__/resume.md
+ *   - 已登录 accountId=xxx → {userDataPath}/accounts/xxx/resume.md
+ * 首次调用时顺带执行"老全局简历迁移到 guest 账号"（仅一次）
+ */
+let _resumeMigrated = false;
+function _getResumePath() {
+  const p = authService.resolveAccountPath(null, 'resume.md');
+  if (!_resumeMigrated) {
+    _resumeMigrated = true;
+    try {
+      const legacyPath = path.join(userDataPath, 'resume.md');
+      if (fs.existsSync(legacyPath) && !fs.existsSync(p)) {
+        const buf = fs.readFileSync(legacyPath);
+        fs.writeFileSync(p, buf);
+        console.log('[resume-migrate] ✅ 已把全局 resume.md 迁移到账号 ' + authService.currentAccountId + ' 命名空间');
+        // 老文件不删（留备份），避免万一失败
+      }
+      // resume_meta.json 同样迁移（解析器信息）
+      const legacyMeta = path.join(userDataPath, 'resume_meta.json');
+      const metaDir = path.dirname(p);
+      const newMeta = path.join(metaDir, 'resume_meta.json');
+      if (fs.existsSync(legacyMeta) && !fs.existsSync(newMeta)) {
+        fs.copyFileSync(legacyMeta, newMeta);
+      }
+    } catch (e) {
+      console.warn('[resume-migrate] 迁移异常（不影响后续运行）：', e.message);
+    }
+  }
+  return p;
+}
+
+/** 获取同目录下的 resume_meta.json 路径（解析缓存） */
+function _getResumeMetaPath() { return path.join(path.dirname(_getResumePath()), 'resume_meta.json'); }
 
 // 选择并读取简历文件
 ipcMain.handle('select-resume-file', async () => {
@@ -2627,10 +3975,11 @@ ipcMain.handle('select-resume-file', async () => {
   }
 });
 
-// 保存简历内容
+// 保存简历内容（按当前登录账号隔离）
 ipcMain.handle('save-resume', async (event, content) => {
   try {
-    fs.writeFileSync(resumePath, content, 'utf-8');
+    const p = _getResumePath();
+    fs.writeFileSync(p, content, 'utf-8');
 
     // 隐私审计：数据保存操作
     privacyAudit.logDataOperation('resume', 'save', Buffer.byteLength(content, 'utf-8'));
@@ -2638,7 +3987,7 @@ ipcMain.handle('save-resume', async (event, content) => {
     // 检测敏感信息
     const sensitiveInfo = privacyAudit.detectSensitiveInfo(content);
     if (sensitiveInfo.length > 0) {
-      privacyAudit.logSensitiveData('resume', 'multiple_detected', '简历内容');
+      privacyAudit.logSensitiveData('resume', 'multiple_detected', '简历内容(' + currentAccountIdSafe() + ')');
       return {
         success: true,
         warning: '简历中检测到敏感信息，请注意隐私保护',
@@ -2646,10 +3995,11 @@ ipcMain.handle('save-resume', async (event, content) => {
       };
     }
 
-    // 更新状态
-    stateManager.update('resume.content', content);
-    stateManager.update('resume.filePath', resumePath);
-    stateManager.update('resume.lastModified', Date.now());
+    // 更新状态：key 按账号命名空间化，避免多账号相互覆盖
+    const ns = 'resume:' + currentAccountIdSafe();
+    stateManager.update(`${ns}.content`, content);
+    stateManager.update(`${ns}.filePath`, p);
+    stateManager.update(`${ns}.lastModified`, Date.now());
 
     return { success: true };
   } catch (error) {
@@ -2657,34 +4007,48 @@ ipcMain.handle('save-resume', async (event, content) => {
   }
 });
 
-// 加载保存的简历
+// 加载保存的简历（按当前登录账号隔离）
 ipcMain.handle('load-resume', async () => {
   try {
-    if (fs.existsSync(resumePath)) {
-      const content = fs.readFileSync(resumePath, 'utf-8');
-      return { success: true, content };
+    const p = _getResumePath();
+    if (fs.existsSync(p)) {
+      const content = fs.readFileSync(p, 'utf-8');
+      return { success: true, content, meta: _readResumeMeta(_getResumeMetaPath()), accountId: currentAccountIdSafe() };
     }
-    return { success: false, error: '简历不存在' };
+    return { success: false, error: '简历不存在', accountId: currentAccountIdSafe() };
   } catch (error) {
-    return { success: false, error: error.message };
+    return { success: false, error: error.message, accountId: currentAccountIdSafe() };
   }
 });
 
-// 删除保存的简历
+// 删除保存的简历（按当前登录账号隔离）
 ipcMain.handle('delete-resume', async () => {
   try {
-    if (fs.existsSync(resumePath)) {
-      fs.unlinkSync(resumePath);
+    const p = _getResumePath();
+    if (fs.existsSync(p)) {
+      fs.unlinkSync(p);
     }
-    // 更新状态
-    stateManager.update('resume.content', '');
-    stateManager.update('resume.filePath', null);
-    stateManager.update('resume.lastModified', null);
+    // 清同名命名空间下的 meta
+    const m = _getResumeMetaPath();
+    if (fs.existsSync(m)) { try { fs.unlinkSync(m); } catch (_) {} }
+    // 更新状态（按账号命名空间）
+    const ns = 'resume:' + currentAccountIdSafe();
+    stateManager.update(`${ns}.content`, '');
+    stateManager.update(`${ns}.filePath`, null);
+    stateManager.update(`${ns}.lastModified`, null);
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
+
+// 辅助：读取 resume_meta.json（解析器 / 字数等缓存信息）
+function _readResumeMeta(p) {
+  try {
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (_) { return null; }
+}
 
 // ============================================================
 // 状态管理 IPC 处理
@@ -3496,6 +4860,9 @@ function createMockInterviewFloatWindow(startParams) {
     webPreferences: _targetWp,
     icon: path.join(__dirname, 'assets', 'icon.png')
   });
+  // ★ 登记模拟面试浮窗到统一排除注册表，并施加「截图/录屏不可见」
+  registerWindow('mock', mockInterviewFloatWindow);
+  captureExclusion.applyCaptureExclusion(mockInterviewFloatWindow, captureHideEnabled);
   try { mockInterviewFloatWindow.setMenuBarVisibility(false); } catch (_) { /* 部分平台无菜单栏 */ }
   // ★ 排障增强：创建后双向打印"实际生效的 webPreferences"（避免某些 Electron 版本悄悄覆盖/忽略传入值）
   try {
@@ -3668,6 +5035,7 @@ function createMockInterviewFloatWindow(startParams) {
         _mockFloatTimers.length = 0;
       }
     } catch (_) { /* ignore */ }
+    unregisterWindow('mock');  // 注销模拟面试浮窗，避免脏引用
     mockInterviewFloatWindow = null;
   });
 

@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="即答侠定价方案 - 免费版、基础版、专业版，按积分充值，灵活选择" />
+<title>选择你的方案 · 即答侠 AI 面试助手</title>
+<!-- 复用宣传站的全局 CSS 变量体系（深色主题、毛玻璃、蓝紫渐变主色） -->
+<link rel="stylesheet" href="/styles.css" />
+<style>
+  /* 定价页专用样式：三档卡片、Most Popular 徽章、按量付费横幅、Offer 奖学金条 */
+
+  /* --- 定价页顶部品牌：复用 console.html 的「即答侠」风格 logo --- */
+  .pricing-brand {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 700; font-size: 18px; color: var(--text-primary);
+  }
+  .pricing-brand .mark {
+    width: 36px; height: 36px; border-radius: 10px;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    color: #fff; display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 16px;
+  }
+  .pricing-brand .name {
+    background: linear-gradient(135deg, #a5b4fc 0%, #c4b5fd 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: -0.01em;
+  }
+  /* 顶部导航右侧的「EN」和「控制台」按钮 */
+  .nav-lang {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--text-secondary); font-size: 14px; font-weight: 500;
+    padding: 6px 12px; border-radius: var(--radius-pill);
+    border: 1px solid var(--border-strong); background: var(--bg-card);
+  }
+  .btn-console {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(139, 92, 246, 0.32);
+  }
+  .btn-console:hover { color: #fff; text-decoration: none;
+    box-shadow: 0 6px 20px rgba(139, 92, 246, 0.48); }
+
+  /* --- 定价区容器 & 标题 --- */
+  .pricing-page {
+    min-height: calc(100vh - 128px);
+    padding: 64px 0 48px;
+    background:
+      radial-gradient(1200px 600px at 50% -120px, rgba(99,102,241,0.24), transparent 60%),
+      radial-gradient(800px 400px at 80% 80px, rgba(59,130,246,0.18), transparent 60%);
+  }
+  .pricing-head {
+    text-align: center; margin-bottom: 48px;
+  }
+  .pricing-head h1 {
+    font-size: 42px; font-weight: 800; line-height: 1.2;
+    color: var(--text-primary); margin: 0 0 14px;
+    letter-spacing: -0.02em;
+  }
+  .pricing-head .sub {
+    font-size: 18px; color: var(--text-secondary);
+  }
+
+  /* --- 按量付费横幅 --- */
+  .pay-as-you-go {
+    max-width: 880px; margin: 0 auto 40px;
+    padding: 16px 24px;
+    border-radius: 18px;
+    background: linear-gradient(90deg,
+      rgba(99,102,241,0.16) 0%, rgba(59,130,246,0.10) 100%);
+    border: 1px solid rgba(139,92,246,0.3);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+  }
+  .pay-as-you-go .left {
+    display: flex; align-items: center; gap: 14px;
+  }
+  .pay-as-you-go .icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    background: rgba(234, 179, 8, 0.18);
+    color: #fbbf24;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  .pay-as-you-go .title {
+    font-size: 15px; font-weight: 700; color: var(--text-primary);
+  }
+  .pay-as-you-go .desc {
+    font-size: 13px; color: var(--text-secondary); margin-top: 2px;
+  }
+  .pay-as-you-go .buy {
+    color: #c4b5fd; font-size: 14px; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .pay-as-you-go .buy:hover { color: #ddd6fe; text-decoration: none; }
+
+  /* --- 三档定价卡 --- */
+  .plans-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    max-width: 1120px; margin: 0 auto;
+  }
+  .plan-card {
+    position: relative;
+    border-radius: 20px;
+    background: rgba(26, 35, 50, 0.6);
+    border: 1px solid var(--border-strong);
+    padding: 32px 28px;
+    display: flex; flex-direction: column;
+    transition: all 0.25s ease;
+  }
+  .plan-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--border-active);
+    box-shadow: var(--shadow-card);
+  }
+  /* 专业版：高亮样式 */
+  .plan-card.popular {
+    background: linear-gradient(180deg, rgba(30,41,59,0.85) 0%, rgba(26,35,50,0.9) 100%);
+    border: 1px solid rgba(139,92,246,0.55);
+    box-shadow: 0 0 0 1px rgba(139,92,246,0.45),
+                0 20px 60px rgba(99,102,241,0.28);
+    transform: translateY(-8px);
+  }
+  .plan-card.popular:hover {
+    box-shadow: 0 0 0 1px rgba(139,92,246,0.7),
+                0 24px 80px rgba(99,102,241,0.38);
+  }
+  .popular-badge {
+    position: absolute; top: -12px; right: 24px;
+    padding: 5px 14px;
+    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+    border-radius: 999px;
+    color: #fff; font-size: 12px; font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 4px 14px rgba(99,102,241,0.45);
+  }
+  .plan-name {
+    font-size: 18px; font-weight: 700; color: var(--text-primary);
+    margin-bottom: 14px;
+  }
+  .plan-price {
+    display: flex; align-items: baseline; gap: 4px;
+    margin-bottom: 4px;
+  }
+  .plan-price .currency {
+    font-size: 24px; font-weight: 700; color: var(--text-primary);
+  }
+  .plan-price .amount {
+    font-size: 44px; font-weight: 800; color: var(--text-primary);
+    line-height: 1; letter-spacing: -0.02em;
+  }
+  .plan-price .cycle {
+    font-size: 14px; color: var(--text-tertiary); margin-left: 2px;
+  }
+  .plan-price .permanent {
+    font-size: 14px; color: var(--text-tertiary);
+  }
+  /* 季卡优惠小字 */
+  .plan-season {
+    font-size: 13px; color: #4ade80; font-weight: 600;
+    margin-top: 2px; margin-bottom: 16px;
+  }
+  /* 推广余额抵扣 */
+  .plan-discount {
+    font-size: 12px; color: #fbbf24; font-weight: 600;
+    padding: 4px 10px; border-radius: 8px;
+    background: rgba(234, 179, 8, 0.1);
+    display: inline-block;
+    margin-bottom: 20px;
+  }
+  .plan-card.popular .plan-discount {
+    margin-bottom: 20px;
+  }
+  /* 权益列表 */
+  .plan-features {
+    list-style: none; padding: 0; margin: 0 0 28px;
+    display: flex; flex-direction: column; gap: 12px;
+    flex: 1;
+  }
+  .plan-features li {
+    display: flex; align-items: flex-start; gap: 10px;
+    font-size: 14px; color: var(--text-secondary); line-height: 1.5;
+  }
+  .plan-features li::before {
+    content: '✓';
+    color: #4ade80;
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-top: 1px;
+    font-size: 13px;
+  }
+  /* 购买按钮 */
+  .plan-btn {
+    width: 100%;
+    padding: 14px 20px;
+    font-size: 15px; font-weight: 700;
+    border-radius: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: inherit;
+    border: 1px solid transparent;
+    user-select: none;
+  }
+  .plan-btn:active { transform: scale(0.98); }
+  .plan-btn.free {
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
+  }
+  .plan-btn.free:hover {
+    color: var(--text-primary);
+    border-color: var(--border-active);
+    background: var(--bg-card-hover);
+  }
+  .plan-btn.basic {
+    background: rgba(148, 163, 184, 0.08);
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
+  }
+  .plan-btn.basic:hover {
+    color: var(--text-primary);
+    border-color: var(--border-active);
+    background: rgba(148,163,184,0.14);
+  }
+  .plan-btn.pro {
+    background: linear-gradient(135deg, #3b82f6 0%, #a855f7 100%);
+    color: #fff;
+    box-shadow: 0 6px 20px rgba(139, 92, 246, 0.42);
+  }
+  .plan-btn.pro:hover {
+    color: #fff; text-decoration: none;
+    box-shadow: 0 10px 28px rgba(139, 92, 246, 0.58);
+  }
+  .plan-btn-sub {
+    text-align: center;
+    font-size: 13px; color: var(--text-tertiary);
+    margin-top: 10px;
+  }
+
+  /* --- Offer 奖学金横幅 --- */
+  .offer-banner {
+    max-width: 760px;
+    margin: 56px auto 0;
+    padding: 16px 24px;
+    border-radius: 18px;
+    background: linear-gradient(90deg,
+      rgba(34, 197, 94, 0.14) 0%, rgba(59, 130, 246, 0.10) 100%);
+    border: 1px solid rgba(34, 197, 94, 0.35);
+  }
+  .offer-banner .title {
+    font-size: 15px; font-weight: 700; color: #86efac;
+    text-align: center;
+  }
+  .offer-banner .title .hl {
+    color: #4ade80;
+  }
+  .offer-banner .desc {
+    font-size: 12px; color: var(--text-tertiary);
+    text-align: center; margin-top: 4px;
+  }
+
+  /* --- 响应式：窄屏堆叠 --- */
+  @media (max-width: 960px) {
+    .plans-grid {
+      grid-template-columns: 1fr;
+      max-width: 480px;
+    }
+    .plan-card.popular { transform: none; }
+    .pricing-head h1 { font-size: 30px; }
+    .pricing-page { padding: 40px 0 32px; }
+    .nav-links { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ 顶部导航（即答侠品牌） ============ -->
+<header class="navbar">
+  <div class="container navbar-inner">
+    <a href="/index.html" class="pricing-brand" aria-label="即答侠首页">
+      <span class="mark">H</span>
+      <span class="name">即答侠</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="/index.html#features">功能</a>
+      <a href="/pricing.html" style="color:#fff;">定价</a>
+      <a href="/index.html#faq">常见问题</a>
+      <a href="/index.html#community">社区</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="nav-lang" title="语言切换">
+        <span style="font-size: 14px;">🌐</span> EN
+      </span>
+      <a href="/console.html" class="btn btn-console">控制台</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 定价主区 ============ -->
+<section class="pricing-page">
+  <div class="container">
+
+    <!-- 标题 -->
+    <div class="pricing-head">
+      <h1>选择你的方案</h1>
+      <div class="sub">灵活定价，按需选择</div>
+    </div>
+
+    <!-- 按量付费提示横幅 -->
+    <div class="pay-as-you-go">
+      <div class="left">
+        <div class="icon">⚡</div>
+        <div>
+          <div class="title">按量付费</div>
+          <div class="desc">不想订阅？充积分用多少充多少，低至 ¥9/次，不过期</div>
+        </div>
+      </div>
+      <a href="/console.html#" class="buy" id="buyCreditsBanner">
+        购买积分 <span style="font-size: 16px; line-height: 1;">›</span>
+      </a>
+    </div>
+
+    <!-- 三档定价 -->
+    <div class="plans-grid">
+
+      <!-- 免费版 -->
+      <div class="plan-card">
+        <div class="plan-name">免费版</div>
+        <div class="plan-price">
+          <span class="currency">¥</span>
+          <span class="amount">0</span>
+          <span class="permanent">永久免费</span>
+        </div>
+        <!-- 免费版没有季卡优惠 -->
+        <div style="height: 50px;"></div>
+        <ul class="plan-features">
+          <li>3 次模拟面试/月</li>
+          <li>1 次简历分析</li>
+          <li>1 次 Copilot 体验（30分钟）</li>
+          <li>基础面试题库</li>
+        </ul>
+        <a href="/login.html?tab=register" class="plan-btn free">免费开始</a>
+      </div>
+
+      <!-- 基础版 -->
+      <div class="plan-card">
+        <div class="plan-name">基础版</div>
+        <div class="plan-price">
+          <span class="currency">¥</span>
+          <span class="amount">69</span>
+          <span class="cycle">/月</span>
+        </div>
+        <div class="plan-season">求职季卡 ¥159/季（省23%）</div>
+        <div class="plan-discount">🎁 推广余额抵扣 -¥69 → 实付¥0</div>
+        <ul class="plan-features">
+          <li>无限模拟面试</li>
+          <li>完整简历优化</li>
+          <li>5 次 Copilot/月（各30分钟）</li>
+          <li>面试题库完整访问</li>
+          <li>面试记录回放</li>
+        </ul>
+        <button type="button" class="plan-btn basic" data-pkg="basic-season" data-price="159">
+          购买求职季卡 ¥159
+        </button>
+        <div class="plan-btn-sub">月付 ¥69/月</div>
+      </div>
+
+      <!-- 专业版（Most Popular） -->
+      <div class="plan-card popular">
+        <span class="popular-badge">Most Popular</span>
+        <div class="plan-name">专业版</div>
+        <div class="plan-price">
+          <span class="currency">¥</span>
+          <span class="amount">129</span>
+          <span class="cycle">/月</span>
+        </div>
+        <div class="plan-season">求职季卡 ¥289/季（省25%）</div>
+        <div class="plan-discount">🎁 推广余额抵扣 -¥69 → 实付¥60</div>
+        <ul class="plan-features">
+          <li>Copilot 面试辅助 不限次数</li>
+          <li>模拟面试 / 简历分析 不限次数</li>
+          <li>长面试全程不中断（不受积分余额限制）</li>
+          <li>面试详细分析报告</li>
+          <li>专属客服支持</li>
+        </ul>
+        <button type="button" class="plan-btn pro" data-pkg="pro-season" data-price="289">
+          购买求职季卡 ¥289
+        </button>
+        <div class="plan-btn-sub">月付 ¥129/月</div>
+      </div>
+
+    </div>
+
+    <!-- Offer 奖学金横幅 -->
+    <div class="offer-banner">
+      <div class="title">
+        🎁 <span class="hl">「Offer 奖学金」毕业季开放</span> —— 用即答侠上岸名单内大厂，充值金额全额返还
+      </div>
+      <div class="desc">
+        覆盖 字节 / 阿里 / 腾讯 / 华为 / 美团 等头部大厂 · 仅限付费用户 · 凭 Offer + 入职证明审核 · 微信 LUCIANSPACE 申请
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ 页脚 ============ -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <a href="/index.html" class="pricing-brand" style="font-size: 14px; gap: 8px;">
+      <span class="mark" style="width: 30px; height: 30px; border-radius: 8px; font-size: 14px;">H</span>
+      <span class="name">即答侠</span>
+    </a>
+    <nav class="nav-links" aria-label="页脚导航">
+      <a href="/index.html#features">功能</a>
+      <a href="/pricing.html">定价</a>
+      <a href="/index.html#faq">常见问题</a>
+      <a href="/index.html#community">社区</a>
+    </nav>
+    <div class="copy">© 2026 即答侠. All rights reserved.</div>
+  </div>
+</footer>
+
+<!-- Toast 容器 -->
+<div class="toast-wrap" id="toastWrap" role="status" aria-live="polite"></div>
+
+<!-- 复用共享 JS（登录态、Toast 工具、购买积分按钮跳转） -->
+<script src="/app.js"></script>
+<script>
+  // ============================================================
+  // 定价页交互：购买按钮跳回控制台创建对应订单 + 积分购买跳转
+  // ============================================================
+  (function () {
+    /**
+     * 点击三档卡片里的购买按钮：
+     *   - 未登录 → 跳登录页
+     *   - 已登录 → 跳回 console.html 的「我的订单」面板自动创建对应套餐订单
+     */
+    document.querySelectorAll('.plan-btn[data-pkg]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var pkgId = btn.getAttribute('data-pkg');
+        var price = btn.getAttribute('data-price');
+        // 目标地址：回到控制台的 orders 面板，顺便带上套餐ID，
+        // 由 app.js 里的 initOrderFlowFromQuery() 在控制台读取并自动拉起订单创建流程
+        var target = '/console.html?goto=orders&pkg=' + encodeURIComponent(pkgId) + '&price=' + encodeURIComponent(price);
+        window.location.href = target;
+      });
+    });
+
+    // 顶部「购买积分」横幅：跳回控制台的「积分明细/购买积分」入口
+    var buyBanner = document.getElementById('buyCreditsBanner');
+    if (buyBanner) {
+      buyBanner.addEventListener('click', function (e) {
+        e.preventDefault();
+        window.location.href = '/console.html?goto=buycredits';
+      });
+    }
+
+    // 初始化页脚年份
+    var y = document.getElementById('yearNow');
+    if (y) y.textContent = new Date().getFullYear();
+  })();
+</script>
+</body>
+</html>
