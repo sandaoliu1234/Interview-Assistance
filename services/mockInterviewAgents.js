@@ -41,7 +41,7 @@ class QuestionAgent {
    */
   async nextQuestion({ type, targetPosition, industry, jdText, resumeText, language = 'zh',
     questionIndex, totalQuestions, history, config }) {
-    // 类型归一化：UI 端（HireMe）常见写法 technical→tech、programming→coding、comprehensive→behavior(兼顾STAR+压力小问)
+    // 类型归一化：UI 端（Interview Assist）常见写法 technical→tech、programming→coding、comprehensive→behavior(兼顾STAR+压力小问)
     const rawType = String(type || '').toLowerCase();
     const NORMALIZE_MAP = {
       behavior: 'behavior',

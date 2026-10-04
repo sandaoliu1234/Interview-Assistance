@@ -252,7 +252,7 @@ class SystemAudioCapture extends EventEmitter {
       if (this.running) {
         this._processEvents();
       }
-    }, 10); // 10ms 轮询，与 HireMe 保持一致
+    }, 10); // 10ms 轮询，与 Interview Assist 保持一致
   }
 
   /**

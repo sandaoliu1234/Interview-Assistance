@@ -20,7 +20,7 @@ const path = require('path');
 
 console.log('');
 console.log('╔══════════════════════════════════════════════╗');
-console.log('║   HireMe AI 面试助手 · 双服务统一启动器       ║');
+console.log('║   Interview Assist AI 面试助手 · 双服务统一启动器       ║');
 console.log('║                                              ║');
 console.log('║   用户端:  http://localhost:3000             ║');
 console.log('║   管理端:  http://localhost:3001             ║');

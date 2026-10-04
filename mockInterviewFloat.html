@@ -8,9 +8,9 @@
          否则浮窗 fetch('/api/...') 会被 Chromium 以 "violates CSP" 为由拦截（虽然 IPC 代理可兜底，但直连更快更稳）。 -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: http://127.0.0.1:* http://localhost:*; img-src 'self' data: https:;" />
   <title>模拟面试 · 进行中</title>
-  <!-- 复用主窗口 HireMe 深色主题：变量（--bg/--card/--primary 等）+ 基础 reset / 按钮组件 -->
+  <!-- 复用主窗口 Interview Assist 深色主题：变量（--bg/--card/--primary 等）+ 基础 reset / 按钮组件 -->
   <link rel="stylesheet" href="styles.css" />
-  <!-- 浮窗专属样式（保持 HireMe 风格，扩展进度条 / 状态徽章 / 倒计时 / 报告样式） -->
+  <!-- 浮窗专属样式（保持 Interview Assist 风格，扩展进度条 / 状态徽章 / 倒计时 / 报告样式） -->
   <style>
     /* ========= 浮窗整体：比主窗口略宽，保证题目 + 大段回答文本的可读性 ========= */
     html, body { margin: 0; padding: 0; height: 100%; background: var(--bg, #0b0e14); color: var(--text, #e5e8ee); font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }

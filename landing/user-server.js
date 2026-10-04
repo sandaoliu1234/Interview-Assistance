@@ -831,7 +831,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log('');
   console.log('==============================================');
-  console.log('   HireMe AI 面试助手 · 用户端服务已启动');
+  console.log('   Interview Assist AI 面试助手 · 用户端服务已启动');
   console.log('==============================================');
   console.log(`   用户端：   http://localhost:${PORT}`);
   try {

@@ -1,5 +1,5 @@
 /**
- * 本地伴生设备中继服务（对齐 HireMe 发行版的 localServer + relay）。
+ * 本地伴生设备中继服务（对齐参考实现的 localServer + relay）。
  *
  * 提供三条通道，供手机/iPad 等伴生设备实时查看面试转写与 AI 建议：
  *   1) GET /events  —— SSE 流，主进程通过 broadcast 推送实时转写/答案
@@ -18,7 +18,7 @@ const COMPANION_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>HireMe 伴生</title>
+<title>Interview Assist 伴生</title>
 <style>
   body{margin:0;padding:16px;font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;}
   h2{font-size:18px;margin:0 0 12px;}
@@ -29,7 +29,7 @@ const COMPANION_HTML = `<!doctype html>
 </style>
 </head>
 <body>
-  <h2>🎧 HireMe 伴生设备</h2>
+  <h2>🎧 Interview Assist 伴生设备</h2>
   <div class="hint" id="status">连接中…</div>
   <div id="list"></div>
   <script>

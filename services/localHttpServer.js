@@ -2571,7 +2571,7 @@ class LocalHttpServer {
     };
     this._json(res, 200, {
       ok: true,
-      device: 'HireMe-Copilot',
+      device: 'Interview Assist-Copilot',
       asrOn: !!this.state.isRecording,
       aiConfig,
       ocrConfig,
@@ -4291,7 +4291,7 @@ class LocalHttpServer {
         });
       });
       const doc = new Document({
-        creator: 'HireMe',
+        creator: 'Interview Assist',
         title: '优化后简历',
         sections: [{ properties: {}, children }]
       });
@@ -4336,7 +4336,7 @@ class LocalHttpServer {
         const now = new Date();
         const pad2 = (n) => String(n).padStart(2, '0');
         const date = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
-        const fm = `---\ntitle: "${title}"\ndate: "${date}"\ngenerated_by: HireMe Resume Optimizer\n---\n\n`;
+        const fm = `---\ntitle: "${title}"\ndate: "${date}"\ngenerated_by: Interview Assist Resume Optimizer\n---\n\n`;
         finalText = fm + content;
       }
 

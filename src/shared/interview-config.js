@@ -1,5 +1,5 @@
 /**
- * 面试助手统一配置模型（对应 HireMe Copilot 页面的全部表单字段）。
+ * 面试助手统一配置模型（对应 Interview Assist Copilot 页面的全部表单字段）。
  * 集中定义默认配置、字段说明与旧版配置迁移逻辑。
  *
  * 安全约定：本文件【不写死任何密钥】。所有 API Key 必须由用户
@@ -74,10 +74,10 @@ function defaultInterviewConfig() {
     audioMode: 'system',             // system | microphone | mixed
     realtimeMode: 'websocket',       // websocket（低延迟） | rest（兜底）
 
-    // ===== 视线检测（对齐 HireMe gaze；默认关闭，启用需摄像头权限）=====
+    // ===== 视线检测（对齐参考实现 gaze；默认关闭，启用需摄像头权限）=====
     gazeEnabled: false,              // 是否启用「无人脸自动隐藏 overlay」
 
-    // ===== 截图/录屏不可见（系统级从捕获排除，对齐 HireMe 的 applyExcludeFromCapture）=====
+    // ===== 截图/录屏不可见（系统级从捕获排除，对齐参考实现 的 applyExcludeFromCapture）=====
     //   默认开启：本 App 所有顶层窗口（主窗口、答题面板、模拟面试浮窗、声源选择器）
     //   在 Win10 2004+ 通过 WDA_EXCLUDEFROMCAPTURE 从截屏/录屏/屏幕共享中排除，
     //   本地仍可见，但捕获端（腾讯会议/Zoom/Win+Shift+S）看不到——这是「点击截图看不到项目」的根治方案。

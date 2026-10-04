@@ -61,7 +61,7 @@
     },
   };
   // 暴露到全局，方便 login.html 内联脚本也能用
-  window.HireMeToast = Toast;
+  window.Interview AssistToast = Toast;
 
   // ------------------------------------------------------------
   // 2. HTTP 封装（统一 JSON + 错误处理 + 自动 Toast）
@@ -169,7 +169,7 @@
       return this.call('/api/console/news/' + encodeURIComponent(newsId), { method: 'GET' });
     },
   };
-  window.HireMeAPI = API;
+  window.Interview AssistAPI = API;
 
   // ------------------------------------------------------------
   // 3. 导航栏登录态渲染（登录成功 / 登出成功后都调用一次）
@@ -227,7 +227,7 @@
       });
     }
   }
-  window.HireMeRenderNavAuth = renderNavAuth;
+  window.Interview AssistRenderNavAuth = renderNavAuth;
 
   // ------------------------------------------------------------
   // 4. 登录/注册页 (login.html) 交互
@@ -449,10 +449,10 @@
         const target = panels[name];
         if (target) target.classList.remove('hidden');
         // 暴露给外部（供跨面板跳转，如 buyCreditsLink）
-        window.HireMeSwitchPanel = switchPanel;
+        window.Interview AssistSwitchPanel = switchPanel;
       }
       // 首次初始化也把切换函数暴露出去，避免 bindBuyCredits 调用时还没注册
-      window.HireMeSwitchPanel = switchPanel;
+      window.Interview AssistSwitchPanel = switchPanel;
 
       // 按 data-menu 激活某一项侧边栏菜单（用于总览按钮跳转时高亮充值积分菜单）
       function activateMenu(menuKey) {
@@ -460,7 +460,7 @@
           m.classList.toggle('active', m.dataset.menu === menuKey);
         });
       }
-      window.HireMeActivateMenu = activateMenu;
+      window.Interview AssistActivateMenu = activateMenu;
 
       menuItems.forEach((item) => {
         item.addEventListener('click', (e) => {
@@ -505,7 +505,7 @@
     // ---------- 渲染用户信息 ----------
     function renderUserInfo(user) {
       // 缓存用户信息，供个人设置页面使用
-      window.HireMeCurrentUser = user;
+      window.Interview AssistCurrentUser = user;
 
       const avatar = $('userAvatar');
       const nameEl = $('userName');
@@ -659,8 +659,8 @@
         link.addEventListener('click', (e) => {
           e.preventDefault();
           // 跳到充值积分面板：高亮菜单 + 切面板 + 刷新余额 + 绑定套餐卡片
-          if (window.HireMeActivateMenu) window.HireMeActivateMenu('credit');
-          if (window.HireMeSwitchPanel)  window.HireMeSwitchPanel('credit');
+          if (window.Interview AssistActivateMenu) window.Interview AssistActivateMenu('credit');
+          if (window.Interview AssistSwitchPanel)  window.Interview AssistSwitchPanel('credit');
           bindCreditRecharge();
           refreshCreditBalance();
         });
@@ -670,8 +670,8 @@
       if (btn2) {
         btn2.onclick = (e) => {
           e.preventDefault();
-          if (window.HireMeActivateMenu) window.HireMeActivateMenu('credit');
-          if (window.HireMeSwitchPanel)  window.HireMeSwitchPanel('credit');
+          if (window.Interview AssistActivateMenu) window.Interview AssistActivateMenu('credit');
+          if (window.Interview AssistSwitchPanel)  window.Interview AssistSwitchPanel('credit');
           bindCreditRecharge();
           refreshCreditBalance();
         };
@@ -690,7 +690,7 @@
         el.textContent = '0';
       }
     }
-    window.HireMeRefreshCreditBalance = refreshCreditBalance;
+    window.Interview AssistRefreshCreditBalance = refreshCreditBalance;
 
     // ---------- 充值积分面板：套餐选中 & 下单支付 ----------
     let _creditRechargeBound = false;
@@ -808,7 +808,7 @@
         });
       }
     }
-    window.HireMeBindCreditRecharge = bindCreditRecharge;
+    window.Interview AssistBindCreditRecharge = bindCreditRecharge;
 
     // ---------- 快捷操作绑定（L832：download→面试Copilot，mock→模拟面试，resume→简历优化） ----------
     function bindQuickActions() {
@@ -826,9 +826,9 @@
           const menuKey = menuMap[action];
           if (!menuKey) return;
           // 1. 激活侧边栏对应菜单项的高亮
-          if (window.HireMeActivateMenu) window.HireMeActivateMenu(menuKey);
+          if (window.Interview AssistActivateMenu) window.Interview AssistActivateMenu(menuKey);
           // 2. 切换到对应面板，并执行面板的初始化函数
-          if (window.HireMeSwitchPanel) window.HireMeSwitchPanel(menuKey);
+          if (window.Interview AssistSwitchPanel) window.Interview AssistSwitchPanel(menuKey);
           if (menuKey === 'copilot') bindCopilot();
           if (menuKey === 'mock')    initMockPanel();
           if (menuKey === 'resume')  bindResume();
@@ -937,7 +937,7 @@
       }
     }
     // 暴露给 HTML onclick 调用
-    window.HireMeDoCheckin = doCheckinAction;
+    window.Interview AssistDoCheckin = doCheckinAction;
 
     // ---------- 加载邀请好友信息（overview 横条版本保留，保证向后兼容） ----------
     async function loadInviteInfo() {
@@ -952,8 +952,8 @@
       bar.addEventListener('click', (e) => {
         e.preventDefault();
         // 与侧边栏「邀请有礼」按钮行为一致：高亮 + 切面板 + 拉数据
-        if (window.HireMeActivateMenu) window.HireMeActivateMenu('invite');
-        if (window.HireMeSwitchPanel)  window.HireMeSwitchPanel('invite');
+        if (window.Interview AssistActivateMenu) window.Interview AssistActivateMenu('invite');
+        if (window.Interview AssistSwitchPanel)  window.Interview AssistSwitchPanel('invite');
         bindInvitePage();
         loadInvitePageInfo();
       });
@@ -996,7 +996,7 @@
       let linkText = (invite.inviteLink || '').trim();
       if (!linkText && code) {
         // 后端若没返回邀请链接，按与图 2 一致的路径拼接
-        linkText = `https://interviewasssistant.com/zh/register?ref=${encodeURIComponent(code)}`;
+        linkText = `https://interview-assist.example.com/zh/register?ref=${encodeURIComponent(code)}`;
       }
       if (linkEl) linkEl.textContent = linkText || '—';
 
@@ -1071,14 +1071,14 @@
         const code = inv.inviteCode || '';
         let link = (inv.inviteLink || '').trim();
         if (!link && code) {
-          link = `https://interviewasssistant.com/zh/register?ref=${encodeURIComponent(code)}`;
+          link = `https://interview-assist.example.com/zh/register?ref=${encodeURIComponent(code)}`;
         }
 
         // 依据 type 生成要复制的文本内容
         let text, toastMsg;
         if (type === 'share') {
           text =
-            `面试总被问到不会的问题？试试即答侠 — AI 实时面试助手，面试时在旁边悄悄提词，模拟面试、简历优化一站搞定，用了之后面试通过率直接翻倍 🚀\n` +
+            `面试总被问到不会的问题？试试Interview Assist — AI 实时面试助手，面试时在旁边悄悄提词，模拟面试、简历优化一站搞定，用了之后面试通过率直接翻倍 🚀\n` +
             `🔗 ${link}`;
           toastMsg = '分享文案已复制！快去发给好友吧 👭';
         } else if (type === 'link') {
@@ -1110,7 +1110,7 @@
       }
     }
     // 暴露给 HTML onclick 调用
-    window.HireMeCopyInvite = copyInviteContent;
+    window.Interview AssistCopyInvite = copyInviteContent;
 
     // ---------- 加载积分明细（分页流水） ----------
     async function loadFlows(page) {
@@ -1130,7 +1130,7 @@
       }
     }
     // 暴露给 HTML onclick 调用
-    window.HireMeLoadFlows = loadFlows;
+    window.Interview AssistLoadFlows = loadFlows;
 
     // ---------- 渲染积分明细表格 ----------
     function renderFlows(flows) {
@@ -1171,19 +1171,19 @@
       if (totalPages <= 1) { el.innerHTML = ''; return; }
       let html = '';
       // 上一页
-      html += `<button ${currentPage <= 1 ? 'disabled' : ''} onclick="window.HireMeLoadFlows(${currentPage - 1})">上一页</button>`;
+      html += `<button ${currentPage <= 1 ? 'disabled' : ''} onclick="window.Interview AssistLoadFlows(${currentPage - 1})">上一页</button>`;
       // 页码
       for (let i = 1; i <= totalPages; i++) {
         if (i === currentPage) {
           html += `<button class="active">${i}</button>`;
         } else if (Math.abs(i - currentPage) <= 2 || i === 1 || i === totalPages) {
-          html += `<button onclick="window.HireMeLoadFlows(${i})">${i}</button>`;
+          html += `<button onclick="window.Interview AssistLoadFlows(${i})">${i}</button>`;
         } else if (Math.abs(i - currentPage) === 3) {
           html += `<button disabled>...</button>`;
         }
       }
       // 下一页
-      html += `<button ${currentPage >= totalPages ? 'disabled' : ''} onclick="window.HireMeLoadFlows(${currentPage + 1})">下一页</button>`;
+      html += `<button ${currentPage >= totalPages ? 'disabled' : ''} onclick="window.Interview AssistLoadFlows(${currentPage + 1})">下一页</button>`;
       el.innerHTML = html;
     }
 
@@ -2128,7 +2128,7 @@
     // ---------- 加载个人设置 ----------
     function loadSettings() {
       // 从导航栏已缓存的用户信息填充
-      const user = window.HireMeCurrentUser;
+      const user = window.Interview AssistCurrentUser;
       const emailEl = $('settingsEmail');
       const nameEl = $('settingsDisplayName');
       if (emailEl && user) emailEl.value = user.email || '';
@@ -2152,7 +2152,7 @@
           // 更新侧边栏和导航栏的昵称显示
           const navName = $('userName');
           if (navName) navName.textContent = displayName;
-          if (window.HireMeCurrentUser) window.HireMeCurrentUser.displayName = displayName;
+          if (window.Interview AssistCurrentUser) window.Interview AssistCurrentUser.displayName = displayName;
         } else {
           Toast.show(r.msg || '修改失败', 'error');
         }
@@ -2282,7 +2282,7 @@
       return { getBaseUrl, callApi, resetCache };
     })();
     // 暴露给调试
-    window.HireMeDesktopBridge = DesktopBridge;
+    window.Interview AssistDesktopBridge = DesktopBridge;
 
     // ============================================================
     // ★ 面试记录面板渲染与事件绑定
@@ -2460,7 +2460,7 @@
               <div class="w-16 h-16 mx-auto bg-gray-50 rounded-2xl flex items-center justify-center text-3xl mb-4">💻</div>
               <h4 class="font-bold text-gray-800 mb-2">桌面端未在本机运行</h4>
               <p class="text-sm text-gray-500 mb-4 max-w-md mx-auto leading-relaxed">
-                面试记录存储在桌面端的本地 SQLite 中。请先用与本控制台<b>一致的账号</b>登录「即答侠桌面端」，
+                面试记录存储在桌面端的本地 SQLite 中。请先用与本控制台<b>一致的账号</b>登录「Interview Assist桌面端」，
                 然后点击下方按钮重新连接。
               </p>
               <div class="flex items-center justify-center gap-3">
@@ -2865,7 +2865,7 @@
       Toast.show('控制台初始化失败，请刷新', 'error');
     });
   }
-  window.HireMeInitConsole = initConsolePage;
+  window.Interview AssistInitConsole = initConsolePage;
 
   // ------------------------------------------------------------
   // 5. 页脚年份
@@ -2892,7 +2892,7 @@
     fillYear();
     // 导航栏是每一页都有的，所以一定尝试渲染登录态；失败静默
     renderNavAuth().catch((e) => {
-      console.warn('[HireMe] 初始化登录态失败：', e);
+      console.warn('[Interview Assist] 初始化登录态失败：', e);
     });
     // 如果当前在登录/注册页，初始化表单交互
     initAuthPage();

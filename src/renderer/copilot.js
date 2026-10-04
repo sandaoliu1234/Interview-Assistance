@@ -18,7 +18,7 @@ const hasRequire = typeof require !== 'undefined';
 // 注意：变量名用 electronIpcRenderer 是为了避免与 renderer.js 的全局 ipcRenderer 冲突
 //       （两者在同一页面作用域，否则会报 SyntaxError: Identifier 'ipcRenderer' has already been declared）
 const electronIpcRenderer = (isElectron && hasRequire) ? require('electron').ipcRenderer : null;
-// 视线检测控制器（对齐 HireMe gaze；降级实现：摄像头人脸在场检测。浏览器模式下不加载）
+// 视线检测控制器（对齐参考实现 gaze；降级实现：摄像头人脸在场检测。浏览器模式下不加载）
 // 注意：Electron renderer 进程的 __dirname 是 index.html 所在的项目根目录，
 // 不是 copilot.js 自身的 src/renderer/ 目录，所以路径要用 ./src/renderer/gaze-controller
 let GazeController = null;
@@ -1165,7 +1165,7 @@ function bindTabs() {
 }
 
 /**
- * 绑定「简历优化」面板的交互（对应 HireMe 第三个标签页）。
+ * 绑定「简历优化」面板的交互（对应 Interview Assist 第三个标签页）。
  *
  *  注意：简历优化 / 模拟面试 的真实 DOM 事件绑定，已经由
  *  `src/renderer/mockResumePanels.js` 的 `bindEvents() / initMockAndResumeUI()`

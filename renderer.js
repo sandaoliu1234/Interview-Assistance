@@ -639,7 +639,7 @@ function _ensureCreditsTopDom() {
   rech.title = '打开宣传站点控制台进行充值（浏览器模式）';
   rech.addEventListener('click', async () => {
     try {
-      const c = _creditsCh(); if (!c || !c.openConsole) { alert('当前环境不可用：请在 HireMe 桌面端或宣传站点控制台页面中充值。'); return; }
+      const c = _creditsCh(); if (!c || !c.openConsole) { alert('当前环境不可用：请在 Interview Assist 桌面端或宣传站点控制台页面中充值。'); return; }
       await c.openConsole();
     } catch (e) { console.warn(e); }
   });
@@ -755,7 +755,7 @@ async function tryConsumeCreditsBefore(p = {}) {
     _refreshCreditsBadge().catch(() => {});
     if (r.offline && r.msg) {
       try {
-        alert(`💡 ${r.msg}\n\n建议：在宣传站点服务器启动时，使用同一账号（在 HireMe 内登录），即可开启积分消费。`);
+        alert(`💡 ${r.msg}\n\n建议：在宣传站点服务器启动时，使用同一账号（在 Interview Assist 内登录），即可开启积分消费。`);
       } catch (_) {}
     }
     return { ...r };
@@ -863,11 +863,11 @@ async function openLoginModal() {
   if (elements.initAdminPanel) elements.initAdminPanel.classList.toggle('hidden', !isInit);
   // 新全屏视图下的标题（优先）
   if (elements.loginPageTitle) {
-    elements.loginPageTitle.textContent = isInit ? '🌱 创建第一个本地账号' : '🔐 登录 HireMe';
+    elements.loginPageTitle.textContent = isInit ? '🌱 创建第一个本地账号' : '🔐 登录 Interview Assist';
   }
   // 旧模态标题（兼容/兜底，若未来切换回模态也能工作）
   if (elements.loginModalTitle) {
-    elements.loginModalTitle.textContent = isInit ? '🌱 创建第一个本地账号' : '🔐 登录 HireMe';
+    elements.loginModalTitle.textContent = isInit ? '🌱 创建第一个本地账号' : '🔐 登录 Interview Assist';
   }
   // 清空错误 + 清空表单（避免上一次残留）
   if (elements.loginError)     elements.loginError.classList.add('hidden');
@@ -2042,7 +2042,7 @@ async function toggleStealthMode() {
   }
 }
 
-// 渲染历史记录（优先使用系统B：localHttpServer.state.history，即答题面板/H5/截图/ASR 共用的新历史结构；
+// 渲染历史记录（优先使用系统B：localHttpServer.state.history，答题面板/H5/截图/ASR 共用的新历史结构；
 // 拿不到系统B 时回退显示系统A 老数据 appState.history，保持兼容性）
 function renderHistory(sysbList) {
   // ===== 优先：系统B 新数据（通过 fetchOverlayState IPC 拿到的 state.history 数组） =====
@@ -4060,7 +4060,7 @@ async function renderSessionDetail(sessionId, highlightRoundId) {
 
 // ============================================================================
 // 给模拟面试（mockResumePanels.js）暴露的语音作答控制：
-// window.HireMeCore.startMockInterviewVoiceAnswer(callbacks, opts)
+// window.Interview AssistCore.startMockInterviewVoiceAnswer(callbacks, opts)
 // 只负责：麦克风 → 百度实时 ASR（缺实时能力则降级为 1.5s REST 识别一次）
 // callbacks: {onInterim(text), onFinal(text), onError(msg), onStateChange(state)}
 // state: 'idle'|'starting'|'mic'|'connecting'|'listening'|'stopped'
@@ -4276,9 +4276,9 @@ async function renderSessionDetail(sessionId, highlightRoundId) {
     };
   }
 
-  // 挂载到全局（mockResumePanels 中通过 window.HireMeCore 访问）
-  if (!window.HireMeCore) window.HireMeCore = {};
-  window.HireMeCore.startMockInterviewVoiceAnswer = startMockInterviewVoiceAnswer;
+  // 挂载到全局（mockResumePanels 中通过 window.Interview AssistCore 访问）
+  if (!window.Interview AssistCore) window.Interview AssistCore = {};
+  window.Interview AssistCore.startMockInterviewVoiceAnswer = startMockInterviewVoiceAnswer;
 })();
 
 /**

@@ -1,7 +1,7 @@
 /**
  * Gaze 视线检测控制器（基于 @mediapipe/tasks-vision 的 FaceLandmarker）。
  *
- * 对齐 HireMe 发行版 GazeController：当用户视线离开屏幕时自动隐藏答题 overlay，
+ * 对齐参考实现 GazeController：当用户视线离开屏幕时自动隐藏答题 overlay，
  * 视线回来时恢复显示——降低被发现的概率。
  *
  * 实现原理（无需校准）：

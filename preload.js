@@ -93,7 +93,7 @@ const _apiImpl = {
   enterStealthMode: () => invoke('enter-stealth-mode'),
   exitStealthMode: () => invoke('exit-stealth-mode'),
   isInStealthMode: () => invoke('is-in-stealth-mode'),
-  // 独立控制「从屏幕捕获排除」（对齐 HireMe applyExcludeFromCapture）
+  // 独立控制「从屏幕捕获排除」（对齐参考实现 applyExcludeFromCapture）
   // 返回 { success, method }，method ∈ exclude_from_capture/content_protection/unsupported
   setExcludeFromCapture: (enabled) => invoke('set-exclude-from-capture', enabled),
   // ★ 截图/录屏「不可见」总开关：实时切换对全部窗口的捕获排除。

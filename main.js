@@ -260,9 +260,9 @@ async function _remoteLogout() {
   _clearRemoteSession();
 }
 
-// 系统级窗口捕获排除（对齐 HireMe 发行版 applyExcludeFromCapture，用 koffi 调 Win32 API）
+// 系统级窗口捕获排除（对齐参考实现 applyExcludeFromCapture，用 koffi 调 Win32 API）
 const captureExclusion = safeRequire('./src/main/capture-exclusion', 'captureExclusion');
-// 本地伴生设备中继服务（http + SSE + WebSocket，对齐 HireMe localServer/relay）
+// 本地伴生设备中继服务（http + SSE + WebSocket，对齐参考实现 localServer/relay）
 const relayServer = safeRequire('./src/main/relay-server', 'relayServer');
 // 小程序联动：本地 HTTP + WebSocket 服务（WS + HTTP，支持截图/答案回写/ASR推送）
 const localHttpServer = safeRequire('./services/localHttpServer', 'localHttpServer');
@@ -1721,7 +1721,7 @@ ipcMain.handle('save-config', (event, config) => {
   return { success: true };
 });
 
-// 统一配置模型通道（对应 HireMe Copilot 页面全部字段）
+// 统一配置模型通道（对应 Interview Assist Copilot 页面全部字段）
 ipcMain.handle('get-interview-config', () => configManager.getConfig());
 ipcMain.handle('save-interview-config', (event, cfg) => {
   configManager.saveConfig(cfg);
@@ -1807,7 +1807,7 @@ ipcMain.handle('exit-stealth-mode', () => {
   updateTrayMenu();
 });
 
-// 独立控制「从屏幕捕获排除」：可在非隐身状态下单独启用（对齐 HireMe 的 applyExcludeFromCapture）。
+// 独立控制「从屏幕捕获排除」：可在非隐身状态下单独启用（对齐参考实现 的 applyExcludeFromCapture）。
 // 现统一作用于「全部已登记窗口」（主窗口/答题面板/模拟面试浮窗/声源选择器），
 // 避免只排除主窗口导致答案面板在截图里露馅。
 // 返回 { success, total, ok, method }，method 标识实际生效方式（exclude_from_capture / monitor / content_protection / unsupported）
@@ -2820,7 +2820,7 @@ try {
   }
 }
 
-// 伴生设备中继：启动/停止/状态/广播（对齐 HireMe localServer/relay）
+// 伴生设备中继：启动/停止/状态/广播（对齐参考实现 localServer/relay）
 ipcMain.handle('start-relay-server', async (event, port) => {
   const r = await relayServer.start(port || 9876);
   if (r.success) {

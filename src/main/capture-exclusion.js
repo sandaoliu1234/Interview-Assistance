@@ -1,10 +1,10 @@
 /**
- * 系统级窗口捕获排除（对齐 HireMe 发行版的 applyExcludeFromCapture）。
+ * 系统级窗口捕获排除（对齐参考实现的 applyExcludeFromCapture）。
  *
  * 原理：调用 Win32 user32.dll 的 SetWindowDisplayAffinity，给窗口设置
  *   WDA_EXCLUDEFROMCAPTURE (0x11)：窗口完全从屏幕捕获/录屏/屏幕共享中排除，
  *   但本地显示器正常可见——这正是比 setContentProtection(WDA_MONITOR，录屏显示黑色)
- *   更彻底的方案，也是 HireMe 发行版 stealthWindow 采用的方式。
+ *   更彻底的方案，也是 Interview Assist 发行版 stealthWindow 采用的方式。
  *
  * 实现途径：项目已依赖 koffi（FFI 库），与发行版底层一致；无需额外 native addon。
  *

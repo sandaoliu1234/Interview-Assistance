@@ -317,7 +317,7 @@
 
   // ------------------------------------------------------------
   // 2. 模拟面试 Panel：状态 + 事件绑定 + UI 更新
-  //    注意：实际 DOM id / data-type 来自 index.html（HireMe 风格），这里做"以 HTML 为准"的绑定：
+  //    注意：实际 DOM id / data-type 来自 index.html（Interview Assist 风格），这里做"以 HTML 为准"的绑定：
   //    - 面试类型 data-type：behavior / technical / programming / comprehensive（后端会再归一）
   //    - 职位：mockTargetPosition；行业：mockTargetIndustry；JD：mockJobDesc；简历：mockResumeEditor
   //    - 作答方式：mock-ans-mode 的 seg-btn data-mode=voice|text
@@ -337,7 +337,7 @@
     language: 'zh',
     // 语音作答：仅 answerMode=voice 时激活；与『当前题目』生命周期一致，切题/结束面试会重置
     voice: {
-      ctrl: null,               // window.HireMeCore.startMockInterviewVoiceAnswer 返回的 {stop,isRunning}
+      ctrl: null,               // window.Interview AssistCore.startMockInterviewVoiceAnswer 返回的 {stop,isRunning}
       stateLabel: '',           // 展示给用户的状态文案（录音中/连接中/已停止…）
       finalText: '',            // 已落定的识别文本（合并到编辑器）
       interimText: '',          // 当前"识别中…"草稿（仅显示，不参与提交）
@@ -444,7 +444,7 @@
   }
 
   // 开始/停止语音录音（toggle）：
-  // - 未在录音 → 初始化回调 → 调用 window.HireMeCore.startMockInterviewVoiceAnswer
+  // - 未在录音 → 初始化回调 → 调用 window.Interview AssistCore.startMockInterviewVoiceAnswer
   // - 正在录音 → 调 ctrl.stop()，按钮回到『开始录音』
   async function toggleVoiceRecording() {
     const btn = $('#mockVoiceAnswerBtn');
@@ -482,9 +482,9 @@
     }
 
     // 检查是否存在全局入口（浏览器模式下可能没有）
-    const starter = window.HireMeCore && window.HireMeCore.startMockInterviewVoiceAnswer;
+    const starter = window.Interview AssistCore && window.Interview AssistCore.startMockInterviewVoiceAnswer;
     if (typeof starter !== 'function') {
-      toast('当前环境不支持语音作答：缺少 HireMeCore ASR 桥接（请在 Electron 主应用中使用）。', 'warn', 5000);
+      toast('当前环境不支持语音作答：缺少 Interview AssistCore ASR 桥接（请在 Electron 主应用中使用）。', 'warn', 5000);
       MockState.voice.stateLabel = 'ASR 入口不可用';
       if (badge) { badge.style.display = ''; badge.textContent = '⚠️ ASR 不可用'; badge.classList.add('connecting'); }
       return;
@@ -948,7 +948,7 @@
 
   // ------------------------------------------------------------
   // 3. 简历优化 Panel：状态 + 事件绑定 + UI 更新
-  //    实际 DOM id / class 来自 index.html（HireMe 风格），这里严格以其为准：
+  //    实际 DOM id / class 来自 index.html（Interview Assist 风格），这里严格以其为准：
   //    - resumeFileInput (hidden，与 resumeDropzone 绑定)、resumeOptEditor、resumeOptStatus、
   //      resumeOptCharCount、resumeOptJobEditor、resumeOptStartBtn、resumeOptUploadBtn、
   //      resumeOptClearBtn、resumeOptUseSavedBtn、resumeDropzone、resumeFileInput、
@@ -1609,7 +1609,7 @@
   }
 
   async function submitMockFollowupAnswer() {
-    // 实际入口已统一合并到 Ctrl+Enter，但为 window.HireMeMockResume 暴露保留一个实现
+    // 实际入口已统一合并到 Ctrl+Enter，但为 window.Interview AssistMockResume 暴露保留一个实现
     return submitMockAnswerOrFollowupAuto();
   }
 
@@ -1734,7 +1734,7 @@
   }
 
   // 暴露少量 API 给外层（如未来想通过控制台调试）
-  window.HireMeMockResume = {
+  window.Interview AssistMockResume = {
     state: { MockState, ResumeState },
     startMockInterview, submitMockAnswer, submitMockFollowupAnswer, nextMockQuestion, finalMockReview,
     runResumeOptimize, exportOptimizedDOCX, exportOptimizedMarkdown,

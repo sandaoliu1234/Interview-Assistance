@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HireMe AI 面试助手</title>
+  <title>Interview Assist AI 面试助手</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -24,11 +24,11 @@
   </div>
 
   <div class="app-container">
-    <!-- 顶部标题栏：参考 HireMe 的深色标题栏 -->
+    <!-- 顶部标题栏：参考 Interview Assist 的深色标题栏 -->
     <header class="app-header draggable-region">
       <div class="header-left">
         <h1>
-          <span class="brand-mark">HireMe</span>
+          <span class="brand-mark">Interview Assist</span>
           <span class="brand-sub">面试助手</span>
         </h1>
         <!-- 字体大小调整：A⁻ / 100% / A⁺，缩放整个页面内容 -->
@@ -71,7 +71,7 @@
          这样用户第一眼看到的就是登录页（或正确的主页面），不会"先闪 Copilot 再切登录"。 -->
     <section class="view-panel hidden" id="viewHome" data-view="home">
 
-    <!-- 模式切换：Copilot / 模拟面试 / 简历优化（与 HireMe 保持一致） -->
+    <!-- 模式切换：Copilot / 模拟面试 / 简历优化（与 Interview Assist 保持一致） -->
     <nav class="mode-tabs" id="modeTabs">
       <button class="mode-tab active" data-mode="copilot" type="button">
         <span class="tab-icon">🎧</span> Copilot
@@ -84,7 +84,7 @@
       </button>
     </nav>
 
-    <!-- ========== Copilot 面板：参考 HireMe 截图布局 ========== -->
+    <!-- ========== Copilot 面板：参考 Interview Assist 截图布局 ========== -->
     <main class="main-content" id="copilotPanel">
       <!-- 面试类型 -->
       <section class="copilot-card">
@@ -323,7 +323,7 @@
       <p class="footer-hint">显示/隐藏窗口 <span id="footerHotkey">Ctrl+Shift+H</span></p>
     </main>
 
-    <!-- ========== 模拟面试面板：参考 HireMe 截图 1/2，深色卡片式表单布局 ========== -->
+    <!-- ========== 模拟面试面板：参考 Interview Assist 截图 1/2，深色卡片式表单布局 ========== -->
     <main class="main-content hidden" id="classicPanel">
       <!-- 面试类型 2x2 卡片 -->
       <section class="copilot-card">
@@ -432,7 +432,7 @@
         </div>
       </section>
 
-      <!-- 开始 CTA（蓝->紫渐变，贴合 HireMe 截图 2）+ 模拟面试记录 -->
+      <!-- 开始 CTA（蓝->紫渐变，贴合 Interview Assist 截图 2）+ 模拟面试记录 -->
       <div class="start-row">
         <button id="mockStartBtn" class="start-interview-btn mock-cta" type="button">
           <span>&#128640;</span> 开始模拟面试
@@ -469,7 +469,7 @@
       </section>
     </main>
 
-    <!-- ========== 简历优化面板：参考 HireMe 截图 3/4，上传/粘贴 + JD 可选 + 语言切换 + 橙红渐变 CTA ========== -->
+    <!-- ========== 简历优化面板：参考 Interview Assist 截图 3/4，上传/粘贴 + JD 可选 + 语言切换 + 橙红渐变 CTA ========== -->
     <main class="main-content hidden" id="resumePanel">
       <!-- Hero 标题：贴合截图 4 顶部的 ★ 简历优化 / AI 简历分析与优化 / ATS... -->
       <section class="resume-hero">
@@ -597,7 +597,7 @@
       <div class="auth-page-topbar">
         <div class="auth-page-title">
           <span class="auth-page-logo">🎧</span>
-          <strong>HireMe 面试助手</strong>
+          <strong>Interview Assist 面试助手</strong>
           <span class="auth-page-subtitle">· 账号</span>
         </div>
       </div>
@@ -612,7 +612,7 @@
               <!-- 左侧说明：在卡片内展示，不搞外部装饰 -->
               <div class="auth-hero">
                 <div class="auth-hero-avatar">👤</div>
-                <h2 id="loginPageTitle" class="auth-hero-title">🔐 登录 HireMe</h2>
+                <h2 id="loginPageTitle" class="auth-hero-title">🔐 登录 Interview Assist</h2>
                 <p class="auth-hero-sub">
                   登录后，你的简历、面试记录、知识库将按账号独立存储，
                   <br />多人共用同一台设备也不会相互串数据。
@@ -754,7 +754,7 @@
                 <div class="merge-hero-icon">🧩</div>
                 <h2 class="merge-hero-title">登录成功，是否合并游客数据？</h2>
                 <p class="merge-hero-sub">
-                  检测到您在未登录状态下（游客模式）已经使用过 HireMe，例如已有面试记录、上传过简历。<br />
+                  检测到您在未登录状态下（游客模式）已经使用过 Interview Assist，例如已有面试记录、上传过简历。<br />
                   您可以选择是否合并到当前登录账号下。
                 </p>
               </div>
@@ -1069,7 +1069,7 @@
   <div id="loginModal" class="modal auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
     <div class="modal-content modal-login-card">
       <div class="modal-header">
-        <h2 id="loginModalTitle">🔐 登录 HireMe</h2>
+        <h2 id="loginModalTitle">🔐 登录 Interview Assist</h2>
         <button id="closeLoginBtn" class="close-btn" type="button" aria-label="关闭登录">&times;</button>
       </div>
 

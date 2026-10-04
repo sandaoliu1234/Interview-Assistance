@@ -2,7 +2,7 @@
    面试答题独立窗口样式 (overlay.css)
    说明：
      - 该文件是独立 BrowserWindow（overlayWindow）加载的样式
-     - 与主窗口 styles.css 视觉一致：同样的 :root 变量、深色 HireMe 主题
+     - 与主窗口 styles.css 视觉一致：同样的 :root 变量、深色 Interview Assist 主题
      - 没有全屏遮罩（独立窗口本身就只是面板区域）
      - 加入字体缩放基准 html { font-size: 16px }，rem 响应
    ============================================================ */
@@ -23,7 +23,7 @@
   --text-secondary: #9ca3af;
   --text-tertiary:  #6b7280;
   --text-inverse:   #ffffff;
-  /* 焦点色（HireMe 蓝） */
+  /* 焦点色（Interview Assist 蓝） */
   /* --accent:         #3b82f6; */
   --accent-hover:   #2563eb;
   --accent-soft:    rgba(59, 130, 246, 0.16);
@@ -351,7 +351,7 @@ body {
   -webkit-app-region: no-drag;
 }
 
-/* ---------- 自定义滚动条：与面板暗色 HireMe 主题匹配 ---------- */
+/* ---------- 自定义滚动条：与面板暗色 Interview Assist 主题匹配 ---------- */
 .panel-scroll-body::-webkit-scrollbar {
   width: 8px;              /* 细而不突兀，匹配面板精致感 */
   height: 8px;

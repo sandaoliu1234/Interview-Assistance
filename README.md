@@ -1,6 +1,6 @@
-# 即答侠 HireMe AI 面试助手 · 桌面端（Electron）
+# Interview Assist AI 面试助手 · 桌面端（Electron）
 
-Electron 桌面客户端，是「即答侠 HireMe AI 面试助手」三大产品能力（**实时面试 Copilot / AI 模拟面试 / 智能简历优化**）的桌面载体，用于在真实面试场景中提供**实时听题出答案 + 隐身浮窗**能力。
+Electron 桌面客户端，是「Interview Assist AI 面试助手」三大产品能力（**实时面试 Copilot / AI 模拟面试 / 智能简历优化**）的桌面载体，用于在真实面试场景中提供**实时听题出答案 + 隐身浮窗**能力。
 
 - **主进程**：`main.js`（音频采集、ASR 管线、AI 答题、隐身边窗、托盘、快捷键、本地伴生服务）
 - **渲染层**：`index.html` + `renderer.js`（Copilot / 模拟面试 / 简历优化三模式界面）
