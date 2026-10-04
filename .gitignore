@@ -59,3 +59,8 @@ HireMe与本项目功能对比.md
 测试清单.md
 主账号空间-apiKey-.csv
 测试清单-模拟面试与简历优化.md
+
+# 数据库与运行期数据(2026-10-04 安全修复:曾含用户数据入库)
+data/*.db
+data/*.db-wal
+data/*.sqlite
